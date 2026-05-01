@@ -44,13 +44,13 @@ A complete description of glibc-malloc
   - [The Questions](#the-questions)
   - [Smallbin Size Classes](#smallbin-size-classes)
   - [Largebin Spacing](#largebin-spacing)
-  - [Bin Indexing](#bin-indexing)
+  - [Bin Indexing, Part 1: Finding the bin](#bin-indexing-part-1-finding-the-bin)
     - [Macro #1: bin\_index(sz)](#macro-1-bin_indexsz)
     - [Macro #2: in\_smallbin\_range(sz)](#macro-2-in_smallbin_rangesz)
     - [Macro #3: smallbin\_index(sz)](#macro-3-smallbin_indexsz)
     - [Macro #4: largebin\_index(sz)](#macro-4-largebin_indexsz)
     - [The Naming Issue](#the-naming-issue)
-    - [Macro #5: bin\_at(M, i)](#macro-5-bin_atm-i)
+  - [Bin Indexing, Part 2: Locating the bin headers](#bin-indexing-part-2-locating-the-bin-headers)
 ---
 
 # Introduction To Userspace Memory Allocators
@@ -1370,11 +1370,13 @@ Even though we understand largebin spacing now, it is better to defer constructi
 
 ---
 
-Before we go on building the list of largebins on 64-bit, we have to understand how bin indexing works. This is where we will close a thread opened since part 1, which is, "the conclusion of part 1", how the fake node implementation is operationalized.
+Before we go on building the list of largebins on 64-bit, we have to understand how bin indexing works. This is where we will close a thread opened in part 1, "how the fake node implementation is operationalized".
 
-## Bin Indexing
+## Bin Indexing, Part 1: Finding the bin #
 
-We know that bins are implemented using circular doubly linked lists and to ensure efficiency in operations, a fake node implementation is used. ***Therefore, bin indexing is the process of mapping the correct bin for a size and calculating the address which can represent the fake node whose fd/bk overlap with the bin headers for that bin.***
+We know that bins are implemented using circular doubly linked lists and to ensure efficient operations, a fake node implementation is used. As a result, it is not "finding the correct bin in traditional sense". We are not doing `bin[n]` to reach the nth bin. So the meaning of indexing is a little different here.
+
+***Bin indexing is the process of mapping the correct bin for a size and calculating the address which can represent the fake node whose fd/bk overlap with the bin headers for that bin.***
 
 These macros are responsible for streamlining that process.
 ```c
@@ -1432,22 +1434,20 @@ It is the handler for smallbins. It calculates the "index" of the bin correspond
 )
 ```
 
-For 64-bit, we are right-shifting the size by 4, which is basically division by 2<sup>4</sup>. In case of 32-bit, we divide the size by 2<sup>3</sup>. If you notice, the macro is basically dividing the size by SMALLBIN_WIDTH and adding the correction factor.
+We know that each size class is obtained by the formula: `(SMALLBIN_WIDTH\*i)`, where *i*, belongs to [2, 63]. To obtain the bin number, we just have to invert the process, i.e *divide a size class by SMALLBIN_WIDTH.*
 
-We can definitely simplify the macro this way:
+So, the macro can be simplified as:
 ```c
 #define  smallbin_index(sz)  ((sz/SMALLBIN_WIDTH) + SMALLBIN_CORRECTION)
 ```
 .... and the compiler will generate identical assembly for both at -O1 or -O2 as they are fundamentally the same thing. The reason former exist can be attributed to compiler limitations as discussed in the "preprocessing vs inlining" argument earlier.
 
-**Notes**:
-  1. As mentioned earlier, SMALLBIN_CORRECTION is 0 for 32-bit and 64-bit, and has utility in config #3 and we will discuss it there.
-  2. There is no dedicated macro or condition that evaluates the situation for config 3. We will discuss the mechanics of config 3 later.
+**Note**: There is no dedicated macro/condition that evaluates config #3. The SMALLBIN_CORRECTION adjusts the calculation, which we will explore in the end. It has no effects on 32-bit and 64-bit calculation.
 
 ### Macro #4: largebin_index(sz)
 ---
 
-This macro is a high level handler for the largebin index calculation. It delegates the calculation based on the config#, unlike smallbins, which have one single handler doing everything.
+This macro is a high level handler for the largebin index calculation. It calls the appropriate handler after evaluating the config#. This is different from smallbins and we will explore if a single macro is possible, if not, then why, later.
 ```c
 #define largebin_index(sz)    (  \
   (SIZE_SZ == 8)                 \
@@ -1463,29 +1463,29 @@ SIZE_SZ=8 is for 64-bit, MALLOC_ALIGNMENT=16 catches the INTERNAL_SIZE_T=4 case 
 ### The Naming Issue
 ---
 
-There is a naming issue in the bin_index macros. Their output is not an index value. Let's understand the situation.
-
-By index, we imply a value which can be subscripted (or indexed) in an array to find a specific element.
-
-Array subscripting is simply a syntactic sugar built over: `(base + i*scale)`. For example.
+***Index implies a value which can be subscripted (or indexed) in an array to find a specific element.*** Array subscripting itself is a syntactic sugar built over: `(base + i*scale)`. For example:
 ```c
 int arr[100];
 // considering the width of int 4.
 ```
 
+Moreover, the formula `base + i*scale` is also an abstraction for `base + offset`. In term of assembly, we have a base address and we offset *n* bytes from it.
+
 Suppose i=15. Take these two cases and answer what is the index here.
   1. arr[i]
   2. arr[(i\*4) + 4]
 
-I hope the answers is 15 and 64. Is it?
+I hope the answers is 15 and 64.
   - arr[5] is (arr + 5*4).
   - arr[(i\*4) + 4] is (arr + ( (i\*4)+4 )*4)
 
-***`i` is not an index. It is simply a variable participating in the calculation of the index value.***
-  - In the first case, `i` was used literally.
+This is quite obvious, but I have taken this example to instill the idea that ***`i` is not an index. It is just a variable participating in the calculation of the offset.*** Because, `i` is kind of synonymous with the index value as the loops often iterate from 0.
+  - In the first case, `i` was used literally, so it became the index.
   - In the second case, `i` underwent some arithmetic to compute the index.
 
-Now look at what these macros are generating. Take smallbin_index for example. The largest smallbin size class on 64-bit is for 1008 bytes. Right shift it by 4, we get 63. Since bins are implemented as headers, we have to undergo a calculation to access the correct headers.
+Now look at what smallbin_index is generating. The largest smallbin size class on 64-bit is for 1008 bytes, right shift by 4, we get 63. Since bins are implemented as headers, we have to undergo a calculation to access the correct headers, and the output of smallbin_index takes part in that calculation. How can we treat it as **the index**?
+
+These are the formulas we have constructed in part 1.
 ```c
 // 0-based indexing
 struct Node* fake_node = (Node*)((char*)(&listHeaders[i*2])-8);
@@ -1494,7 +1494,7 @@ struct Node* fake_node = (Node*)((char*)(&listHeaders[i*2])-8);
 struct Node* fake_node = (Node*)((char*)(&listHeaders[(i-1)*2])-8);
 ```
 
-The output of `smallbin_index` or `largebin_index_*` macros is "a bin number" which participates in the final index calculation performed by the `bin_at(M, i)` macro.
+The equivalent of these formulas is:
 ```c
 typedef struct malloc_chunk *mbinptr;
 
@@ -1502,12 +1502,26 @@ typedef struct malloc_chunk *mbinptr;
   ((char*) &( (m)->bins[(i-1)*2] )) - offsetof(struct malloc_chunk, fd)  \
 )
 ```
+  - We have already discussed that `8` is the amount of bytes we have to offset back to obtain the correct fake node address for any bin.
+  - We typecast the calculation to a (Node*) and here it is typecast-ed to a (malloc_chunk*).
+  - We can also notice that the indexing is 1-based, not 0-based. We will discuss this in part 2 of bin indexing.
+  - The formula is exactly the same.
 
-And for this reason, "bin_number" is a more appropriate naming than "bin_index".
+You might still be unconvinced about the issue, and it's not a problem. Look at this problem from a different standpoint.
+  - Bins are implement using circular doubly linked lists.
+  - 2 pointers are required per bin.
+  - These pointers have to be together in the array.
+  - To access the headers for the 63rd bin, we have to multiply by 2. But smallbin_index(1008) says that the index for this bin is 63.
+  - There are 126/127/128 bins. But bins[] is declared with a size of 254. Will we ever be able to access elements at index after 128 if 128 is actually the index, not the bin number?
+  - Ask yourself, **does this make sense?** I am sure it is clear now.
 
-### Macro #5: bin_at(M, i)
+And that's the naming issue is about. The `bin_index` macros are implying to generate a value which is an index. But the macro which calculates the right address of the fake node is using the output of bin_index to compute the final index, which when subscripted gives the element which is on an address which when typecast-ed to malloc_chunk* has its fd/bk overlap with the correct bin headers.
 
-It is the macro that operationalize the fake chunk implementation. It receives a bin number corresponding to a size and then calculates the appropriate bin for it.
+Therefore, "bin_number" is a more accurate representation for what these macros are generating.
+
+## Bin Indexing, Part 2: Locating the bin headers
+
+`bin_at(m, i)` is the macro that operationalize the idea of "a fake chunk". It receives a bin number corresponding to a size and calculates the address of the fake node.
 ```c
 #define  bin_at(m, i)    (mbinptr) ( \
   ((char*) &( (m)->bins[(i-1)*2] )) - offsetof(struct malloc_chunk, fd)  \
