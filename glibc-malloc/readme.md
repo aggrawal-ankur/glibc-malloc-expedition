@@ -40,17 +40,19 @@ A complete description of glibc-malloc
     - [Number of smallbins](#number-of-smallbins)
     - [Number of largebins](#number-of-largebins)
     - [The unsorted bin](#the-unsorted-bin)
-  - [The order of bins](#the-order-of-bins)
-  - [The Questions](#the-questions)
+    - [The order of bins in bins\[\]](#the-order-of-bins-in-bins)
+    - [The Findings](#the-findings)
+    - [The Questions](#the-questions)
+  - [The order of chunks within bins](#the-order-of-chunks-within-bins)
   - [Smallbin Size Classes](#smallbin-size-classes)
   - [Largebin Spacing](#largebin-spacing)
-  - [Bin Indexing, Part 1: Finding the bin](#bin-indexing-part-1-finding-the-bin)
+  - [Bin Indexing](#bin-indexing)
     - [Macro #1: bin\_index(sz)](#macro-1-bin_indexsz)
     - [Macro #2: in\_smallbin\_range(sz)](#macro-2-in_smallbin_rangesz)
     - [Macro #3: smallbin\_index(sz)](#macro-3-smallbin_indexsz)
     - [Macro #4: largebin\_index(sz)](#macro-4-largebin_indexsz)
     - [The Naming Issue](#the-naming-issue)
-  - [Bin Indexing, Part 2: Locating the bin headers](#bin-indexing-part-2-locating-the-bin-headers)
+    - [Macro #5: bin\_at(m, sz)](#macro-5-bin_atm-sz)
 ---
 
 # Introduction To Userspace Memory Allocators
@@ -1090,6 +1092,35 @@ The total number of bins is 128, as per this annotation and macro definition.
 #define  NBINS  128
 ```
 
+This is how bins[] is declared in malloc_state.
+```c
+typedef struct malloc_chunk* mchunkptr
+
+mchunkptr bins[NBINS * 2 - 2];
+```
+
+In my honest viewpoint, this is a very bad way of writing code. The reader has to think about operator precedence before coming on the conclusion. Even though the expression itself is easy, that shouldn't be used as a proxy. Anyways, evaluating the expression, we get
+```
+=> (NBINS*2)-2
+=> (128*2)-2
+=> 256-2
+=> 254 or (NBINS-1)*2
+```
+
+So, the number of bins as per the actual declaration is 127.
+```c
+// mchunkptr bins[(NBINS-1)*2];
+mchunkptr bins[127*2];
+```
+
+---
+
+The NBINS definition says there are 128 bins. But the declaration of the bins[] reserve space for only 127 bins.
+
+NBINS is just a macro, which cease to exist after preprocessing. Therefore, 127 is the real number of bins. Then why the annotation said, "there are 128 bins"? *That's what I meant, when I said that, "the annotation and the implementation is not converging".*
+
+We will consider 127 as the total number of bins.
+
 ### Number of smallbins
 
 There is no annotation for the smallbin count, and as per this macro, there are 64 smallbins.
@@ -1099,7 +1130,7 @@ There is no annotation for the smallbin count, and as per this macro, there are 
 
 ### Number of largebins
 
-There is neither an annotation nor a macro that confirms the count of largebins directly. However, there is one annotation having a bin pyramid like structure.
+There is neither an annotation nor a macro that confirms the count of largebins directly. However, there is one annotation having a bin pyramid like structure, which can be used to calculate the number of largebins.
 ```
     64 bins of size          8
     32 bins of size         64
@@ -1110,11 +1141,9 @@ There is neither an annotation nor a macro that confirms the count of largebins 
      1 bin  of size    what's left
 ```
 
-Since the count of smallbins is confirmed, it is safe to assume that except the bins in the first row, every other bin is a largebin. Their count would be 63 (32+16+8+4+2+1).
+Since the count of smallbins is confirmed, it is safe to assume that the bins in the first row are smallbins while the rest of the bins are largebins, making the number of largebins (32+16+8+4+2+1), i.e 63.
 
-64 smallbins and 63 largebins add up to 127 bins. But the total number of bins is 128.
-
-**One bin is missing here.**
+64 smallbins and 63 largebins makes the total bin count 127, making this annotation converge with the implementation, but it diverges from the previous annotation that said, "there are 128 bins". *That's what I meant, when I said that, two annotations about the same topic aren't converging*.
 
 ### The unsorted bin
 
@@ -1122,32 +1151,20 @@ This annotation confirms that there is only one unsorted bin, although it doesn'
 ```
 The otherwise unindexable 1-bin is used to hold unsorted chunks.
 ```
-Note: This is the kind of annotation I was talking about in the premise. It is pointing to multiple things and if we accessed them all at once, it will become frustrating quite-fast. ***Every question deserves an answer, but it must be asked at the right time.***
 
----
+64 smallbins, 63 largebins and 1 unsorted bin, that is 128, but the number of bins is 127. The answer to this confusion is in the annotation itself, but before we access it, we have to find the order of bins inside the array.
 
-To conclude, there are 64 smallbins, 63 largebins and 1 unsorted bin. Also, there is ambiguity about 1 bin.
+### The order of bins in bins[]
 
-## The order of bins
+There is no annotation that directly confirms the order of bins. Logically, the size grows from 0. So small sizes come first, followed by large sizes. That means, smallbins come first, followed by largebins. Also, notice the bin pyramid has 64 bins on the top. Since the sizes are increasing top-to-bottom, it is highly likely that our assumption is correct.
 
-There is no annotation that directly confirms the order of bins.Logically, if bins are manged in ascending order, which comes naturally as the size start from 0, the smallbins should come first, followed by the largebins.
+Let's reread that unsorted bin annotation. The `1` in "1-bin" is likely the number of a bin. This number can have two interpretations.
+  1. In 0-based indexing, 1-bin refers to the bin at number 1 in the collection.
+  2. In 1-based indexing, 1-bin refers to the first bin in the collection of bins.
 
-We can notice that the bin pyramid has 64 bins on the top. Since the sizes are increasing top-to-bottom, it is highly likely that our assumption is correct.
-
-What about the unsorted bin? Let's reread that unsorted bin annotation. The term "1-bin" can have two interpretations.
-  1. The bin at index 1 (0-based indexing).
-  2. The first bin (1-based indexing).
+**Note: I am using the term "collection of bins" as bins are implemented an array of headers and indexing in traditional sense is not applicable here, unless we keep it sloppy. We have explored this later in the "bin indexing" section**.
 
 In either case, 1-bin would be a smallbin. If this bin is the unsorted bin, the count of smallbins is reduced to 63.
-
-As we have no clarity about how bins are indexed, there are two possible orders:
-```
-0-based indexing: [smallbin, unsorted_bin, smallbins, largebins]
-                      1           1          62          63
-
-1-based indexing: [unsorted_bin, smallbins, largebins]
-                        1          63          63
-```
 
 ---
 
@@ -1157,13 +1174,15 @@ Bin 0 does not exist. Bin 1 is the unordered list; if that
 would be a valid chunk size the small bins are bumped up one.
 ```
 
-"Bin 0" and "Bin 1" strongly indicates the use of 0-based indexing.
+The term "unordered list" is synonymous with "unsorted bin". It indicates that chunks in this list are kept as they arrive. No order is enforced on them.
+
+The use of "Bin 0" and "Bin 1" terminology strongly indicates the use of 0-based indexing.
 
 "bin 0 doesn't exist" can have two interpretations.
   - Bin 0 doesn't exist **literally**? Or,
   - Bin 0 exist, but is of no function?
 
-If bin 0 doesn't exist literally, that reduces the count of smallbins to 62.
+If bin 0 doesn't exist literally, that further reduces the count of smallbins to 62 and the total bin count to 126.
 
 ---
 
@@ -1173,23 +1192,51 @@ Based on this information, the order of bins should be:
       1           62         63
 ```
 
-One annotation said there are "128 bins". The NBINS definition said there are "128 bins". Another annotation listed all the bins and they add up to "127", not 128. Our analysis is only able to confirm the existence of 126 smallbins. *This is what I meant when I said that "two annotations about the same topic are not converging".*
+### The Findings
 
-## The Questions
+1. **Annotation #1**: "there are 128 bins".
+2. **Macro NBINS**: "there are 128 bins".
+3. **The Implementation of bins[]** reserved space for "127 bins".
+4. **Annotation #2**: A bin pyramid which lists some sort of "a class of bins", mentions 127 bins.
+5. **Annotation #3**: "Bin 0 doesn't exist", reduces the count of smallbins to 63 and the total count of bins to 126, considering the implementation as the truth.
+6. **Annotation #4 and #5**: "Bin 1 is the unordered list" and "The otherwise unindexable 1-bin is used to hold the unsorted chunks" reduces the count of smallbins to 62.
+
+### The Questions
 
 The analysis above raises some questions.
-  - Why bin 0 doesn't exist?
-  - If "bin 0" was never meant to exist, why the count is simply not 127?
-  - Even if "bin 0" doesn't exist, it reduces the total number of bins by 1. What accounts for the absence of another bin?
+  - Why the count of bins is 128, when the implementation reserved space for 127 bins only?
+  - Why bin 0 doesn't exist? If "bin 0" was never meant to exist, why the bin count is not 126, instead of 127?
   - Why bin 1, which is supposed to be a smallbin is [repurposed as] an unsorted bin?
 
 This line in the annotation: *"if that would be a valid chunk size the small bins are bumped up one."* is not making sense at all.
   - Is the design non-deterministic?
   - It reads like there is a lack clarity about the size of 1-bin, which is why the annotation is asking the validity of that size as a smallbin class.
 
+## The order of chunks within bins
+
+These annotations explain the ordering of chunks within bins.
+```
+Chunks in bins are kept in size order, with ties going to the
+approximately least recently used chunk.
+- Ordering isn't needed for the small bins, which all contain 
+  the same-sized chunks, but facilitates best-fit allocation 
+  for larger chunks.
+- These lists are just sequential. Keeping them in order almost 
+  never requires enough traversal to warrant using fancier 
+  ordered data structures.
+```
+
+A smallbin manages free chunks of specific sizes. Therefore, it requires no ordering.
+
+The unsorted bin is like a resting ground, where the recently freed chunks are given a chance to be reused by the next malloc. There is no need for order here.
+
+A largebin manages two types of links.
+  1. The standard fd/bk links link the chunks as-they-arrive in the list.
+  2. The fd_nextsize/bk_nextsize links link the chunks of same size together on top of the standard fd/bk links.
+
 ## Smallbin Size Classes
 
-We know that smallbins manage chunks falling in specific size ranges, called "**size classes**".
+We know that smallbins manage chunks falling in specific size classes, called "**size classes**".
 
 There are two things about these size classes.
   1. The size of free chunks a smallbin manages (the class).
@@ -1202,42 +1249,44 @@ SMALLBIN_WIDTH is the difference between two size classes.
 
 MALLOC_ALIGNMENT is (2*SIZE_SZ) in an architecture. For 64-bit, it is 16 bytes. Therefore, the gap between two smallbins is 16 bytes on 64-bit.
 
-To obtain the actual size classes, we have to start from a size which represents the current size class and add SMALLBIN_WIDTH to it to obtain the next size class. The starting point is the question.
+We use SMALLBIN_WIDTH to obtain the actual size classes. To obtain the i<sup>th</sup> size class, we can use this formula: `(SMALLBIN_WIDTH*i)`. Basically, we add SMALLBIN_WIDTH to a size class to obtain the next size class.
 
-NSMALLBINS is the total count and this represents the number of times we have add SMALLBIN_WIDTH to obtain the last size class.
+Now we need to find the bounds for the value of `i`. We are already familiar with the order of bins.
+  - We have "64 smallbins", where the starting bin doesn't exist and the bin followed by it is repurposed as the unsorted bin.
+  - The indexing is 0-based, so the theoretical bounds would be [0, 63]. We can exclude the first two bins to obtain the bounds as per our analysis, which would be [2, 63]. That's our answer.
 
-This annotation exposes the upper bound for smallbins in 32-bit architecture.
-```
-Bins for (sizes < 512 bytes) contain chunks of all
-the same size, spaced 8 bytes apart. Larger bins
-are approximately logarithmically spaced.
-```
-  - **How we know it is for 32-bit?** SMALLBIN_WIDTH is 8 bytes here.
-  - **How we are so confident that it is talking about smallbins?** Because the next sentence specifically talks about largebin spacing.
-
-We have this macro, which confirms what we have discussed before.
+The source also has an annotation and a macro regarding this.
 ```c
 #define  SMALLBIN_CORRECTION  (MALLOC_ALIGNMENT > CHUNK_HDR_SZ)
 
 #define  MIN_LARGE_SIZE  ((NSMALLBINS - SMALLBIN_CORRECTION) * SMALLBIN_WIDTH)
+
+// ----------
+
+/* Bins for (sizes < 512 bytes) contain chunks of all
+the same size, spaced 8 bytes apart. Larger bins
+are approximately logarithmically spaced. */
 ```
 
-SMALLBIN_CORRECTION is the correction factor. Since it has visible effects only in config #3, we will discuss it there. On 32-bit and 64-bit, it is 0.
+SMALLBIN_CORRECTION is the correction factor, used in config #3 to adjust the calculation. We will discuss it later. On 32-bit and 64-bit, it is 0 and has no effects.
 
-MIN_LARGE_SIZE is the size of the first largebin. On 32-bit, it is (64-0)*8, i.e 512 bytes. This converges with the annotation.
+MIN_LARGE_SIZE is the size of the first largebin.
+  - On 32-bit, it is (64-0)*8, i.e. 512 bytes. This explains that the annotation is applicable to 32-bit only. Also, the 8 bytes spacing is what SMALLBIN_WIDTH is on 32-bit.
+  - On 64-bit, it is (64-0)*16, i.e. 1024 bytes.
 
-On 64-bit, MIN_LARGE_SIZE will be 1024 bytes, implying the last smallbin size class would be for MIN_LARGE_SIZE-SMALLBIN_WIDTH (1024-16), i.e 1008 bytes.
-
-We have the last smallbin size class, the total number of smallbins, and the width of smallbins on 64-bit. With a simple for loop, running backwards, we can construct the list of smallbins. This way, we can skip the question of finding the starting point as the last number in the output will represent exactly that.
-
-But before we do that, what should be the starting point? What should be the first smallbin size class?
-  - Starting with zero is the most straightforward path? The size class 0 will contain free chunks of size 0 bytes and the subsequent size classes will be obtained by (SMALLBIN_WIDTH*i), with i=1. But wait, chunks of size 0 bytes aren't possible; zero is not a malloc-able size.
-  - The next size class on 64-bit would be for 16 bytes (i.e. SMALLBIN_WIDTH\*1), which will manage chunks of size 16 bytes. But we can't start from this either, as the minimum allocatable size, i.e MINSIZE, is 32 on 64-bit, which is effectively the next size class (i.e. SMALLBIN_WIDTH\*2).
-  - Basically, the first two size classes, i.e. SMALLBIN_WIDTH\*0 and SMALLBIN_WIDTH\*1 are not usable, be it 32-bit or 64-bit. That leaves us with 62 usable smallbins.
+Using MIN_LARGE_SIZE, we can find the last smallbin size class. It is, `MIN_LARGE_SIZE-SMALLBIN_WIDTH`.
+  - On 32-bit, it is (512-8), i.e. 504 bytes.
+  - On 64-bit, it is (1024-16), i.e 1008 bytes.
 
 ---
 
-Let's see what we get by crawling backwards.
+What do we have now?
+  1. The total number of smallbins,
+  2. The bounds of `i`,
+  3. The last smallbin size class, and
+  4. The width of smallbins on 64-bit.
+
+This information is enough to build all the size classes by crawling backwards. Here is a small python script.
 ```py
 x = 1024
 for i in range(64):
@@ -1245,27 +1294,47 @@ for i in range(64):
   print(x, end=", ")
 ```
 
-The output is exactly as anticipated.
+The output is definitely "not astonishing" at all.
 ```
-1008, 992, 976, 960, 944, 928, 912, 896, 880, 864, 848, 832, 816, 800, 784, 768, 752, 736, 720, 704, 688, 672, 656, 640, 624, 608, 592, 576, 560, 544, 528, 512, 496, 480, 464, 448, 432, 416, 400, 384, 368, 352, 336, 320, 304, 288, 272, 256, 240, 224, 208, 192, 176, 160, 144, 128, 112, 96, 80, 64, 48, 32, 16, 0,
-  ```
+1008, 992, 976, 960, 944, 928, 912, 896, 880, 864, 848, 832, 816, 800, 784, 768, 752, 736, 720, 704, 688, 672, 656, 640, 624, 608, 592, 576, 560, 544, 528, 512, 496, 480, 464, 448, 432, 416, 400, 384, 368, 352, 336, 320, 304, 288, 272, 256, 240, 224, 208, 192, 176, 160, 144, 128, 112, 96, 80, 64, 48, 32,
+```
 
-***There, if there are n smallbins, only (n-2) are actually usable. Among 64 smallbins, the actual usable size classes are 62, leaving us with 62 smallbins.*** Let's revise our understanding of smallbins.
-  - The reason bin 0 doesn't exist is that it has no utility.
-  - Bin 1 has no utility either, but we need an unsorted bin, so we repurpose it. This way, we end up saving space for 2 pointers.
-  - Notice that space-conservation is a real benefit here. If repurposing bin 1 enables the usage of two pointers which were otherwise wasted, removing bin 0 entirely can save space too, and it will make sense too, which aligns with out analysis so far.
+These are the size classes, for the 62 smallbins. Think about what would happen if there were 64 smallbins instead, while the upper bound remains the same. The two extra size classes would be for 16 bytes and 0 bytes, i.e. "bin 1" and "bin 0", respectively. That's the mystery of the "bin 0" and "bin 1".
+  - "Bin 0" represents the size class for 0 bytes. A chunk of zero bytes represents nothing, logically. Practically, a request of such size is not impossible. The question is how the allocator deals with it. If we recall how request2size(sz) works, we know that the request would be aligned to MINSIZE, i.e. 32 bytes, and the resulting chunk would be no longer a fit for "bin 0".
+  - "Bin 1" represents the size class for 16 bytes. A chunk of 16 bytes is not possible also gets aligned to MINSIZE, i.e. 32 bytes, making the resulting chunk no longer a fit for "bin 1".
 
-Now we have something that explains the bin0 and bin1 situation. But it doesn't explain why the author didn't choose 62 smallbins and start directly from size class 32 and reserve a bin properly for the unsorted bin. *The question will be answered, at the right time*.
-
----
-
-Let's revisit the *"if that would be a valid chunk size the small bins are bumped up one."* annotation.
-
-We have obtained the smallbin size classes directly from the description. Was this line required in the first place? This information was well-known to the author or whoever wrote this. So I still can't understand why it was written in the first place.
+There is no utility of "bin 0" and "bin 1" in this setting. The usable smallbin size classes are always (n-2). Allocator is a kind of program which has to be mandatorily memory-efficient. By not having "bin 0", we save (SIZE_SZ\*2) bytes and by repurposing "bin 1" as the unsorted bin, we utilize the remaining (SIZE_SZ\*2) bytes.
 
 ---
 
-We have answered why "bin 1" is repurposed as the unsorted bin. Also, the absence of "bin 0" might be attributed to a reduced count. The first question remains and we will answer it later.
+While it does explain the mystery of "bin 0" and "bin 1", it still doesn't explain why we have to start from 128 bins, then the declaration reserves space for 127 bins only, and still the calculation is short on 1 bin. We still don't have clarity about what is compensating for what.
+  - If "bin 0" is why the declaration reserved space for 127 bins, it doesn't explain why the pyramid says there are 64 smallbins as that means 62 smallbins, with 1 unsorted bin and 1 "left over bin".
+  - If "bin 0" reduction happens after the declaration of 127 bins, what explains the fact that NBINS is 128?
+
+We have no means to answer these questions yet, so we will move on.
+
+---
+
+Let's revisit the unsorted bin annotation: *"if that would be a valid chunk size the small bins are bumped up one."* annotation.
+  - Was this line required in the first place?
+  - We have obtained the smallbin size classes directly from our analysis, and we can safely assume that this information was wellknown to the author himself.
+
+So, I can't understand why it was written in the first place.
+
+---
+
+If you notice, we can approach this in one another way.
+  - The current narrative crawls backwards and then asks what would happen if there were 64 smallbins instead. **We have simply not asked what is the starting point**. The answer is a single word that explains everything, i.e. **MINSIZE**.
+  - We don't even have to answer what is MIN_LARGE_SIZE. We would naturally find our way to it. *"The last smallbin class on 64-bit is for 1008 bytes, which covers 1008-1023 bytes, making the first largebin starting from 1024 bytes, covering next 64 bytes"*. Simple, is it?
+  - We would have understood the "bin 0; bin 1" situation before listing out the size classes and that act would simply conclude this section. Maybe, that's a better ending. *That's a problem I face quite-often but have rarely named it.*
+  - The more I drill down, the more I find better ways to understand the thing and explain it. In 90% of the cases, what you are reading is not a first-hand account of "how I understood the upstream glibc-malloc".
+  - The way I have actually understood these concepts is far more raw and brutal, which never gets captured. I always start by writing the raw version, but it always undergoes multiple rewrites before I am sure about it.
+  - The remaining 10% attributes to the scale of this writing. At this point, I simply can't keep track of things, which is another reason why the commit history is basically a lot of rewrites, where new stuff keeps coming, rather than coming individually with an announcement, though I try to do that.
+  - And rewrites are tiring. After a long time, do I reach the point where a rewrite actually reduces the word count, rather than increasing it.
+
+---
+
+To summarize, the smallbin size classes belong to: `[MINSIZE, MIN_LARGE_SIZE)`, with a gap of a SMALLBIN_WIDTH.
 
 Let's talk about spacing in largebins.
 
@@ -1372,7 +1441,7 @@ Even though we understand largebin spacing now, it is better to defer constructi
 
 Before we go on building the list of largebins on 64-bit, we have to understand how bin indexing works. This is where we will close a thread opened in part 1, "how the fake node implementation is operationalized".
 
-## Bin Indexing, Part 1: Finding the bin #
+## Bin Indexing
 
 We know that bins are implemented using circular doubly linked lists and to ensure efficient operations, a fake node implementation is used. As a result, it is not "finding the correct bin in traditional sense". We are not doing `bin[n]` to reach the nth bin. So the meaning of indexing is a little different here.
 
@@ -1519,11 +1588,19 @@ And that's the naming issue is about. The `bin_index` macros are implying to gen
 
 Therefore, "bin_number" is a more accurate representation for what these macros are generating.
 
-## Bin Indexing, Part 2: Locating the bin headers
+### Macro #5: bin_at(m, sz)
+---
 
-`bin_at(m, i)` is the macro that operationalize the idea of "a fake chunk". It receives a bin number corresponding to a size and calculates the address of the fake node.
+`bin_at(m, i)` is the macro that operationalizes the idea of "a fake chunk". It receives a bin number corresponding to a size and calculates the address of the fake node.
 ```c
 #define  bin_at(m, i)    (mbinptr) ( \
   ((char*) &( (m)->bins[(i-1)*2] )) - offsetof(struct malloc_chunk, fd)  \
 )
 ```
+
+
+
+Even thought the indexing is 0-based, it is quite not, or whatever the issue with bin_at and stuff is.
+
+
+
