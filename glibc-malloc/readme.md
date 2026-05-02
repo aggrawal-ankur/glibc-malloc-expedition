@@ -52,7 +52,7 @@ A complete description of glibc-malloc
     - [Macro #3: smallbin\_index(sz)](#macro-3-smallbin_indexsz)
     - [Macro #4: largebin\_index(sz)](#macro-4-largebin_indexsz)
     - [The Naming Issue](#the-naming-issue)
-    - [Macro #5: bin\_at(m, sz)](#macro-5-bin_atm-sz)
+    - [Macro #5: bin\_at(m, i)](#macro-5-bin_atm-i)
 ---
 
 # Introduction To Userspace Memory Allocators
@@ -1613,12 +1613,121 @@ And that's the naming issue is about.
 
 For some people, it might be a nudge, or nitpicking, and I will not argue with them. Everyone is allowed to think and perceive differently, if that helps.
 
-### Macro #5: bin_at(m, sz)
+### Macro #5: bin_at(m, i)
 ---
 
-`bin_at(m, i)` is the macro that operationalizes the idea of "a fake chunk". It receives a bin number corresponding to a size and calculates the address of the fake node.
+`bin_at(m, i)` is the macro that operationalizes the idea of "a fake chunk". It receives "a bin number" corresponding to a size, calculates the address of the fake node and typecasts it to a (malloc_chunk*).
 ```c
 #define  bin_at(m, i)    (mbinptr) ( \
   ((char*) &( (m)->bins[(i-1)*2] )) - offsetof(struct malloc_chunk, fd)  \
 )
 ```
+  - `m` is the global malloc_state instance.
+  - `i` is the output of the bin_index macros.
+
+Once again, these are the formulas we have constructed earlier.
+```c
+// 0-based indexing
+struct Node* fake_node = (Node*)((char*)(&listHeaders[i*2])-8);
+
+// 1-based indexing
+struct Node* fake_node = (Node*)((char*)(&listHeaders[(i-1)*2])-8);
+```
+
+The use of "bin 0; bin 1" terminology already indicates that the implementation uses 0-based indexing. But when we look at the formula used by bin_at, it aligns with 1-based indexing.
+
+Again, there is no clarity in the source, so we have to find it ourselves.
+
+As per our analysis, the structure of `bins[]` is:
+```
+[unsorted_bin, smallbins, largebins]
+      1           62         63
+```
+
+In terms of bin headers, `bins[]` would be:
+```
+[unsb_head, unsb_tail, sbin_MINS_head, sbin_MINS_tail, ...., sbin_MIN_LS_head, sbin_MIN_LS_tail, largebins....]
+```
+
+To access the unsorted bin, what should be the address of the fake chunk?
+  - We need the fd/bk of the fake chunk to overlap with unsb_head/unsb_tail. In malloc_chunk, 2 SIZE_SZ fields come before fd/bk.
+  - That means, the address represented by `&(unsb_head) - 2*SIZE_SZ` is where the fake chunk should be. How we obtain that address entirely depends on the indexing paradigm in use.
+
+Before we do the step-by-step calculation for both the paradigms, here is a simple question. What's the way to implement 1-based indexing in a language like C, where the default is 0-based? Here is an example:
+```c
+int arr[10];
+
+// 0-based
+for (int i=0; i<10; i++){
+  printf("arr[%d]: %d\n", i, arr[i]);
+}
+
+// 1-based
+for (int i=1; i<=10; i++){
+  printf("arr[%d]: %d\n", i, arr[(i-1)]);
+}
+```
+
+Can you spot what we have actually done here? Most of us understand it, but can't articulate it.
+  - We have kept the frontend at 1-based indexing and the backend at 0-based.
+  - But this assumes that the value of `i` needs a "subtraction by 1". What I am trying to say is that, *an arbitrary value i, where i!=0, can be interpreted as a valid index in 0-based system as well. And we get a off-by-1 error.*
+
+Let's look at the output of smallbin_index(sz) for some sizes on 64-bit.
+  1. smallbin_index(32): `(32 >> 4) -> 2`. This implies that, the first smallbin, in the whole collection of bins, is at number 2. 
+  2. smallbin_index(16): `(16 >> 4) -> 1`. This implies that, the unsorted bin is at number 1.
+  3. smallbin_index(0): `(0 >> 4) -> 0` which is "bin 0", is at number 0.
+
+According to this, the bin indexing macros generate a number which follows the 0-based indexing paradigm. But since "bin 0 doesn't exist", that effectively makes the indexing 1-based. So, to conclude, ***the output of bin index conforms to 0-based indexing, but the whole design of bins conforms to 1-based indexing.***
+
+I think that the confusion of "which indexing paradigm is in use" is probably clear now. You might say that "*it stands on the foundation of many if-s being true, and I won't deny that*". Let's build the address of the fake chunk for the unsorted bin.
+
+  - **Step 1**: Obtain the address of the unsorted bin.
+    ```c
+    // 0-based indexing
+    &(bins[0])
+
+    // 1-based indexing
+    &(bins[ (1-1) ])
+    ```
+
+  - **Step 2**: Subtract (2\*SIZE_SZ) bytes.
+    ```c
+    // 0-based indexing
+    (char*)(&(bins[0])) - offsetof(struct malloc_chunk, fd)
+
+    // 1-based indexing
+    (char*)(&(bins[ (1-1) ])) - offsetof(struct malloc_chunk, fd)
+    ```
+
+  - **Step 3**: Typecast the address to a (malloc_chunk*).
+    ```c
+    // 0-based indexing
+    mchunkptr fake_chunk = (malloc_chunk*) ((char*)(&(bins[0])) - offsetof(struct malloc_chunk, fd))
+
+    // 1-based indexing
+    mchunkptr fake_chunk = (malloc_chunk*) ((char*)(&(bins[ (1-1) ])) - offsetof(struct malloc_chunk, fd))
+    ```
+
+  - **Step 4**: Generalize for any bin.
+    ```c
+    // 0-based indexing
+    mchunkptr fake_chunk = (malloc_chunk*) ((char*)(&(bins[i])) - offsetof(struct malloc_chunk, fd))
+
+    // 1-based indexing
+    mchunkptr fake_chunk = (malloc_chunk*) ((char*)(&(bins[ (i-1) ])) - offsetof(struct malloc_chunk, fd))
+    ```
+
+But, it doesn't align with the one that bin_at uses. That's because, we have forgot to account for bin headers. Now it should be correct.
+```c
+// 0-based indexing
+mchunkptr fake_chunk = (malloc_chunk*) ((char*)(&(bins[i*2])) - offsetof(struct malloc_chunk, fd))
+
+// 1-based indexing
+mchunkptr fake_chunk = (malloc_chunk*) ((char*)(&(bins[ (i-1)*2 ])) - offsetof(struct malloc_chunk, fd))
+```
+
+This solves the mystery of the indexing paradigm in use and how the fake node implementation is operationalized in malloc.
+
+---
+
+Now brace yourself to explore the most exciting section in glibc-malloc. I highly doubt if anything as joyous as this exist. Although it depends on my capabilities to explain it that way, and I will try my best to not make it look like "a rant" instead.
