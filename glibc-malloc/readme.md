@@ -45,7 +45,7 @@ A complete description of glibc-malloc
     - [The Questions](#the-questions)
   - [The order of chunks within each bin type](#the-order-of-chunks-within-each-bin-type)
   - [Smallbin Size Classes](#smallbin-size-classes)
-  - [Largebin Size Ranges](#largebin-size-ranges)
+  - [Largebin Size Ranges, Part1](#largebin-size-ranges-part1)
   - [Bin Indexing](#bin-indexing)
     - [Macro #1: bin\_index(sz)](#macro-1-bin_indexsz)
     - [Macro #2: in\_smallbin\_range(sz)](#macro-2-in_smallbin_rangesz)
@@ -53,6 +53,9 @@ A complete description of glibc-malloc
     - [Macro #4: largebin\_index(sz)](#macro-4-largebin_indexsz)
     - [The Naming Issue](#the-naming-issue)
     - [Macro #5: bin\_at(m, i)](#macro-5-bin_atm-i)
+  - [Largebin Size Ranges, Part 2](#largebin-size-ranges-part-2)
+    - [Largebin Category #1](#largebin-category-1)
+    - [Largebin Category #2](#largebin-category-2)
 ---
 
 # Introduction To Userspace Memory Allocators
@@ -1334,7 +1337,7 @@ To summarize, the smallbin size classes belong to: `[MINSIZE, MIN_LARGE_SIZE)`, 
 
 Let's talk about spacing in largebins.
 
-## Largebin Size Ranges
+## Largebin Size Ranges, Part1
 
 What separates largebins from smallbins is not just the "magnitude", it is the "**notion of size**".
   - A smallbin manages free chunks of a fixed size class. A smallbin for size class 80 bytes manage free chunks of size 80 bytes only.
@@ -1731,3 +1734,135 @@ This solves the mystery of the indexing paradigm in use and how the fake node im
 ---
 
 Now brace yourself to explore the most exciting section in glibc-malloc. I highly doubt if anything as joyous as this exist. Although it depends on my capabilities to explain it that way, and I will try my best to not make it look like "a rant" instead.
+
+## Largebin Size Ranges, Part 2
+
+We have already explored the smallbin situation. The last smallbin on 64-bit is for the size class 1008 bytes, which is at number 63 in the collection of 126 bins.
+
+We have come quite far in our journey, plus all the confusion that these annotations has created, it is great to have a tiny **chunk** revision.
+  - Every request size goes through an alignment process by the macro request2size(sz). Therefore, a bin manages free chunks of size `request2size(sz)`, not `size`.
+  - Keep this active in your RAM, otherwise, it will cause problems.
+
+---
+
+To find the actual largebin size ranges on 64-bit, we have to understand the `largebin_index_64(sz)` macro.
+```c
+#define largebin_index_64(sz)   ( \
+  (((unsigned long)(sz) >>  6) <= 48) ?  48 + ((unsigned long)(sz) >> 6)  : \
+  (((unsigned long)(sz) >>  9) <= 20) ?  91 + ((unsigned long)(sz) >> 9)  : \
+  (((unsigned long)(sz) >> 12) <= 10) ? 110 + ((unsigned long)(sz) >> 12) : \
+  (((unsigned long)(sz) >> 15) <=  4) ? 119 + ((unsigned long)(sz) >> 15) : \
+  (((unsigned long)(sz) >> 18) <=  2) ? 124 + ((unsigned long)(sz) >> 18) : \
+  126 \
+)
+```
+
+Although the macro is very simple and we have no problems with bitwise arithmetic, we can still simplify the macro as:
+```c
+#define largebin_index_64(sz)   ( \
+  (((unsigned long)(sz) / pow(2,  6)) <= 48) ?  48 + ((unsigned long)(sz) / pow(2,  6)) : /* Cat #1 */ \
+  (((unsigned long)(sz) / pow(2,  9)) <= 20) ?  91 + ((unsigned long)(sz) / pow(2,  9)) : /* Cat #2 */ \
+  (((unsigned long)(sz) / pow(2, 12)) <= 10) ? 110 + ((unsigned long)(sz) / pow(2, 12)) : /* Cat #3 */ \
+  (((unsigned long)(sz) / pow(2, 15)) <=  4) ? 119 + ((unsigned long)(sz) / pow(2, 15)) : /* Cat #4 */ \
+  (((unsigned long)(sz) / pow(2, 18)) <=  2) ? 124 + ((unsigned long)(sz) / pow(2, 18)) : /* Cat #5 */ \
+  126 /* Cat #6 */ \
+)
+```
+*You can use what works for you.* Let's start.
+
+---
+
+We are dividing the size with a BIN_WIDTH and checking if the output is "less than AND equal to" a certain integer. 
+  - If YES, we add a value to it and that is returned as the "bin number".
+  - If NO, we move to the next BIN_WIDTH and repeat the process. If no condition is satisfied, the bin is considered to be the "what's left" bin, i.e. the last bin in the collection, bin 126.
+
+Let's explore each of these conditions.
+
+### Largebin Category #1
+
+We know that the smallbin boundary ends at 1008 bytes and any chunk size greater than this is a large free chunk.
+
+As per MIN_LARGE_SIZE, the size of the first largebin on 64-bit is 1024 bytes, which is, again, a confusing framing.
+  - As per the pyramid, largebins of category #1 should have a width of 64 bytes (2<sup>6</sup>). What that means is that "the bin covers 64 bytes of space from the base size".
+  - Since the last smallbin manages free chunks of size 1008 bytes, that becomes the base size, and the first largebin should span across 64 bytes from that base, i.e. 1008+64 = 1072, covering 1009-1072 bytes.
+  - Since chunks are aligned to a 16 byte boundary, the valid free chunk sizes in this largebin range are 1024 bytes, 1040 bytes, 1056 bytes, 1072 bytes.
+  - Therefore, a largebin is basically a collection of smallbin size classes. Instead of having multiple of them, we have consolidated them into one "largebin".
+
+Anyways, let's test these sizes and find what the macro generates.
+```c
+largebin_index_64(1008) -> (1008 >> 6) -> 15
+
+largebin_index_64(1024) -> (1024 >> 6) -> 16
+largebin_index_64(1040) -> (1040 >> 6) -> 16
+largebin_index_64(1056) -> (1056 >> 6) -> 16
+largebin_index_64(1072) -> (1072 >> 6) -> 16
+
+largebin_index_64(1088) -> (1072 >> 6) -> 17
+```
+  - For the last smallbin, i.e. 1008 bytes bin, the macro generated 15.
+  - For the sizes in first largebin, it generated 16.
+  - For the first size in the second largebin (cat #1), it generated 17.
+
+That's why, MIN_LARGE_SIZE in itself is not incorrect. But when we apply it more broader a context, that's when the problem surfaces.
+  - A single largebin in any category links free chunks of multiple sizes, that means, unlike smallbins, where a single size class can be mapped to one single bin only, there are multiple sizes that can be mapped to a single largebin.
+  - As usual, this detail could have been mentioned, but it is not.
+
+To find how many smallbin size classes, or how many free chunk sizes a largebin can accommodate, divide the BIN_WIDTH with 16. For category #1 largebins, 64/16 is 4, and that's what we have manually found as well.
+
+Anyways, let's focus on the output now. 15, 16 and 17, all are "less than AND equal to" 48. So they satisfy the condition. Therefore, 48 is added to them to obtain the final "bin number" the size corresponds to in the collection.
+```
+48 + 15 => 63
+48 + 16 => 64
+48 + 17 => 65
+```
+
+These numbers look familiar. The smallbin size class 1008 corresponds to "bin 63". That means, the first largebin in category #1 should be "bin 64", and it is exactly that.
+
+---
+
+The situation for one largebin is clear. As per the pyramid, there are 32 largebins in category #1. We can find the first size in each of these largebins using a for-loop.
+```py
+base = 1024
+for i in range(32):
+  print(base, end=', ')
+  base = base + 64
+```
+
+The output:
+```
+1024, 1088, 1152, 1216, 1280, 1344, 1408, 1472, 1536, 1600, 1664, 1728, 1792, 1856, 1920, 1984, 2048, 2112, 2176, 2240, 2304, 2368, 2432, 2496, 2560, 2624, 2688, 2752, 2816, 2880, 2944, 3008,
+```
+
+The last largebin range would have the following size classes: 3008, 3024, 3040, and 3056. The first largebin in category #1 is "bin 63", so the last largebin in this category should be "bin (64+32) 95". Let's check.
+```c
+largebin_index_64(3008) -> (3008 >> 6) -> 48 + 47 => 95
+largebin_index_64(3024) -> (3024 >> 6) -> 48 + 47 => 95
+largebin_index_64(3040) -> (3040 >> 6) -> 48 + 47 => 95
+largebin_index_64(3056) -> (3056 >> 6) -> 48 + 47 => 95
+```
+
+The only problem with this is the condition for category #1.
+```c
+(((unsigned long)(sz) >>  6) <= 48)
+```
+
+The last largebin in category #1 is "bin 95", which according this macro, should yield 47. But the macro has space to accommodate one more bin, "bin 96", which would be the first bin in category #2, i.e (3072+512) bytes.
+
+This is confusing as the pyramid says "there are 32 largebins of width 64 bytes". But the implementation says there are 33. The first valid value this condition satisfies for is 16 and [16, 48] has 33 values in it, not 32. And this off-by-one is especially perplexing because nothing explains why the author wrote `<= 48` when the need was for `< 48` or `<= 47`.
+
+Let's explore the next condition and find what's its verdict on this violation.
+
+### Largebin Category #2
+
+Here the size is divided by 2<sup>9</sup>, i.e. 512. Ideally, (3056+512) should be the first largebin in this category, being "bin 96" in the collection. Let's see what the macro evaluates to.
+```c
+largebin_index_64(3056) -> (3056 >> 9) -> 91 + 5 => 96
+```
+
+Here it gets even more complicated. We have two conditions that satisfy for a bin.
+  - According to the first condition, "bin 96" is a largebin of width 64 bytes.
+  - According to the second condition, "bin 96" is a largebin of width 512 bytes.
+
+Since the first condition evaluates first, "bin 96", i.e 3072 bytes bin, would be a largebin of category #1, not category #2, which means,
+  - there are 33 largebins, not 32, in category #1, and
+  - the first largebin in category #2 is "bin 97", that starts at 3136 bytes.
