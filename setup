@@ -1,0 +1,39 @@
+#!/bin/bash
+
+echo -e "\n[CHECKING THE PRESENCE OF AN EXISTING experiments/ DIRECTORY.]....\n"
+
+if [ -d "experiments/" ]; then
+    echo -e "[experiments/ DIRECTORY FOUND. NUKED.]....\n"
+    rm -rf experiments/
+else
+    echo -e "[NO experiments/ DIRECTORY FOUND. CONTINUING NORMALLY.]....\n"
+fi
+sleep 1
+
+echo -e "[CLONING THE CODE DIRECTORY].....\n"
+git clone --no-checkout --depth 1 https://github.com/aggrawal-ankur/systems-dives/ experiments/
+sleep 1
+
+echo -e "\n[CHANGE DIRECTORY TO experiments/]....\n"
+cd experiments/ || exit
+sleep 1
+
+echo -e "[SETTING UP THE EXPERIMENTS]....\n"
+git sparse-checkout init --no-cone
+git sparse-checkout set "glibc-malloc/dynamic-analysis-code/*"
+git checkout
+sleep 1
+
+echo -e "[CLEANUP]....\n"
+mv glibc-malloc/dynamic-analysis-code/* .
+rm -rf glibc-malloc/
+echo -e "....[CLEANUP DONE; SETUP DONE]\n"
+sleep 1
+
+echo -e "[EXPERIMENTS DIRECTORY PREPARED WITH THE CODE]....\n"
+
+echo -e "[INSIDE experiments/]....\n"
+cd experiments/
+
+echo -e "[USE THE DOCUMENT FOR WALKTHROUGH]....\n"
+echo -e "[USE THE BUILD SCRIPT FOR BUILDING AN EXPERIMENT. OPTIONALLY, READ IT TO FIND THE DETAILS]....\n"
