@@ -1,0 +1,22 @@
+#!/bin/bash
+
+if [ -z "$1" ]; then
+  echo "Usage: $0 [file_name.c]"
+  exit 1
+fi
+
+echo -e "[BUILDING THE SOURCE: $1]....\n"
+gcc $1 -g -O0 -o run \
+  -Wl,--rpath=/opt/glibc-2.43/lib \
+  -Wl,--dynamic-linker=/opt/glibc-2.43/lib/ld-linux-x86-64.so.2
+
+if [ $? -eq 0 ]; then
+  echo -e "[SOURCE BUILT SUCCESSFULLY]....\n"
+else
+  echo -e "[ERROR OCCURRED, CAN'T CONTINUE]....\n"
+  exit 1
+fi
+
+echo -e "[DISABLING TCACHE INFRA TO TOUCH THE CORE BINS INFRA]....\n"
+echo -e "[STARTING THE GDB SESSION....]\n"
+GLIBC_TUNABLES=glibc.malloc.tcache_count=0 gdb ./run
