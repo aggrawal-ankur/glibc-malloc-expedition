@@ -4,7 +4,7 @@
 
 /* METHOD:
 
-  Step1: Allocate three three chunks: the last chunk borders with the top, the first chunk stays as a barrier from the front and the middle chunk is freed. The size of the middle chunk is 994 bytes, which after alignment becomes 1008 bytes.
+  Step1: Allocate three chunks: the last chunk borders with the top, the first chunk stays as a barrier from the front and the middle chunk is freed. The size of the middle chunk is 994 bytes, which after alignment becomes 1008 bytes.
 
   Step2: Free the middle chunk, i.e. `c2` and set a breakpoint on the next line, i.e line #25 (`int x = 45`). This separates other frees from free(c2).
 
