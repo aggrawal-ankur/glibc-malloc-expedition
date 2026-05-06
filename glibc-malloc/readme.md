@@ -56,6 +56,10 @@ A complete description of glibc-malloc
   - [Largebin Size Ranges, Part 2](#largebin-size-ranges-part-2)
     - [Largebin Category #1](#largebin-category-1)
     - [Largebin Category #2](#largebin-category-2)
+- [The Bookkeeping System, Part 3: Dynamic Analysis of Chunks and Bins](#the-bookkeeping-system-part-3-dynamic-analysis-of-chunks-and-bins)
+  - [Setup](#setup)
+  - [The Environment](#the-environment)
+  - [Workflow](#workflow)
 ---
 
 # Introduction To Userspace Memory Allocators
@@ -1958,3 +1962,94 @@ Since we know the number of largebins in each category, and have the upper bound
 ```
 
 Pure math. No assumptions.
+
+---
+
+Finally, it's time to verify everything we have discussed, from line 0 to line 1960 with dynamic analysis.
+
+# The Bookkeeping System, Part 3: Dynamic Analysis of Chunks and Bins
+
+So far, we have discussed a LOT of things theoretically. We have tried to keep everything as grounded as possible. But stuff like the largebin section is something that's incomplete without dynamic analysis. Therefore, this section is all about verifying our findings.
+
+Before we start, I want to share my viewpoint on static and dynamic analysis.
+
+Before you read it, know that I am just a naive who is exploring low level systems. I am not someone with a decade or even half-a-decade experience. I have only started my journey on May 01, 2025 and as of writing this, the date is May 06, 2026, so only 1 year has passed. Therefore, I am finding my methodology and it might sound absurd and funny to the experienced individuals. It doesn't affect me though, as I am a big advocate of finding your own methodology by the virtue of working on yourself, so you can joke about it, but as an experienced individual, please be considerate to share what you find wrong in it.
+
+I have started my journey with static analysis, walking through the output of objdump and readelf. I avoided debuggers until I really needed them, which is now.
+
+The reason I am so slow is that I have other obligations in my life and personal problems which take up a lot of my bandwidth.
+
+I am not someone who despise theoretical work. I am not someone who says, "do more practical work than theoretical work". I love reading, I love thinking, I love hypothesizing. Theoretical work is as important as practical work for me. There is no substitute for either. Also, theoretical work comes first, followed by practical work. So far, I have not find a single instance when this has failed. At best, "strike a balance b/w theory and practical work, find the ratio that works for you".
+
+The 2000 lines above are completely obtained from static analysis, except the boundary tag section. I have done no amount of dynamic analysis to form that mental model. It is now that I am going to start. I have no hurries and I am not a fan of tooling. Unless I really need something, I don't have problems deferring it. The boundary tag exception exists because the early hypothesis that I had was fragile and the new one looked promising but confusing, so I had to do it. And that dynamic analysis didn't opened GDB. It was simply a printf in a C program. Technically, it is not properly dynamic analysis, but I left the source and wrote a C program, so it's not pure static analysis either, and I wanted to be honest about it.
+
+Now the part that might sound funny to the experienced. For me, static analysis is a tool to understand everything possible about a program and build my mental model. Dynamic analysis is like a fact checker, that proves how correct I was. I do static analysis to build facts and I do dynamic analysis to prove I was right, at least "largely". I am yet to find the moment when static analysis has failed me. The scope of my projects is relatively low, compared to projects that actually benefit from it, so I am aware of belief as well.
+
+Plus, static analysis has immensely helped me in building a strong foundation and the ability to reason from first principles. Static analysis, code reading, figuring things out in my mind is one way I can achieve that and I have no problems practicing it every day despite it being so demanding and frustrating sometimes.
+
+If I have used dynamic analysis directly, this prose wouldn't be required, but the mental model, the intuition and the confidence to say things would be absent.
+
+## Setup
+
+A docker image is provided in the `glibc-malloc/` directory. If you have cloned the repository and reading locally, you can simply `cd` to this directory and run the docker commands.
+
+If you are reading on GitHub, you can either clone the repository and follow along, or just `wget` the `Dockerfile`. There is absolutely no compulsion to clone the repo, except you want everything locally.
+
+Below are the commands.
+
+1. Get the Dockerfile.
+   ```bash
+    wget https://raw.githubusercontent.com/aggrawal-ankur/systems-dives/refs/heads/main/glibc-malloc/dynamic-analysis-code/setup
+   ```
+
+2. Build the docker image.
+   ```bash
+    # docker build -t <image-name>
+    docker build -t glibc-malloc-exp-img
+   ```
+
+3. Create a container.
+   ```bash
+   # docker create --name <container-name> <image-name>
+   docker create --name glibc-exp-cont  glibc-malloc-exp-img
+   ```
+
+4. Run the container.
+   ```bash
+    docker start <container-name>
+    # or
+    docker start <container-id>
+   ```
+
+5. Attach to the container.
+   ```bash
+    docker attach <container-name>
+    # or
+    docker attach <container-id>
+   ```
+
+**Notes**:
+  1. If your user is not in the `docker` group, append `sudo` before each command, except `wget`.
+  2. This setup assumes that you will reuse the container. Optionally, you can spin a new container every time with `docker run`.
+  3. If you don't have docker enabled on OS start, you have to use a utility like systemctl to enable docker before using.
+
+That's the setup I use. If you are experienced with docker, you can do what you want.
+
+## The Environment
+
+What distros operates on vs upstream branch.
+
+How we have custom built glibc-2.43 as that's the latest release-tag right now.
+
+That's why we use docker.
+
+You might be aware of tooling like pwndbg (PWN Debug) and GEF (GDB Extended Features). These are tools built on top of gdb. They provide a nice abstraction over the actual functionality. Because we want to build a strong mental model of the underlying architecture, we will not use any kind of tooling, except the debugger itself.
+
+## Workflow
+
+The workflow is very simple.
+
+1. Start and attach the container.
+2. cd to `/experiments/`.
+3. Use the `build` script to build-execute a lab.
+4. For walkthrough, you can either read the writeup, or the comments in the lab code. Both are carefully written with no hurries.
