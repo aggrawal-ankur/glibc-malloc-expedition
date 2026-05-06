@@ -60,6 +60,7 @@ A complete description of glibc-malloc
   - [Setup](#setup)
   - [The Environment](#the-environment)
   - [Workflow](#workflow)
+  - [The List Of Experiments](#the-list-of-experiments)
 ---
 
 # Introduction To Userspace Memory Allocators
@@ -2053,3 +2054,23 @@ The workflow is very simple.
 2. cd to `/experiments/`.
 3. Use the `build` script to build-execute a lab.
 4. For walkthrough, you can either read the writeup, or the comments in the lab code. Both are carefully written with no hurries.
+
+## The List Of Experiments
+
+We have discussed a lot of facts about malloc_chunk and bins[]. Now we will verify them one-by-one.
+
+These experiments are sequential in nature. The starting ones do the job of familiarizing how to navigate GDB and the data structures.
+
+1. The existence of a single chunk (the first chunk) in the memory. The relationship between requested size and chunk size
+2. How to access the top chunk.
+3. The implementation of the boundary tag method.
+4. The structure of the top chunk.
+5. Coalescing with the top chunk and the need for a barrier chunk.
+6. The state of the 3-bits in mchunk_size in both free and allocated chunks of small and large sizes.
+7. Bin #2, represented by the headers bin[2] and bin[3], is the first smallbin of size class 32 bytes (MINSIZE on 64-bit).
+8. Bin #63, represented by the headers bin[124] and bin[125] is the last smallbin of size class 1008 bytes (MIN_LARGE_SIZE-SMALLBIN_WIDTH on 64-bit).
+9. Bin #1, represented by the headers bin[0] and bin[1] is the unsorted bin.
+10. Bin #64, represented by the headers bin[126] and bin[127] is the first largebin in category #1.
+11. A largebin is simply a collection of fixed size classes, just like smallbins. The number of size classes a largebin in any category contains is (LARGEBIN_WIDTH/SMALLBIN_WIDTH). **Note: LARGEBIN_WIDTH is not a real macro**.
+12. The order in which chunks enter a bin.
+13. How fd_nextsize/bk_nextsize basically makes an unsorted largebin sorted (skip list).
