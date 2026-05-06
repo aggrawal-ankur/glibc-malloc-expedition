@@ -30,6 +30,8 @@ Every barrier chunk must have a size higher than the freed chunks, such that no 
   1. A reuse will trigger spliiting, which will reduce the size, possibly making the chunk a small chunk.
   2. If the chunk which is supposed to be "a barrier" is obtained from reuse, it is not a barrier chunk. As a result, "the chunk to be freed" will boundary with the top chunk, triggering a merger instead of binning.
 
+To avoid confusion for the barrier chunk sizes, we will use sizes like 1500, 1600, ....
+
 */
 
 /* INSPECTION INSIDE GDB: 
@@ -51,37 +53,37 @@ Read fd/bk values to form the unordered links b/w the chunks.
 int main(void){
   char *c1 = malloc(10);
   char *c2 = malloc(1010);
-  char *c3 = malloc(10);
+  char *b1 = malloc(10);
   
   free(c2);    // c2 goes to the unsorted bin.
   char *c4 = malloc(1500);    // c2 is binned.
 
   char *c5 = malloc(1030);
-  char *c6 = malloc(1600);    // A higher size is required as the barrier chunk, otherwise, c5 will boundary with the top, which can trigger merger with top.
+  char *b2 = malloc(1600);    // A higher size is required as the barrier chunk, otherwise, c5 will boundary with the top, which can trigger merger with top.
 
   free(c5);    // c5 goes to the unsorted bin.
   char *c7 = malloc(1700);    // c5 is binned.
 
   char *c8 = malloc(1045);
-  char *c9 = malloc(1800);    // A high size barrier chunk.
+  char *b3 = malloc(1800);    // A high size barrier chunk.
 
   free(c8);    // c8 goes to the unsorted bin.
   char *c10 = malloc(1900);    // c8 is binned.
 
   char *c11 = malloc(1059);
-  char *c12 = malloc(1900);    // A high size barrier chunk.
+  char *b4 = malloc(2000);    // A high size barrier chunk.
 
   free(c11);    // c11 goes to the unsorted bin.
-  char *c13 = malloc(2000);    // c11 is binned.
+  char *c13 = malloc(2100);    // c11 is binned.
 
   int x = 45;
   free(c1);
-  free(c3);
+  free(b1);
   free(c4);
-  free(c6);
+  free(b2);
   free(c7);
-  free(c9);
+  free(b3);
   free(c10);
-  free(c12);
+  free(b4);
   free(c13);
 }
