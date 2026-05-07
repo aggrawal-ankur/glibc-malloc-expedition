@@ -4399,7 +4399,7 @@ static void _int_free_chunk(
     if (!have_lock)
       __libc_lock_lock(av->mutex);
 
-    _int_free_merge_chunk (av, p, size);
+    _int_free_merge_chunk(av, p, size);
 
     if (!have_lock)
       __libc_lock_unlock(av->mutex);
@@ -4442,7 +4442,7 @@ static void _int_free_merge_chunk(
   INTERNAL_SIZE_T size
 ){
   mchunkptr nextchunk = chunk_at_offset(p, size);
-  check_inuse_chunk (av, p);
+  check_inuse_chunk(av, p);
 
   // Lightweight tests
 
@@ -4483,7 +4483,8 @@ static void _int_free_merge_chunk(
     unlink_chunk(av, p);
   }
 
-  /* Write the chunk header, maybe after merging with the following chunk. */
+  /* Write the chunk header, maybe after merging 
+  with the following chunk. */
   size = _int_free_create_chunk(av, p, size, nextchunk, nextsize);
   _int_free_maybe_trim(av, size);
 }
@@ -4514,14 +4515,16 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
       clear_inuse_bit_at_offset(nextchunk, 0);
     }
 
+
+    /* Place large chunks in unsorted chunk list. Large 
+    chunks are not placed into regular bins until after 
+    they have been given one chance to be used in malloc.
+
+    This branch is first in the if-statement to help branch
+    prediction on consecutive adjacent frees. */
+
     mchunkptr bck, fwd;
     if (!in_smallbin_range(size)){
-      /* Place large chunks in unsorted chunk list. Large chunks
-         are not placed into regular bins until after they have
-         been given one chance to be used in malloc.
-
-         This branch is first in the if-statement to help branch
-         prediction on consecutive adjacent frees. */
       bck = unsorted_chunks(av);
       fwd = bck->fd;
 
@@ -4531,10 +4534,11 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
       p->fd_nextsize = NULL;
       p->bk_nextsize = NULL;
     }
+
+    /* Place small chunks directly in their smallbin, 
+    so they don't pollute the unsorted bin. */
     else{
-      /* Place small chunks directly in their smallbin, so they
-         don't pollute the unsorted bin. */
-          int chunk_index = smallbin_index (size);
+      int chunk_index = smallbin_index (size);
       bck = bin_at(av, chunk_index);
       fwd = bck->fd;
 
@@ -4551,12 +4555,12 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
 
     set_head(p, size | PREV_INUSE);
     set_foot(p, size);
-
     check_free_chunk(av, p);
   }
+
+  /* If the chunk borders the current high end of memory,
+  consolidate into top. */
   else{
-    /* If the chunk borders the current high end of memory,
-	     consolidate into top. */
     size += nextsize;
     set_head(p, size | PREV_INUSE);
     av->top = p;
@@ -4568,11 +4572,11 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
 
 /* If the total unused topmost memory exceeds the 
    trim threshold, ask malloc_trim to reduce top. */
-trim static void _int_free_maybe_trim(mstate av, INTERNAL_SIZE_T size)
+static void _int_free_maybe_trim(mstate av, INTERNAL_SIZE_T size)
 {
   /* We don't want to trim on each free. As a compromise, 
-     trimming is attempted if ATTEMPT_TRIMMING_THRESHOLD 
-     is reached. */
+  trimming is attempted if ATTEMPT_TRIMMING_THRESHOLD 
+  is reached. */
   if (size >= ATTEMPT_TRIMMING_THRESHOLD){
     if (av == &main_arena){
 
@@ -4581,9 +4585,10 @@ trim static void _int_free_maybe_trim(mstate av, INTERNAL_SIZE_T size)
   	    systrim (mp_.top_pad, av);
 #endif
     }
+
+    /* Always try heap_trim, even if the top chunk is not 
+    large, because the corresponding heap might go away. */
     else{
-      /* Always try heap_trim, even if the top chunk is not 
-      large, because the corresponding heap might go away. */
       heap_info *heap = heap_for_ptr(top(av));
       assert(heap->ar_ptr == av);
       heap_trim(heap, mp_.top_pad);
@@ -4636,7 +4641,7 @@ static void* _int_realloc(
   }
 
   else{
-    /* Try to expand forward into top */
+    /* Try to expand forward into top. */
     if (
       next == av->top &&
       (unsigned long)(newsize = oldsize + nextsize) >= (unsigned long)(nb + MINSIZE)
@@ -4648,7 +4653,7 @@ static void* _int_realloc(
       return tag_new_usable(chunk2mem(oldp));
     }
 
-    /* Try to expand forward into next chunk; split off remainder below */
+    /* Try to expand forward into next chunk; split off remainder below. */
     else if (
       next != av->top &&
       !inuse(next) &&
@@ -4759,21 +4764,22 @@ static void* _int_memalign(mstate av, size_t alignment, size_t bytes)
 
   size_t size = chunksize(p);
 
-  /* If not already aligned, align the chunk. Add MINSIZE 
-     before aligning so we can always free the alignment padding. */
+  /* If not already aligned, align the chunk. 
+  Add MINSIZE before aligning so we can always 
+  free the alignment padding. */
   if (!PTR_IS_ALIGNED(m, alignment)){
-      newp = mem2chunk(ALIGN_UP((uintptr_t)m + MINSIZE, alignment));
-      size_t leadsize = PTR_DIFF(newp, p);
-      size -= leadsize;
+    newp = mem2chunk(ALIGN_UP((uintptr_t)m + MINSIZE, alignment));
+    size_t leadsize = PTR_DIFF(newp, p);
+    size -= leadsize;
 
-      /* Create a new chunk from the alignment padding and free it. */
-      int arena_flag = av != (&main_arena ? NON_MAIN_ARENA : 0);
-      set_head (newp, size | PREV_INUSE | arena_flag);
-      set_inuse_bit_at_offset (newp, size);
-      set_head_size (p, leadsize | arena_flag);
-      _int_free_merge_chunk (av, p, leadsize);
-      p = newp;
-    }
+    /* Create a new chunk from the alignment padding and free it. */
+    int arena_flag = av != (&main_arena ? NON_MAIN_ARENA : 0);
+    set_head (newp, size | PREV_INUSE | arena_flag);
+    set_inuse_bit_at_offset (newp, size);
+    set_head_size (p, leadsize | arena_flag);
+    _int_free_merge_chunk (av, p, leadsize);
+    p = newp;
+  }
 
   /* Free a chunk at the end if large enough. */
   if (size - nb >= MINSIZE){
@@ -4887,8 +4893,8 @@ size_t __malloc_usable_size(void *m)
 #endif
 
 /* -------------------- mallinfo -------------------- */
-/* Accumulate malloc statistics for arena AV into M.  */
 
+/* Accumulate malloc statistics for arena AV into M. */
 static void int_mallinfo(mstate av, struct mallinfo2 *m)
 {
   size_t i;
@@ -4981,9 +4987,10 @@ void __malloc_stats(void){
     memset (&mi, 0, sizeof (mi));
     __libc_lock_lock (ar_ptr->mutex);
     int_mallinfo (ar_ptr, &mi);
-    fprintf (stderr, "Arena %d:\n", i);
-    fprintf (stderr, "system bytes     = %10u\n", (unsigned int) mi.arena);
-    fprintf (stderr, "in use bytes     = %10u\n", (unsigned int) mi.uordblks);
+
+    fprintf(stderr, "Arena %d:\n", i);
+    fprintf(stderr, "system bytes     = %10u\n", (unsigned int) mi.arena);
+    fprintf(stderr, "in use bytes     = %10u\n", (unsigned int) mi.uordblks);
 
 #if MALLOC_DEBUG > 1
     if (i > 0)
@@ -4995,6 +5002,7 @@ void __malloc_stats(void){
 
     __libc_lock_unlock(ar_ptr->mutex);
     ar_ptr = ar_ptr->next;
+
     if (ar_ptr == &main_arena)
       break;
   }
@@ -5145,8 +5153,7 @@ do_set_tcache_unsorted_limit (size_t value)
 }
 #endif
 
-static __always_inline int
-do_set_mxfast (size_t value)
+static __always_inline int do_set_mxfast (size_t value)
 {
   return 1;
 }
@@ -5156,16 +5163,18 @@ do_set_hugetlb (size_t value)
 {
   if (value == 0)
     mp_.thp_mode = malloc_thp_mode_never;
-  else if (value == 1)
-    {
-      mp_.thp_mode = __malloc_thp_mode ();
-      if (mp_.thp_mode == malloc_thp_mode_madvise
-          || mp_.thp_mode == malloc_thp_mode_always)
-	mp_.thp_pagesize = __malloc_default_thp_pagesize ();
-    }
-  else if (value >= 2)
-    __malloc_hugepage_config (value == 2 ? 0 : value, &mp_.hp_pagesize,
-			      &mp_.hp_flags);
+
+  else if (value == 1){
+    mp_.thp_mode = __malloc_thp_mode();
+    if (
+      mp_.thp_mode == malloc_thp_mode_madvise || 
+      mp_.thp_mode == malloc_thp_mode_always
+    )
+      mp_.thp_pagesize = __malloc_default_thp_pagesize ();
+  }
+  else if (value >= 2){
+    __malloc_hugepage_config (value == 2 ? 0 : value, &mp_.hp_pagesize, &mp_.hp_flags);
+  }
   return 0;
 }
 
@@ -5178,11 +5187,11 @@ int __libc_mallopt(int param_number, int value)
 
   LIBC_PROBE(memory_mallopt, 2, param_number, value);
 
-  /* Many of these helper functions take a size_t.  We do not worry
-     about overflow here, because negative int values will wrap to
-     very large size_t values and the helpers have sufficient range
-     checking for such conversions.  Many of these helpers are also
-     used by the tunables macros in arena.c. */
+  /* Many of these helper functions take a size_t. We do not worry
+  about overflow here, because negative int values will wrap to
+  very large size_t values and the helpers have sufficient range
+  checking for such conversions. Many of these helpers are also
+  used by the tunables macros in arena.c. */
 
   switch (param_number){
     case M_MXFAST:
@@ -5215,15 +5224,16 @@ int __libc_mallopt(int param_number, int value)
 
     case M_ARENA_TEST:
       if (value > 0)
-	res = do_set_arena_test (value);
+      	res = do_set_arena_test (value);
       break;
 
     case M_ARENA_MAX:
       if (value > 0)
-	res = do_set_arena_max (value);
+        res = do_set_arena_max (value);
       break;
-    }
-  __libc_lock_unlock (av->mutex);
+  }
+
+  __libc_lock_unlock(av->mutex);
   return res;
 }
 libc_hidden_def(__libc_mallopt)
@@ -5438,7 +5448,7 @@ int __malloc_info(int options, FILE *fp)
 
   fputs ("<malloc version=\"1\">\n", fp);
 
-  /* Iterate over all arenas currently in use.  */
+  /* Iterate over all arenas currently in use. */
   mstate ar_ptr = &main_arena;
   do{
     fprintf (fp, "<heap nr=\"%d\">\n<sizes>\n", n++);
@@ -5453,7 +5463,7 @@ int __malloc_info(int options, FILE *fp)
       size_t count;
     } sizes[NBINS - 1];
 
-#define nsizes  (sizeof(sizes) / sizeof(sizes[0]))
+#define  nsizes  (sizeof(sizes) / sizeof(sizes[0]))
 
     __libc_lock_lock (ar_ptr->mutex);
 
@@ -5496,7 +5506,7 @@ int __malloc_info(int options, FILE *fp)
     if (ar_ptr != &main_arena)
 
     {
-      /* Iterate over the arena heaps from back to front.  */
+      /* Iterate over the arena heaps from back to front. */
       heap_info *heap = heap_for_ptr (top (ar_ptr));
       do{
 	      heap_size += heap->size;
