@@ -163,48 +163,7 @@ This writeup completely focuses on the upstream glibc-malloc, maintained by the 
 
 ---
 
-To ensure **100% reproducibility**, we will setup a lab environment using Docker.
-  - **Base Image:** `debian:trixie`.
-  - **glibc-version:** glibc-2.43
-  - **Commit-id as per the release tag:** `f762ccf84f122d1354f103a151cba8bde797d521`
-  - **Commit details:** [sourceware.org](https://sourceware.org/git/?p=glibc.git;a=commit;h=f762ccf84f122d1354f103a151cba8bde797d521) 
-
-**Step1:** Clone this repository on your system.
-```bash
-git clone https://github.com/aggrawal-ankur/systems-dives.git    /repo
-```
-
-**Step2:** Use the Dockerfile in `./glibc-malloc/` to setup the container image.
-```bash
-cd /repo/glibc-malloc/
-sudo docker build -t glibc-exp-img .
-```
-
-**Step3:** Setup a container using the custom image.
-```bash
-sudo docker run -it --name explore-glibc  glibc-exp-img:latest bash
-```
-
-**Step4:** The `/experiment-dir/` is where all the source code for the experiments is. It also contains build scripts to ensure seamless setup of the experiments.
-
-**Step5:** To confirm the build succeeded:
-```bash
-$ /opt/glibc-2.43/lib/libc.so.6 --version
-
-GNU C Library (GNU libc) stable release version 2.43.
-Copyright (C) 2026 Free Software Foundation, Inc.
-This is free software; see the source for copying conditions.
-There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A
-PARTICULAR PURPOSE.
-Compiled by GNU CC version 14.2.0.
-libc ABIs: UNIQUE IFUNC ABSOLUTE
-Minimum supported kernel: 3.2.0
-For bug reporting instructions, please see:
-<https://www.gnu.org/software/libc/bugs.html>.
-```
-  - It should print **2.43**.
-
----
+To ensure **100% reproducibility**, we will setup a lab environment using Docker. More on this later in the dynamic analysis section.
 
 Let's start with the groundwork.
 
@@ -224,21 +183,19 @@ To track memory, the allocator has to manage a bookkeeping. The bookkeeping stra
 
 This writeup explores how glibc-malloc manages this bookkeeping.
 
-
-TO BE CONTINUED
-
+....
 
 # Chunk Description
 
 When malloc is called, the allocator carves a piece of dynamic memory, attaches some bookkeeping and returns it to the process. This bookkeeping is kept in a structure called `malloc_chunk`.
 
-***A chunk is a piece of metadata associated with a portion of dynamic memory.*** But when we say "a chunk of memory", it refers to the *chunk metadata* and the *dynamic memory* together.
+***A chunk is a piece of metadata associated with a portion of dynamic memory.*** But when we say "a chunk of memory", it refers to "the *chunk metadata* and the *dynamic memory*" **together**.
 
 This metadata sits right before the payload memory, like this:
 ```
-metadata payload
-         ^
-         pointer returned to the process
+metadata  payload
+          ^
+          pointer returned to the process
 ```
 
 ---
@@ -258,7 +215,7 @@ struct malloc_chunk {
 };
 ```
 
-The authors have acknowledged that this layout is "misleading". Line 1082.
+The authors have acknowledged that this layout is "misleading".
 ```
 /*
   This struct declaration is misleading (but accurate and necessary).
@@ -266,7 +223,7 @@ The authors have acknowledged that this layout is "misleading". Line 1082.
   fields at known offsets from a given base. See explanation below.
 */
 ```
-But in my view, the layout is well-reasoned but the reasoning is not documented properly, which makes it complicated to understand. The following is my attempt to make that reasoning visible.
+But in my understanding, the layout is well-reasoned. It is the reasoning which is not documented properly, making it complicated to understand. The following is my attempt to make that reasoning visible.
 
 Let's start with understanding each field in malloc_chunk.
 
@@ -289,35 +246,30 @@ Here is a high level description of how malloc_chunk is used to represent these 
 
 `mchunk_prev_size` holds the size of the previous chunk and `mchunk_size` holds the size of the current chunk.
   - **Note1: size means (chunk_metadata + dynamic_memory).**
-  - **Note2: INTERNAL_SIZE_T is discussed later in the same parent heading. For the time being, treat it like `size_t`.**
-  - **Note3: The existence of mchunk_prev_size is discussed later in the same parent heading.**
+  - **Note2: INTERNAL_SIZE_T is discussed later. For the time being, treat it like `size_t`.**
+  - **Note3: mchunk_prev_size is discussed later.**
 
 ---
 
 Free chunks are managed via bins, which are "**circular doubly linked lists**". We have small bins for small chunks and large bins for large chunks.
 
-Small bins manage free chunks of exact size classes, while large bins manage free chunks falling in specific size ranges. For example, we have:
-  - a small bin of size class 80 bytes. It contains free chunks sized 80 bytes.
-  - a large bin of size range [1024, 1088) bytes. It contains free chunks of sizes falling in that range, like 1024, 1040 and so on.
+Small bins manage free chunks of exact (fixed) size classes, while large bins manage free chunks falling in specific size ranges. For example:
+  - a small bin of size class 80 bytes contains free chunks of size 80 bytes.
+  - a large bin of size range [1024, 1088) bytes contains free chunks of sizes falling in that range, like 1024, 1040 and so on.
 
-A small bin manage a **linked list** of free chunks using the `fd/bk` pointers in malloc_chunk.
-
-A large bin manage two types of links among its free chunks.
-  - The `fd/bk` pointers manage links between each free chunk in the bin.
-  - Although a large bin manages chunks falling in a specific size range, there can be free chunks of same size as well. To link these chunks on top of the generic links, we use the `fd_nextsize/bk_nextsize` pointers.
-  - For example, a large bin managing chunks in `[1024, 1088)` range had three free chunks of sizes 1024, 1056, 1024. The three chunks will be linked via fd/bk and the two 1024 bytes chunks will have an extra fd_nextsize/bk_nextsize link.
+A small bin uses only the `fd/bk` fields of malloc_chunk to form a doubly circular linked list. A large bin uses both the `fd/bk` and the `fd_nextsize/bk_nextsize` pointers. This is a part of the bookkeeping section and it is discussed there in detail.
 
 ---
 
-In simple words, ***malloc_chunk is a generic implementation, designed to provide a single interface for all the three states in which a chunk can exist.*** This is both advantageous and cumbersome.
+In simple words, ***`malloc_chunk` is a generic implementation, designed to provide a single interface for all the three states in which a chunk can exist.*** This is both advantageous and cumbersome.
 
 This is the reasoning behind the layout. Let's discuss how this layout is used.
 
 ## Usage Description
 
-**Note: For simplicity, we do all the calculations for 64-bit Linux. But the rules remains the same for 32-bit Linux. Just use 4 instead of 8.**
+**Note: For simplicity, all the calculations are for 64-bit Linux. But the rules are the same for 32-bit Linux. Just use 4 instead of 8.**
 
-On 64-bit Linux, both size_t and pointers are 8-bytes wide. That means, the size of malloc_chunk is (8*6) 48 bytes. We can verify this with sizeof as well. Create a c file, copy the definition, create an instance and use `sizeof()`.
+On 64-bit Linux, both size_t and pointers are 8-bytes wide. That means, the size of malloc_chunk is (8*6) 48 bytes. We can verify this with sizeof as well. Create a .c file, copy the definition, and print `sizeof(struct malloc_chunk)`.
 
 malloc_chunk being a generic implementation is advantageous as it allows all the three 3 states of a chunk to be represented by a single struct definition. But in reality, these 3 states require only a subset of the whole implementation.
   1. mchunk_prev_size and mchunk_size are necessary in all the cases.
@@ -374,13 +326,13 @@ Either this act will make the author's design clearer, or you'll end up finding 
 
 ---
 
-This is how a single malloc_chunk is used. But a standard Linux process calls malloc and free several times. This repeated allocation-deallocation fragments the memory and creates a problem for the allocator.
+This is how a single malloc_chunk exists. But a standard Linux process calls malloc and free several times. This repeated allocation-deallocation fragments the memory and creates a problem for the allocator.
 
 ## The Problem: Fragmentation
 
 ***When memory is allocated-deallocated multiple times, it creates gaps of "unused memory" in the address space.***
 
-This increases the pressure on physical memory because, the freed chunks are still backed by physical memory but not utilized by the process. The only way to reduce this pressure is to reallocate the freed chunks, which entirely depends on the process asking for a size which is available as a free chunk.
+This increases pressure on physical memory because, the freed chunks are still backed by physical memory but not utilized by the process. The only way to reduce this pressure is to reuse (reallocate) the freed chunks, which entirely depends on the process asking for a size which is available as a free chunk.
 
 The fragmented memory can exist in two layouts, depending on the malloc-free sequence.
   1. In-use and free chunks in an alternating sequence, like this: {...., in-use, free, in-use, free, ....}
@@ -410,9 +362,9 @@ Coalescing can happen in two ways.
   1. **Forward coalescing**, where we coalesce the n<sup>th</sup> chunk with the (n+1)<sup>th</sup> chunk.
   2. **Backward coalescing**, where we coalesce the n<sup>th</sup> chunk with the (n-1)<sup>th</sup> chunk.
 
-Forward coalescing is simple to implement. Just add the size of the current chunk into the pointer and we are on the next chunk. But backward coalescing is not that simple because, we don't know the size of the previous chunk.
+Forward coalescing is simple to implement. Just add the size of the current chunk into the pointer and we are on the next chunk. But backward coalescing is complicated as we don't know the size of the previous chunk.
 
-For this reason, malloc_chunk comes with `mchunk_prev_size`. mchunk_prev_size holds the size of the previous chunk and we can use it to offset back to the (n-1)<sup>th</sup> chunk.
+For this reason, malloc_chunk comes with `mchunk_prev_size`. This field stores the size of the previous chunk and we can use it to offset back to the (n-1)<sup>th</sup> chunk.
 
 Now we need a way to find if the next/prev chunk is free. To do this, we use mchunk_size. Let's understand how.
 
@@ -441,7 +393,7 @@ Here is a description of these bits.
 
 ---
 
-Right now, only the 0th bit concerns us. The remaining two bits are discussed later.
+Right now, only the 0th bit concerns us. The remaining two bits are discussed in the appropriate sections.
 
 Now we can implement coalescing through the boundary tag method.
 
@@ -451,7 +403,7 @@ Now we can implement coalescing through the boundary tag method.
 
 ***Boundary tag method is a dynamic memory management technique, where the size is stored both in the head and the tail of the chunk.***
 
-We can notice a problem here. Boundary tag method suggest to have metadata before and after the payload memory. `malloc_chunk` compensates for what comes before the payload memory, what compensates for the trailing size field?
+It suggests to have metadata before and after the payload memory. `malloc_chunk` compensates for what comes before the payload memory, what compensates for the trailing size field?
 
 If we create a separate struct, like `malloc_chunk_trail` and put it after the payload memory, that creates bookkeeping havoc.
 
@@ -475,17 +427,17 @@ Functionally ->          [ Chunk1                                       ] [ Chun
 
 ***Again, as someone new to this, the design is not beginner-friendly at all. If you can't understand it in your first attempt, don't worry. What you are reading is months of work and a result of multiple rewrites.***
 
-***I don't how long it will take you to understand it, but it took me more than a month worth of efforts to understand this design. Even after that, I understood the implementation of boundary tag method wrong. After that, I corrected myself.***
+***I don't how long it will take you to understand it, but it took me more than a month worth of efforts just to have a fragile understanding of it, which was later corrected by another idea that came to me, that I tested and found correct.***
 
 ***Therefore, give yourself time.***
 
 ---
 
-At this point, we completely understand the existence of each field in malloc_chunk, but we still feel empty. To fill that void, we have to understand the last piece in the puzzle.
+Now we largely understand the size fields. To complete our understanding, we have to explore one last piece.
 
 ## The Size Model
 
-Everything in glibc-malloc is directly or indirectly connected with size. Therefore, the allocator has a size model to work with "size" efficiently.
+Everything in glibc-malloc is directly or indirectly related with size. Therefore, the allocator has a size model to work with "size" efficiently.
 
 The size model is described using macros. It contains two types of macros.
   1. Macros which resolve to certain numeric values.
@@ -556,11 +508,9 @@ To summarize, there are the three configurations the allocator must handle.
 
 Now we are set to explore the macros that resolve to a numerical value.
 
----
-
 ### Macro #1 -> SIZE_SZ
 
-It is the width of size_t on the target machine's architecture.
+It is the width of `size_t` on the target machine's architecture.
 ```c
 /* The corresponding word size. */
 #define SIZE_SZ  (sizeof(INTERNAL_SIZE_T))
@@ -575,7 +525,7 @@ It is the width of size_t on the target machine's architecture.
 
 ### Macro #2 -> CHUNK_HDR_SZ
 
-It stands for "chunk header size", which refers to the metadata bytes that sit at the beginning of an in-use chunk i.e, "mchunk_prev_size and mchunk_size".
+It stands for "chunk header size", which refers to the metadata bytes that sit at the beginning of an in-use chunk i.e. "mchunk_prev_size and mchunk_size".
 ```c
 #define CHUNK_HDR_SZ    (2 * SIZE_SZ)
 ```
@@ -731,7 +681,7 @@ In INTERNAL_SIZE_T=4, the metadata overhead is 24 bytes, but 24 is not aligned t
 
 In the MIN_CHUNK_SIZE section, we have seen that it is the size of the structurally smallest chunk possible in an architecture. MINSIZE is the actual smallest chunk size possible in an architecture after adding alignment constraints.
 
-The values happen to be equal in the first two configurations because the struct layout aligned with the alignment constraints. That broke with INTERNAL_SIZE_T=4.
+The values happen to be equal in the first two configurations because the struct layout aligned with the alignment constraints. However, it broke with INTERNAL_SIZE_T=4.
 
 ---
 
@@ -800,11 +750,9 @@ Now that we understand chunks, let's explore how freed chunks are managed, i.e, 
 
 # The Bookkeeping System, Part 0: The Problem
 
-The bookkeeping system sits at the core of glibc-malloc. It is the framework based on which the whole malloc-free pathways are stacked. It is probably the most challenging piece to write because, it is unnecessarily tiring.
+The bookkeeping system sits at the core of glibc-malloc. It is the framework based on which the whole malloc-free pathways are stacked. It is probably the most challenging piece to write.
 
-In the chunk description section, what the author flagged as "misleading, but accurate and necessary" was simply a lack of proper documentation of the design decisions. What makes writing the bookkeeping section a challenging pursuit is the presence of an unfathomable amount of inconsistencies that simply don't make sense.
-
-As we will explore, we will find pretty interesting, or I should say, disturbing annotations. Those annotations explore the diabolical nature of how the codebase was managed.
+In the chunk description section, what the author flagged as "misleading, but accurate and necessary" was simply a lack of proper documentation of the design decisions. What makes writing the bookkeeping section a challenging pursuit is the presence of an unfathomable amount of inconsistencies that simply don't make sense. As we will explore, we will find pretty interesting things.
 
 There are annotations which don't align with the implementation. You might argue that someone updated something and forgot. *No one realized it in the span of more than two decades?* Then there are two annotations about a single topic which don't converge. That alone is enough to break your mind because, it is supposed that two annotations explaining the same topic will be coherent. *How can something exist in two different states at the same time?* It can only exist in one and we are left finding it out ourselves.
 
@@ -822,6 +770,8 @@ Not updating the annotations was a deliberate choice that the author and the mai
 Everything points to the fact that these inconsistencies exist out of pure laziness. There is simply no reason for them to exist. But no one was bothered to do the boring work for updating the theoretical model.
 
 You don't have to believe me. I will show the facts and you can independently decide whether the writer is talking "out of thin air" or "with everything grounded in reality as per the source".
+
+It's not "all bad", but a lot of it is.
 
 ---
 
@@ -845,7 +795,7 @@ Conceptually, we have three class of bins: **smallbins** for small chunks, **lar
   1. Implement three different variables for each bin type.
   2. Implement one variable that has pointers to all the bins.
 
-Therefore, at the implementation level, we have **only one** data structure, containing pointers to all the bins, i.e, an array.
+Therefore, at the implementation level, we have **only one** data structure, containing pointers to all the bins, i.e. an array.
 
 There are multiple ways to implement this array. To understand which one is the best, we have to understand how a "doubly circular linked list" works.
 
@@ -1234,13 +1184,13 @@ approximately least recently used chunk.
   ordered data structures.
 ```
 
-A smallbin manages free chunks of specific sizes. Therefore, it requires no ordering.
+A smallbin manages free chunks of a specific size class. Therefore, it requires no ordering.
 
 The unsorted bin is like a resting ground, where the recently freed chunks are given a chance to be reused by the next malloc. There is no need for order here.
 
-A largebin manages two types of links.
-  1. The standard fd/bk links link the chunks as-they-arrive in the list.
-  2. The fd_nextsize/bk_nextsize links link the chunks of same size together on top of the standard fd/bk links.
+A largebin manages chunks in a range of bytes. There are two types of linkages b/w these chunks.
+  1. The fd/bk fields maintains links based on size, which means, largebins are ordered by size.
+  2. The fd_nextsize/bk_nextsize maintains a skip list. We will talk about this later in the dynamic analysis section.
 
 ## Smallbin Size Classes
 
@@ -1303,7 +1253,7 @@ The output is definitely "not astonishing" at all.
 1008, 992, 976, 960, 944, 928, 912, 896, 880, 864, 848, 832, 816, 800, 784, 768, 752, 736, 720, 704, 688, 672, 656, 640, 624, 608, 592, 576, 560, 544, 528, 512, 496, 480, 464, 448, 432, 416, 400, 384, 368, 352, 336, 320, 304, 288, 272, 256, 240, 224, 208, 192, 176, 160, 144, 128, 112, 96, 80, 64, 48, 32,
 ```
 
-These are the size classes, for the 62 smallbins. Think about what would happen if there were 64 smallbins instead, while the upper bound remains the same. The two extra size classes would be for 16 bytes and 0 bytes, i.e. "bin 1" and "bin 0", respectively. That's the mystery of the "bin 0" and "bin 1".
+These are the size classes, for the 62 smallbins. Think about what would happen if there were 64 smallbins instead, while the upper bound remains the same. The two extra size classes would be for 16 bytes and 0 bytes, i.e. "bin 1" and "bin 0", respectively. That's the mystery of "bin 0" and "bin 1".
   - "Bin 0" represents the size class for 0 bytes. A chunk of zero bytes represents nothing, logically. Practically, a request of such size is not impossible. The question is how the allocator deals with it. If we recall how request2size(sz) works, we know that the request would be aligned to MINSIZE, i.e. 32 bytes, and the resulting chunk would be no longer a fit for "bin 0".
   - "Bin 1" represents the size class for 16 bytes. A chunk of 16 bytes is not possible also gets aligned to MINSIZE, i.e. 32 bytes, making the resulting chunk no longer a fit for "bin 1".
 
@@ -1970,26 +1920,6 @@ Finally, it's time to verify everything we have discussed, from line 0 to line 1
 
 # The Bookkeeping System, Part 3: Dynamic Analysis of Chunks and Bins
 
-So far, we have discussed a LOT of things theoretically. We have tried to keep everything as grounded as possible. But stuff like the largebin section is something that's incomplete without dynamic analysis. Therefore, this section is all about verifying our findings.
-
-Before we start, I want to share my viewpoint on static and dynamic analysis.
-
-Before you read it, know that I am just a naive who is exploring low level systems. I am not someone with a decade or even half-a-decade experience. I have only started my journey on May 01, 2025 and as of writing this, the date is May 06, 2026, so only 1 year has passed. Therefore, I am finding my methodology and it might sound absurd and funny to the experienced individuals. It doesn't affect me though, as I am a big advocate of finding your own methodology by the virtue of working on yourself, so you can joke about it, but as an experienced individual, please be considerate to share what you find wrong in it.
-
-I have started my journey with static analysis, walking through the output of objdump and readelf. I avoided debuggers until I really needed them, which is now.
-
-The reason I am so slow is that I have other obligations in my life and personal problems which take up a lot of my bandwidth.
-
-I am not someone who despise theoretical work. I am not someone who says, "do more practical work than theoretical work". I love reading, I love thinking, I love hypothesizing. Theoretical work is as important as practical work for me. There is no substitute for either. Also, theoretical work comes first, followed by practical work. So far, I have not find a single instance when this has failed. At best, "strike a balance b/w theory and practical work, find the ratio that works for you".
-
-The 2000 lines above are completely obtained from static analysis, except the boundary tag section. I have done no amount of dynamic analysis to form that mental model. It is now that I am going to start. I have no hurries and I am not a fan of tooling. Unless I really need something, I don't have problems deferring it. The boundary tag exception exists because the early hypothesis that I had was fragile and the new one looked promising but confusing, so I had to do it. And that dynamic analysis didn't opened GDB. It was simply a printf in a C program. Technically, it is not properly dynamic analysis, but I left the source and wrote a C program, so it's not pure static analysis either, and I wanted to be honest about it.
-
-Now the part that might sound funny to the experienced. For me, static analysis is a tool to understand everything possible about a program and build my mental model. Dynamic analysis is like a fact checker, that proves how correct I was. I do static analysis to build facts and I do dynamic analysis to prove I was right, at least "largely". I am yet to find the moment when static analysis has failed me. The scope of my projects is relatively low, compared to projects that actually benefit from it, so I am aware of belief as well.
-
-Plus, static analysis has immensely helped me in building a strong foundation and the ability to reason from first principles. Static analysis, code reading, figuring things out in my mind is one way I can achieve that and I have no problems practicing it every day despite it being so demanding and frustrating sometimes.
-
-If I have used dynamic analysis directly, this prose wouldn't be required, but the mental model, the intuition and the confidence to say things would be absent.
-
 ## Setup
 
 A docker image is provided in the `glibc-malloc/` directory. If you have cloned the repository and reading locally, you can simply `cd` to this directory and run the docker commands.
@@ -2061,7 +1991,7 @@ We have discussed a lot of facts about malloc_chunk and bins[]. Now we will veri
 
 These experiments are sequential in nature. The starting ones do the job of familiarizing how to navigate GDB and the data structures.
 
-1. The existence of a single chunk (the first chunk) in the memory. The relationship between requested size and chunk size
+1. The existence of a single chunk (the first chunk) in the memory. The relationship between requested size and chunk size. request2size in action.
 2. How to access the top chunk.
 3. The implementation of the boundary tag method.
 4. The structure of the top chunk.
@@ -2069,8 +1999,25 @@ These experiments are sequential in nature. The starting ones do the job of fami
 6. The state of the 3-bits in mchunk_size in both free and allocated chunks of small and large sizes.
 7. Bin #2, represented by the headers bin[2] and bin[3], is the first smallbin of size class 32 bytes (MINSIZE on 64-bit).
 8. Bin #63, represented by the headers bin[124] and bin[125] is the last smallbin of size class 1008 bytes (MIN_LARGE_SIZE-SMALLBIN_WIDTH on 64-bit).
-9. Bin #1, represented by the headers bin[0] and bin[1] is the unsorted bin.
+9.  Bin #1, represented by the headers bin[0] and bin[1] is the unsorted bin.
 10. Bin #64, represented by the headers bin[126] and bin[127] is the first largebin in category #1.
 11. A largebin is simply a collection of fixed size classes, just like smallbins. The number of size classes a largebin in any category contains is (LARGEBIN_WIDTH/SMALLBIN_WIDTH). **Note: LARGEBIN_WIDTH is not a real macro**.
 12. The order in which chunks enter a bin.
-13. How fd_nextsize/bk_nextsize basically makes an unsorted largebin sorted (skip list).
+13. How fd_nextsize/bk_nextsize basically makes an unsorted largebin sorted (skip list). Have chunks of same size, different size and in random order.
+14. The difference b/w fd/bk and the nextsize pointers.
+15. Prove the pointer fields are garbage in in-use chunks.
+16. small chunks only use fd/bk.
+17. large chunks uses every field.
+19. prev_size is maintained only when previous is free.
+20. Show fragmentation (internal, external, l1 and l2).
+21. Show coalescing (both forward and backward).
+22. Prove that the smallest chunk is indeed for MINSIZE bytes.
+23. The total number of bins, smallbins and largebins.
+24. The order of bins inside bins[].
+25. Verify the formula `(SMALLBIN_WIDTH*i)`.
+26. Are the bounds for smallbins: [2, 63], correct?
+27. There is no bin for size 0.
+28. The smallbin size classes belong to: `[MINSIZE, MIN_LARGE_SIZE)`, with a step of SMALLBIN_WIDTH.
+29. BIN_WIDTH on 64-bit scale by 3 bits only.
+30. The exact amount at which bins top out.
+31. Free chunks and in-use chunks at runtime.
