@@ -1,14 +1,13 @@
 /* EXPERIMENT 5 */
 
-/* OBJECTIVE: Verify that a largebin is basically a collection of smallbin size classes. */
+/* OBJECTIVE: A largebin is basically a collection of smallbin size classes. */
 
 /* GIVEN: 
 
   1. We will use the first largebin in category #1.
-  2. This category has bins of width 64 bytes from the base size.
-  3. The range of bytes this largebin manages on 64-bit is 1009-1072.
-  4. The number of smallbin size classes the bins in this category can fit are 4 (BIN_WIDTH/SMALLBIN_WIDTH, i.e. 64/16). These are 1024 (1008+(16*1)), 1040 (1008+(16*2)), 1056 (1008+(16*3)), 1072 (1008+(16*4)).
-  5. Remember, these are request2size(sz) values, not the sz itself.
+  2. This bins spans across 64 bytes from the base size of 1009 bytes (until 1072), managing chunks in 1009-1072 bytes range.
+  3. The number of smallbin size classes the bins in this largebin category can fit are 4 (BIN_WIDTH/SMALLBIN_WIDTH, i.e. 64/16). For this bin, the sizes are 1024 (1008+(16*1)), 1040 (1008+(16*2)), 1056 (1008+(16*3)), 1072 (1008+(16*4)).
+  4. Remember, these are request2size(sz) values, not the sz itself.
 
 */
 
@@ -26,17 +25,13 @@ We can notice that first we have to malloc the chunk to be freed, then we have t
 
 Every time we malloc "the next chunk to be freed", the previously freed chunk is binned.
 
-Every barrier chunk must have a size higher than the freed chunks, such that no reuse happens. This prevents two things:
-  1. A reuse will trigger spliiting, which will reduce the size, possibly making the chunk a small chunk.
-  2. If the chunk which is supposed to be "a barrier" is obtained from reuse, it is not a barrier chunk. As a result, "the chunk to be freed" will boundary with the top chunk, triggering a merger instead of binning.
-
-To avoid confusion for the barrier chunk sizes, we will use sizes like 1500, 1600, ....
+The barrier chunks must have a size higher than the size of the freed chunks, so that no reuse is possible. To avoid confusion, we will use the size 2000.
 
 */
 
 /* INSPECTION INSIDE GDB: 
 
-Set break point on line #77 (`int x = 45`). Run.
+Set break point on line #74 (`int x = 45`). Run.
 
 The first largebin is represented by <main_arena+1016>. Since the bin is non-empty, we will search for <main_arena+1000>. The headers after this represent this largebin.
 

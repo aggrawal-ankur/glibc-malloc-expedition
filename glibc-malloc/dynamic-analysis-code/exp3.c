@@ -1,24 +1,29 @@
 /* EXPERIMENT 3 */
 
-/* OBJECTIVE: VERIFY that bin #64 is the first largebin in category #1, represented by the headers bin[126] and bin[127]. */
+/* OBJECTIVE: Bin #64 is the first largebin in category #1, represented by the headers bin[126] and bin[127]. */
 
-/* METHOD:
+/* METHOD: 
 
-  Step1: Allocate three chunks: the last chunk borders with the top, the first chunk stays as a barrier from the front and the middle chunk is freed. The size of the middle chunk is 1010 bytes, which after alignment becomes 1024 bytes.
+  Step1: Allocate three chunks: the last chunk borders with the top, the first chunk stays as-is and the middle chunk is freed. The size of the middle chunk is 1010 bytes, which, after alignment, becomes 1024 bytes.
 
-  Step2: Free the middle chunk, i.e. `c2` and set a breakpoint on the next line, i.e line #38 (`int x = 45`). This separates other frees from free(c2).
+  Step2: Free the middle chunk, i.e. `c2` and set a breakpoint on the next line, i.e line #43 (`int x = 45`). This separates other frees from free(c2).
 
-  Step3: Inspect the state of main_arena using the print functionality. Look for bin #63, which is represented by <main_arena+1000>. But this bin is empty.
+  Step3: From what we know already, the headers for bin #64 will be non-empty. They are <main_arena+1016>. But we can see them, which means, they are empty. So the chunk has not landed in the corresponding bin. Because the chunk is freed, it must have landed in some bin.
 
-  Step4: Check the headers for bin #1, i.e. the unsorted bin, which are represented by bin[0] and bin[1], or <main_arena+8>. They are not visible.
+  Step4: Check the headers for bin #1, i.e. bin[0] and bin[1], or <main_arena+8>. They are not visible.
 
-  Step5: The address before <main_arena+24> entries represent the address of the first free chunk in the list. Typecast it to a malloc_chunk* and dereference it. Focus on mchunk_size, it should be 1025. The 1 is for the prev_inuse bit.
+  Step5: Typecast the address to a (mchunkptr) and dereference it. Focus on mchunk_size, it should be 1025. The 1 is for the PREV_INUSE bit.
 
 */
 
-/* OBSERVATION: Large chunks goes to the unsorted bin and small chunks are binned directly. */
+/* OBSERVATIONS: 
 
-/* REASON: Prior to November 29, 2024, both small and large chunks went to the unsorted bin. On this date, a commit changed it. */
+  1. Bin #1, represented by bin[0] and bin[1] is the unsorted bin.
+  2. Large chunks goes to the unsorted bin, before getting binned. Small chunks are binned directly.
+
+*/
+
+/* REASON: Before November 29, 2024, both small and large chunks went to the unsorted bin. On this date, a commit changed it. Why though? */
 
 /* MORE DETAILS:
 

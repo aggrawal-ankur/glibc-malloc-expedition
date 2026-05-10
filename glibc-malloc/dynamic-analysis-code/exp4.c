@@ -1,6 +1,6 @@
 /* EXPERIMENT 4 */
 
-/* OBJECTIVE: Verify that bin #64 is the first largebin in category #1, represented by the headers bin[126] and bin[127]. */
+/* OBJECTIVE: Bin #64 is the first largebin in category #1, represented by the headers bin[126] and bin[127]. */
 
 /* METHOD:
 
