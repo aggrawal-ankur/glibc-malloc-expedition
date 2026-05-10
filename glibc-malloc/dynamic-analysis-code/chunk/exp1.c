@@ -30,7 +30,7 @@
 
 malloc() returns a pointer to the first byte in the payload memory. The variable `c1` contains that pointer. We can print it using `p`.
 
-The pointer variable `c1` is of type `char`, so the pointer inherits that type. We have to typecast it to (struct malloc_chunk*) to tell `print` to print the initial contents as if they represent a malloc_chunk.
+The pointer variable `c1` is of type `char`, so the pointer inherits that type. We have to typecast it to (struct malloc_chunk*) to tell `print` to print sizeof(struct malloc_chunk) bytes of memory starting from c1 as if they represent a malloc_chunk.
 ```
 (gdb) print *(struct malloc_chunk*)(c1)
 $1 = {mchunk_prev_size = 0, mchunk_size = 0, fd = 0x0, bk = 0x20fe1, fd_nextsize = 0x0, bk_nextsize = 0x0}
