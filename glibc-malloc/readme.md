@@ -22,6 +22,10 @@ A complete description of glibc-malloc
     - [Macro #6 -\> MINSIZE](#macro-6---minsize)
     - [Macro #7 -\> request2size](#macro-7---request2size)
     - [Macro #8 -\> chunk2mem](#macro-8---chunk2mem)
+- [Dynamic Analysis Setup](#dynamic-analysis-setup)
+  - [Custom glibc built details](#custom-glibc-built-details)
+  - [Workflow](#workflow)
+- [Chunk Description Labs](#chunk-description-labs)
 - [The Bookkeeping System, Part 0: The Problem](#the-bookkeeping-system-part-0-the-problem)
 - [The Bookkeeping System, Part 1: The Implementation Of Bins](#the-bookkeeping-system-part-1-the-implementation-of-bins)
   - [Premise](#premise)
@@ -56,10 +60,7 @@ A complete description of glibc-malloc
   - [Largebin Size Ranges, Part 2](#largebin-size-ranges-part-2)
     - [Largebin Category #1](#largebin-category-1)
     - [Largebin Category #2](#largebin-category-2)
-- [The Bookkeeping System, Part 3: Dynamic Analysis of Chunks and Bins](#the-bookkeeping-system-part-3-dynamic-analysis-of-chunks-and-bins)
-  - [Setup](#setup)
-  - [The Environment](#the-environment)
-  - [Workflow](#workflow)
+- [The Bookkeeping System, Part 3: Dynamic Analysis of Bins](#the-bookkeeping-system-part-3-dynamic-analysis-of-bins)
   - [The List Of Experiments](#the-list-of-experiments)
 ---
 
@@ -743,10 +744,101 @@ This will land us at the `fd` field in the struct, where the payload memory star
 
 ***That's what the author probably meant when he said, "This struct declaration is misleading (but accurate and necessary)."***
 
-
-Now that we understand chunks, let's explore how freed chunks are managed, i.e, **the bookkeeping process**.
+Let's verify these things at runtime.
 
 ---
+
+# Dynamic Analysis Setup
+
+As of writing this, the release-tag for glibc is v2.43. But stable-release distributions avoid using the upstream branch. So the glibc setup on your GNU Linux machine is not likely to be at v2.43.
+
+To ensure reproducibility, a Dockerfile is provided in the `glibc-malloc/` directory that does the whole setup. It builds glibc-2.43 from scratch. The details of the setup are discussed below.
+
+If you have cloned the repository and reading locally, open your terminal in the `./glibc-malloc/dynamic-analysis-code/` directory and run the docker commands.
+
+If you are reading on GitHub, you can either clone the repository and follow along, or just `wget` the `Dockerfile`. There is absolutely no compulsion to clone the repo.
+
+Below are the commands.
+
+1. Get the Dockerfile.
+   ```bash
+    wget https://raw.githubusercontent.com/aggrawal-ankur/systems-dives/refs/heads/main/glibc-malloc/dynamic-analysis-code/setup
+   ```
+
+2. Build the docker image.
+   ```bash
+    # docker build -t <image-name>
+    docker build -t glibc-malloc-exp-img
+   ```
+
+3. Create a container.
+   ```bash
+   # docker create --name <container-name> <image-name>
+   docker create --name glibc-exp-cont  glibc-malloc-exp-img
+   ```
+
+4. Run the container.
+   ```bash
+    docker start <container-name>
+    # or
+    docker start <container-id>
+   ```
+
+5. Attach to the container.
+   ```bash
+    docker attach <container-name>
+    # or
+    docker attach <container-id>
+   ```
+
+**Notes**:
+  1. If you don't have docker enabled on OS start, you have to use a utility like systemctl to enable docker before using.
+  2. If your user is not in the `docker` group, append `sudo` before each command, except `wget`.
+  3. Because the setup builds glibc-2.43 from source, it is better to reuse the container instead of running a new one every time.
+
+That's the setup I use. If you are experienced with docker, use the Dockerfile however you want.
+
+## Custom glibc built details
+
+....
+
+## Workflow
+
+The workflow is very simple.
+
+1. Start and attach the container.
+2. cd to `/experiments/`.
+3. Open an experiment with `vim exp<n>.c`. Each experiment comes with a detailed description and the process to perform the experiment. Read it. Press `esc`, `:q` to close.
+4. Open the build script to understand what it is doing. It simply ensures that our custom glibc built is used instead of the normal on.
+5. Use the `build` script to build-execute a lab: `./build exp<n>.c`.
+
+[TODO: Remove the glibc-tunable setup here.]
+
+---
+
+# Chunk Description Labs
+
+All walkthroughs target 64-bit.
+
+These are the experiments.
+
+1. The smallest chunk size is MINSIZE bytes.
+2. Structural analysis of a chunk.
+3. The dummy chunk (top) and the boundary tag implementation.
+4. Free chunk analysis and the need for a barrier chunk.
+5. prev_size and state of PREV_INUSE bit.
+6. The pointer fields are garbage in in-use chunks. Prove by writing data to the pointer and show it.
+
+---
+
+The facts we can't verify yet, because we don't know what exactly is small and large size.
+
+1. Small free chunks only use fd/bk. 
+2. Large free chunks use every field.
+
+---
+
+Now that we understand chunks, let's explore how freed chunks are managed, i.e, **the bookkeeping process**.
 
 # The Bookkeeping System, Part 0: The Problem
 
@@ -1920,70 +2012,7 @@ Finally, it's time to verify everything we have discussed, from line 0 to line 1
 
 # The Bookkeeping System, Part 3: Dynamic Analysis of Chunks and Bins
 
-## Setup
-
-A docker image is provided in the `glibc-malloc/` directory. If you have cloned the repository and reading locally, you can simply `cd` to this directory and run the docker commands.
-
-If you are reading on GitHub, you can either clone the repository and follow along, or just `wget` the `Dockerfile`. There is absolutely no compulsion to clone the repo, except you want everything locally.
-
-Below are the commands.
-
-1. Get the Dockerfile.
-   ```bash
-    wget https://raw.githubusercontent.com/aggrawal-ankur/systems-dives/refs/heads/main/glibc-malloc/dynamic-analysis-code/setup
-   ```
-
-2. Build the docker image.
-   ```bash
-    # docker build -t <image-name>
-    docker build -t glibc-malloc-exp-img
-   ```
-
-3. Create a container.
-   ```bash
-   # docker create --name <container-name> <image-name>
-   docker create --name glibc-exp-cont  glibc-malloc-exp-img
-   ```
-
-4. Run the container.
-   ```bash
-    docker start <container-name>
-    # or
-    docker start <container-id>
-   ```
-
-5. Attach to the container.
-   ```bash
-    docker attach <container-name>
-    # or
-    docker attach <container-id>
-   ```
-
-**Notes**:
-  1. If your user is not in the `docker` group, append `sudo` before each command, except `wget`.
-  2. This setup assumes that you will reuse the container. Optionally, you can spin a new container every time with `docker run`.
-  3. If you don't have docker enabled on OS start, you have to use a utility like systemctl to enable docker before using.
-
-That's the setup I use. If you are experienced with docker, you can do what you want.
-
-## The Environment
-
-What distros operates on vs upstream branch.
-
-How we have custom built glibc-2.43 as that's the latest release-tag right now.
-
-That's why we use docker.
-
 You might be aware of tooling like pwndbg (PWN Debug) and GEF (GDB Extended Features). These are tools built on top of gdb. They provide a nice abstraction over the actual functionality. Because we want to build a strong mental model of the underlying architecture, we will not use any kind of tooling, except the debugger itself.
-
-## Workflow
-
-The workflow is very simple.
-
-1. Start and attach the container.
-2. cd to `/experiments/`.
-3. Use the `build` script to build-execute a lab.
-4. For walkthrough, you can either read the writeup, or the comments in the lab code. Both are carefully written with no hurries.
 
 ## The List Of Experiments
 
