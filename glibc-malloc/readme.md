@@ -2010,7 +2010,7 @@ Pure math. No assumptions.
 
 Finally, it's time to verify everything we have discussed, from line 0 to line 1960 with dynamic analysis.
 
-# The Bookkeeping System, Part 3: Dynamic Analysis of Chunks and Bins
+# The Bookkeeping System, Part 3: Dynamic Analysis of Bins
 
 You might be aware of tooling like pwndbg (PWN Debug) and GEF (GDB Extended Features). These are tools built on top of gdb. They provide a nice abstraction over the actual functionality. Because we want to build a strong mental model of the underlying architecture, we will not use any kind of tooling, except the debugger itself.
 
