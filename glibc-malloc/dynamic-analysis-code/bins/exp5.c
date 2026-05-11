@@ -2,11 +2,11 @@
 
 /* OBJECTIVE: Small chunks use only the fd/bk pointers. */
 
-/* ADD BREAKPOINT NOTES. */
+/* SETUP: Add breakpoints on lines #71, #75, and #79. */
 
 /* ANALYSIS: 
 
-Initial print:
+Print the initial state:
 ```
 (gdb) p *(mchunkptr)(c1-16)
 $1 = {mchunk_prev_size = 0, mchunk_size = 81, fd = 0x0, bk = 0x0, fd_nextsize = 0x0, bk_nextsize = 0x0}
@@ -15,7 +15,7 @@ $1 = {mchunk_prev_size = 0, mchunk_size = 81, fd = 0x0, bk = 0x0, fd_nextsize = 
 $2 = {mchunk_prev_size = 0, mchunk_size = 81, fd = 0x0, bk = 0x0, fd_nextsize = 0x0, bk_nextsize = 0x0}
 ```
 
-Notice all the pointers are NULL right now. Now execute memcpy: `c` and print the chunks again.
+Notice all the pointers are NULL right now. Continue and execute the mempcpy instruction. Now print the chunks again.
 ```
 (gdb) p *(mchunkptr)(c1-16)
 $3 = {mchunk_prev_size = 0, mchunk_size = 81, fd = 0x20656d616e20794d, bk = 0x2e616e6e41207369, fd_nextsize = 0x2065766f6c204920, 
@@ -26,7 +26,7 @@ $4 = {mchunk_prev_size = 0, mchunk_size = 81, fd = 0x20656d616e20794d, bk = 0x2c
   bk_nextsize = 0x2065766f6c206f6f}
 ```
 
-We already know the struct of malloc_chunk and how the memory looks like from chunk description experiments. After the initial 32 bytes (0-31), the next 16 bytes of the payload memory overlap with the nextsize pointer fields. So, what we are seeing here in the four fields in actually garbage, or the contents of the payload memory "interpreted as addresses".
+We already understand the malloc_chunk struct and how the memory looks like from chunk description experiments. After the initial 32 bytes (0-31), the next 16 bytes of the payload memory overlap with the nextsize pointer fields. So, what we are seeing here in the four fields is actually garbage, or the contents of the payload memory are "interpreted as addresses".
 
 Now free the pointers (`c`) and print them again.
 ```
@@ -47,9 +47,9 @@ $7 = 0x55dd637fa000 ""
 $8 = 0x55dd637fa070 ""
 ```
 
-0x7f71fb0bccc8 <main_arena+72> is the bin header for this bin.
+0x7f71fb0bccc8 <main_arena+72> is the bin header for this bin and the nextsize pointers continue to have the same garbage value.
 
-The nextsize pointers continue to have the same garbage value. This proves that small chunk use only the fd/bk fields.
+This proves that small chunks use only the fd/bk fields.
 
 */
 
