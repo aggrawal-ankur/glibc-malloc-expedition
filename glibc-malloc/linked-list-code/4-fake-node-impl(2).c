@@ -23,7 +23,6 @@ int pushAtHead(Node** ListRef, int initVal){
   Node* new_node = createNode(initVal);
   if (!new_node) return -1;
 
-  /* List with one or more nodes. */
   Node* fake_node = *ListRef;
 
   // Step1: Modify the links of the new node.
@@ -43,7 +42,6 @@ int pushAtTail(Node** ListRef, int initVal){
   Node *new_node = createNode(initVal);
   if (!new_node){ return -1;}
 
-  /* List with one or more nodes. */
   Node* fake_node = *ListRef;
 
   // Step1: Modify the new node's links
@@ -88,7 +86,6 @@ int deleteFromHead(Node** ListRef){
   Node* fake_node = *ListRef;
   if (fake_node->next == fake_node)  return -1;
 
-  /* List with more than one node. */
   Node* cur_head = fake_node->next;
 
   // Step1: Modify the prev link of the node next to the current head node
@@ -106,7 +103,6 @@ int deleteFromTail(Node** ListRef){
   Node* fake_node = *ListRef;
   if (fake_node->next == fake_node)  return -1;
 
-  /* List with more than one node. */
   Node* cur_tail = fake_node->prev;
 
   // Step1: Modify the fake node's prev link.
