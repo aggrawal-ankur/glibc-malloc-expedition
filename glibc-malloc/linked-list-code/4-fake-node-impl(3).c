@@ -66,12 +66,12 @@ void displayFromHead(Node** ListRef){
 
 void displayFromTail(Node** ListRef){
   Node* fake_node = *ListRef;
-  if (fake_node->next == fake_node)  return;
+  if (fake_node->prev == fake_node)  return;
 
-  Node* tmp = fake_node->next;
+  Node* tmp = fake_node->prev;
   do {
     printf("NodeValue: %d\n", tmp->data);
-    tmp = tmp->next;
+    tmp = tmp->prev;
   } while (tmp != fake_node);
 }
 
