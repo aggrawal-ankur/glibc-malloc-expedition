@@ -1,4 +1,10 @@
-/* Implemented ordered list based on the data field. */
+/*
+
+Now the list is ordered based on the data field. Consequently, separate function for HEAD/TAIL based traversal are not meaningful anymore. 
+
+Insertion can be approached from either side; the position of the node will remain the same. However, it can be helpful in heuristic based insertion in long lists, where we try to find which end might require less traversal (based on the data field). But obtaining the tail end is as simple as fake_node->bk.
+
+*/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,12 +27,12 @@ Node* createNode(int initVal){
   return n;
 }
 
-int pushAtHead(Node** ListRef, int initVal){
+int linkNode(Node** ListRef, int initVal){
   Node* new_node = createNode(initVal);
   if (!new_node) return -1;
 
   Node* fake_node = *ListRef;
-  Node* cur_node = fake_node->next;    // Head node
+  Node* cur_node = fake_node->next;    // Start with the head node.
 
   while (1){
     if (
@@ -47,67 +53,12 @@ int pushAtHead(Node** ListRef, int initVal){
   return 1;
 }
 
-int pushAtTail(Node** ListRef, int initVal){
-  Node *new_node = createNode(initVal);
-  if (!new_node){ return -1;}
-
-  Node* fake_node = *ListRef;
-  Node* cur_node = fake_node->prev;
-
-  while (1){
-    if (
-      (cur_node == fake_node) ||
-      (new_node->data > cur_node->data)
-    ){
-      new_node->prev = cur_node;
-      new_node->next = cur_node->next;
-      
-      (cur_node->next)->prev = new_node;
-      cur_node->next = new_node;
-
-      return 0;
-    }
-    cur_node = cur_node->prev;
-  }
-
-  return 1;
+void unlinkNode(Node* node2remove){
+  (node2remove->prev)->next = node2remove->next;
+  (node2remove->next)->prev = node2remove->prev;
 }
 
-int deleteFromHead(Node** ListRef){
-  /* Empty list check. */
-  Node* fake_node = *ListRef;
-  if (fake_node->next == fake_node)  return -1;
-
-  Node* cur_head = fake_node->next;
-
-  // Step1: Modify the prev link of the node next to the current head node
-  (cur_head->next)->prev = fake_node;
-
-  // Step2: Modify the fake node's next link.
-  fake_node->next = cur_head->next;
-
-  // Step3: Release the current head node.
-  free(cur_head);
-}
-
-int deleteFromTail(Node** ListRef){
-  /* Empty list check. */
-  Node* fake_node = *ListRef;
-  if (fake_node->next == fake_node)  return -1;
-
-  Node* cur_tail = fake_node->prev;
-
-  // Step1: Modify the fake node's prev link.
-  fake_node->prev = cur_tail->prev;
-
-  // Step2: Modify the next link of the node previous to the last node.
-  (cur_tail->prev)->next = fake_node;
-
-  // Step3: free(cur_tail)
-  free(cur_tail);
-}
-
-void displayFromHead(Node** ListRef){
+void displayList(Node** ListRef){
   Node* fake_node = *ListRef;
   if (fake_node->next == fake_node) return;
 
@@ -120,18 +71,7 @@ void displayFromHead(Node** ListRef){
   } while(tmp != fake_node);
 }
 
-void displayFromTail(Node** ListRef){
-  Node* fake_node = *ListRef;
-  if (fake_node->prev == fake_node)  return;
-
-  Node* tmp = fake_node->prev;
-  do {
-    printf("NodeValue: %d\n", tmp->data);
-    tmp = tmp->prev;
-  } while (tmp != fake_node);
-}
-
-void displayFormattedFromHead(Node** ListRef){
+void displayFormattedList(Node** ListRef){
   Node* fake_node = *ListRef;
   if (fake_node->next == fake_node)  return;
 
@@ -140,19 +80,6 @@ void displayFormattedFromHead(Node** ListRef){
   do {
     printf("(%d) <--> ", tmp->data);
     tmp = tmp->next;
-  } while (tmp != fake_node);
-  printf("..\n");
-}
-
-void displayFormattedFromTail(Node** ListRef){
-  Node* fake_node = *ListRef;
-  if (fake_node->prev == fake_node)  return;
-
-  Node* tmp = fake_node->prev;
-  printf(".. <--> ");
-  do {
-    printf("(%d) <--> ", tmp->data);
-    tmp = tmp->prev;
   } while (tmp != fake_node);
   printf("..\n");
 }
@@ -173,31 +100,37 @@ int main(void){
   initListHeaders(listHeaders, listCount);
 
   Node* ListRef = (Node*)((char*)(&listHeaders[0])-8);
-  pushAtTail(&ListRef, 5);
-  displayFormattedFromHead(&ListRef);
+  linkNode(&ListRef, 5);
+  displayFormattedList(&ListRef);
   sleep(1);
 
-  pushAtTail(&ListRef, -5);
-  displayFormattedFromHead(&ListRef);
+  linkNode(&ListRef, -5);
+  displayFormattedList(&ListRef);
   sleep(1);
 
-  pushAtTail(&ListRef, 46);
-  displayFormattedFromHead(&ListRef);
+  linkNode(&ListRef, 46);
+  displayFormattedList(&ListRef);
   sleep(1);
 
-  pushAtTail(&ListRef, 0);
-  displayFormattedFromHead(&ListRef);
+  linkNode(&ListRef, 0);
+  displayFormattedList(&ListRef);
   sleep(1);
 
-  pushAtTail(&ListRef, -2);
-  displayFormattedFromHead(&ListRef);
+  linkNode(&ListRef, -2);
+  displayFormattedList(&ListRef);
   sleep(1);
 
-  pushAtTail(&ListRef, 8);
-  displayFormattedFromHead(&ListRef);
+  linkNode(&ListRef, 8);
+  displayFormattedList(&ListRef);
   sleep(1);
 
-  pushAtTail(&ListRef, 5);
-  displayFormattedFromHead(&ListRef);
+  linkNode(&ListRef, 5);
+  displayFormattedList(&ListRef);
   sleep(1);
+
+  Node* n2r = (ListRef->next)->next;
+  unlinkNode(n2r);
+  printf("List after unlinking a node:  ");
+  displayFormattedList(&ListRef);
+  printf("\n");
 }
