@@ -52,22 +52,28 @@ int linkNode(Node** ListRef, int initVal){
     Node* tmp = (fake_node->next)->next;
 
     while (1){
-      if (
-        (tmp != fake_node) &&
-        (unique_node->data != tmp->data)
-      ){
-        unique_node->skip_next = tmp;
-        tmp->skip_prev = unique_node;
+      if (tmp != fake_node){
 
-        unique_node = tmp;
+        if (unique_node->data == tmp->data){
+          tmp->skip_next = NULL;
+          tmp->skip_prev = NULL;
+        }
+        else if (unique_node->data != tmp->data){
+          unique_node->skip_next = tmp;
+          tmp->skip_prev = unique_node;
+  
+          unique_node = tmp;
+        }
       }
-      if (tmp == fake_node){
+
+      else if (tmp == fake_node){
         unique_node->skip_next = tmp->next;
         (tmp->next)->skip_prev = unique_node;
 
         status=1;
         break;
       }
+
       tmp = tmp->next;
     }
   }
@@ -122,6 +128,17 @@ void displaySkipList(Node** ListRef){
   printf("..\n");
 }
 
+void prettyPrintNode(Node* n2pp){
+  printf("\n%p\n", n2pp);
+  printf("{\n");
+  printf("   .data = %d,\n", n2pp->data);
+  printf("   .next = %p,\n", n2pp->next);
+  printf("   .prev = %p,\n", n2pp->prev);
+  printf("   .skip_next = %p,\n", n2pp->skip_next);
+  printf("   .skip_prev = %p,\n", n2pp->skip_prev);
+  printf("}\n");
+}
+
 int initListHeaders(Node** listHdrs, int listCount){
   if (!listHdrs)  return -1;
   for (int i=0; i<listCount; i++){
@@ -148,6 +165,14 @@ int main(void){
 
   printf("Complete list: ");
   displayFormattedList(&ListRef);
-  printf("Skip list: ");
+
+  printf("\nSkip list: ");
   displaySkipList(&ListRef);
+
+  printf("\nPretty Print: \n");
+  Node* tmp = ListRef->next;
+  do {
+    prettyPrintNode(tmp);
+    tmp = tmp->next;
+  } while (tmp != ListRef);
 }
