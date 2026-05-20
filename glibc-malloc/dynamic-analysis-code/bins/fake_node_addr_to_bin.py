@@ -65,7 +65,7 @@ def main_logic_with_pretty_print():
   with open("./mapping.txt", "w") as f:
     f.write("| Bin #    | BASE SIZE | Bin Category    | Bin Width | Bin Headers            | Fake_node Address |\n")
     f.write("| -----    | --------- | ------------    | --------- | -----------            | ----------------- |\n")
-    f.write("| Bin #1   | NA        | Unsorted Bin    | NA                | (bins[0],   bins[1])   | <main_arena+8>    |\n")
+    f.write("| Bin #1   | NA        | Unsorted Bin    | NA        | (bins[0],   bins[1])   | <main_arena+8>    |\n")
 
     BIN_HDRS = 2
     ARENA_OFFSET = 24
