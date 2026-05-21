@@ -20,12 +20,13 @@ These are the ideas I want to explore in future, either because I am interested 
    - Virtual memory (Touched)
    - Physical memory (Untouched)
 
-4. C data type **taxonomy** and the **illusion** of data types. (Know quite-well, only the writing remains).
+4. C data type **taxonomy** and the **illusion** of data types. (Aware of the illusion).
 
-5. **Assembly** (Touched and have some experience)
+5. **Assembly** (Have some experience)
    - x64 Assembly
    - Inline Assembly (New)
    - Assembly Instruction to Binary Opcodes Translation (New)
+   - What does programming in assembly actually teaches? How is it different from other languages?
 
 6. **Debugging** (Touched)
    - History and evolution.
@@ -68,4 +69,6 @@ These are the ideas I want to explore in future, either because I am interested 
 
 14. How version controlling systems (VCS) like git work. (Untouched)
 
-**Note: Untouched doesn't mean I don't use those things. I have just not dove into them yet.**
+15. Host my own website, on my own hardware, and on a custom managed remote server.
+
+16. Make my own markdown-based personal note taking application for Linux with sync with mobile.
