@@ -1,5 +1,8 @@
-# Generate Arrays of base sizes for each category.
+# This script is entirely based on the pyramid.
+# Therefore, it is only theoretically correct.
 
+# Generate Arrays of base sizes for each category.
+# ---
 SMALLBIN_WIDTH = 16
 SMALL_SIZES = [SMALLBIN_WIDTH*i  for i in range(2, 63+1)]
 
@@ -17,6 +20,7 @@ LARGEBIN_CAT4 = [(CAT4_BASE+(32768*i))  for i in range(4)]
 
 CAT5_BASE = CAT4_BASE + (32768*4)
 LARGEBIN_CAT5 = [(CAT5_BASE+(262144*i))  for i in range(2)]
+# ---
 
 # Main printing logic.
 def main_logic():
