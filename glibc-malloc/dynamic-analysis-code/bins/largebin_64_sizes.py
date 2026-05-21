@@ -1,3 +1,6 @@
+# This script generates bin to size mapping on 64-bit based on the pyramid.
+# Therefore, it is completely theoretical.
+
 SMALLBIN_WIDTH = 16
 CAT1_BASE = 1024
 
