@@ -1,3 +1,7 @@
+# This script generates bin to size mapping based on largebin_index_64.
+# Therefore, it is a clear depiction of what happens at runtime.
+
+# The macro, expressed as a function.
 def largebin_index_64(sz):
   if ((sz >> 6) <= 48):
     return ((sz >> 6) + 48)
@@ -18,6 +22,7 @@ def largebin_index_64(sz):
     return 126
 
 
+# Populates the bin_size_map dictionary.
 def generate_bin2size_mapping(bin_size_map):
   sz = 1024
   SMALLBIN_WIDTH = 16
@@ -35,6 +40,7 @@ def generate_bin2size_mapping(bin_size_map):
     sz += SMALLBIN_WIDTH
 
 
+# Generates a file with an output table based on bin_size_map.
 def generate_table(bin_size_map):
   with open("./b2s_mapping.txt", "w") as f:
     f.write("| Sr. | Bin # | Base Class | Last Class | Fixed Classes |\n")
@@ -45,6 +51,10 @@ def generate_table(bin_size_map):
       f.write(f"| {i:<3} | {key:<5} | {value[0]:<10} | {value[-1]:<10} | ({len(value)}) {value} |\n")
       i += 1
 
+
+
+
+# A dictionary with the following K:V pairs -: {bin_num: [size classes], ....}
 bin_size_map = dict()
 
 generate_bin2size_mapping(bin_size_map)
