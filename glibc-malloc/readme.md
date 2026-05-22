@@ -827,7 +827,7 @@ These are the experiments.
 3. The dummy chunk (top) and the boundary tag implementation.
 4. Free chunk analysis and the need for a barrier chunk.
 5. prev_size and state of PREV_INUSE bit.
-6. The pointer fields are garbage in in-use chunks. Prove by writing data to the pointer and show it.
+6. The pointer fields are garbage in in-use chunks.
 
 ---
 
@@ -2021,19 +2021,18 @@ These are the experiments we will do.
 1. Bin #2, represented by the headers bin[2] and bin[3], is the first smallbin of size class 32 bytes (MINSIZE on 64-bit).
 2. Bin #63, represented by the headers bin[124] and bin[125] is the last smallbin of size class 1008 bytes (MIN_LARGE_SIZE-SMALLBIN_WIDTH on 64-bit).
 3. Bin #1, represented by the headers bin[0] and bin[1] is the unsorted bin.
-4. Bin #64, represented by the headers bin[126] and bin[127] is the first largebin in category #1.
-5. A largebin is basically a collection of fixed size classes.
-6. Verify the formula `(SMALLBIN_WIDTH*i)`.
-
+4. The smallbin size classes are in the range: `[MINSIZE, MIN_LARGE_SIZE-SMALLBIN_WIDTH]`, with a step of SMALLBIN_WIDTH.
+5. Small chunks use only fd/bk pointers.
+6. Bin #64, represented by the headers bin[126] and bin[127] is the first largebin in category #1.
 7. The order in which chunks enter a bin.
-8. Small chunks use only fd/bk pointers. Large chunks use all the fields.
-9. A complete analysis of the pointer fields.
-10. How fd_nextsize/bk_nextsize basically makes an unsorted largebin sorted (skip list). Have chunks of same size, different size and in random order.
-11. The total number of bins, smallbins and largebins.
-12. The order of bins inside bins[].
-13. There is no bin for size 0.
-14. The smallbin size classes belong to: `[MINSIZE, MIN_LARGE_SIZE)`, with a step of SMALLBIN_WIDTH.
-15. BIN_WIDTH on 64-bit scale by 3 bits only.
-16. Show coalescing (both forward and backward).
-17. Show fragmentation (internal, external, l1 and l2).
-18. The exact amount at which bins top out.
+8. A largebin is basically a collection of fixed size classes.
+9. An in-depth analysis of the pointer fields in large chunks.
+
+10. The total number of largebins.
+11. There is no bin for size 0.
+12. BIN_WIDTH on 64-bit scale by 3 bits only.
+13. Show coalescing (both forward and backward).
+14. Show fragmentation (internal, external, l1 and l2).
+15. The exact amount at which bins top out.
+
+---
