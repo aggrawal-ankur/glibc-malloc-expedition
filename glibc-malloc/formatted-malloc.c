@@ -2421,309 +2421,320 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     /* First try to extend the current heap. */
     old_heap = heap_for_ptr(old_top);
     old_heap_size = old_heap->size;
-      if ((long) (MINSIZE + nb - old_size) > 0
-          && grow_heap (old_heap, MINSIZE + nb - old_size) == 0)
-        {
-          av->system_mem += old_heap->size - old_heap_size;
-          set_head (old_top, (((char *) old_heap + old_heap->size) - (char *) old_top)
-                    | PREV_INUSE);
-        }
-      else if ((heap = new_heap (nb + (MINSIZE + sizeof (*heap)), mp_.top_pad)))
-        {
-          /* Use a newly allocated heap.  */
-          heap->ar_ptr = av;
-          heap->prev = old_heap;
-          av->system_mem += heap->size;
-          /* Set up the new top.  */
-          top (av) = chunk_at_offset (heap, sizeof (*heap));
-          set_head (top (av), (heap->size - sizeof (*heap)) | PREV_INUSE);
 
-          /* Setup fencepost and free the old top chunk with a multiple of
-             MALLOC_ALIGNMENT in size. */
-          /* The fencepost takes at least MINSIZE bytes, because it might
-             become the top chunk again later.  Note that a footer is set
-             up, too, although the chunk is marked in use. */
-          old_size = (old_size - MINSIZE) & ~MALLOC_ALIGN_MASK;
-          set_head (chunk_at_offset (old_top, old_size + CHUNK_HDR_SZ),
-		    0 | PREV_INUSE);
-          if (old_size >= MINSIZE)
-            {
-              set_head (chunk_at_offset (old_top, old_size),
-			CHUNK_HDR_SZ | PREV_INUSE);
-              set_foot (chunk_at_offset (old_top, old_size), CHUNK_HDR_SZ);
-              set_head (old_top, old_size | PREV_INUSE | NON_MAIN_ARENA);
-              _int_free_chunk (av, old_top, chunksize (old_top), 1);
-            }
-          else
-            {
-              set_head (old_top, (old_size + CHUNK_HDR_SZ) | PREV_INUSE);
-              set_foot (old_top, (old_size + CHUNK_HDR_SZ));
-            }
-        }
-      else if (!tried_mmap)
-	{
-	  /* We can at least try to use to mmap memory.  If new_heap fails
-	     it is unlikely that trying to allocate huge pages will
-	     succeed.  */
-	  char *mm = sysmalloc_mmap (nb, pagesize, 0);
-	  if (mm != MAP_FAILED)
-	    return mm;
-	}
+    if (
+      (long)(MINSIZE + nb - old_size) > 0 && 
+      grow_heap(old_heap, MINSIZE + nb - old_size) == 0
+    ){
+      av->system_mem += old_heap->size - old_heap_size;
+      set_head(
+        old_top, 
+        (((char *) old_heap + old_heap->size) - (char *) old_top) | PREV_INUSE
+      );
     }
-  else     /* av == main_arena */
 
+    else if (
+      (heap = new_heap (nb + (MINSIZE + sizeof (*heap)), mp_.top_pad))
+    ){
+      /* Use a newly allocated heap.  */
+      heap->ar_ptr = av;
+      heap->prev = old_heap;
+      av->system_mem += heap->size;
 
-    { /* Request enough space for nb + pad + overhead */
-      size = nb + mp_.top_pad + MINSIZE;
+      /* Set up the new top.  */
+        top (av) = chunk_at_offset (heap, sizeof (*heap));
+        set_head (top (av), (heap->size - sizeof (*heap)) | PREV_INUSE);
 
-      /*
-         If contiguous, we can subtract out existing space that we hope to
-         combine with new space. We add it back later only if
-         we don't actually get contiguous space.
-       */
+      /* Setup fencepost and free the old top chunk with a multiple of
+      MALLOC_ALIGNMENT in size. */
+      /* The fencepost takes at least MINSIZE bytes, because it might
+      become the top chunk again later.  Note that a footer is set
+      up, too, although the chunk is marked in use. */
+      old_size = (old_size - MINSIZE) & ~MALLOC_ALIGN_MASK;
+      set_head (
+        chunk_at_offset(old_top, old_size + CHUNK_HDR_SZ),
+		    0 | PREV_INUSE
+      );
 
-      if (contiguous (av))
-        size -= old_size;
+      if (old_size >= MINSIZE){
+        set_head(
+          chunk_at_offset (old_top, old_size),
+          CHUNK_HDR_SZ | PREV_INUSE
+        );
 
-      /*
-         Round to a multiple of page size or huge page size.
-         If MORECORE is not contiguous, this ensures that we only call it
-         with whole-page arguments.  And if MORECORE is contiguous and
-         this is not first time through, this preserves page-alignment of
-         previous calls. Otherwise, we correct to page-align below.
-       */
+        set_foot(
+          chunk_at_offset(old_top, old_size), 
+          CHUNK_HDR_SZ
+        );
 
-      /* Ensure thp_pagesize is initialized.  */
-      thp_init ();
+        set_head(
+          old_top, 
+          old_size | PREV_INUSE | NON_MAIN_ARENA
+        );
 
-      if (__glibc_unlikely (mp_.thp_pagesize != 0))
-	{
-	  uintptr_t lastbrk = (uintptr_t) MORECORE (0);
-	  uintptr_t top = ALIGN_UP (lastbrk + size, mp_.thp_pagesize);
-	  size = top - lastbrk;
-	}
-      else
-	size = ALIGN_UP (size, GLRO(dl_pagesize));
+        _int_free_chunk(av, old_top, chunksize (old_top), 1);
+      }
 
-      /*
-         Don't try to call MORECORE if argument is so big as to appear
-         negative. Note that since mmap takes size_t arg, it may succeed
-         below even if we cannot call MORECORE.
-       */
+      else{
+        set_head (old_top, (old_size + CHUNK_HDR_SZ) | PREV_INUSE);
+        set_foot (old_top, (old_size + CHUNK_HDR_SZ));
+      }
+    }
 
-      if ((ssize_t) size > 0)
-        {
-          brk = (char *) (MORECORE ((long) size));
-	  if (brk != (char *) (MORECORE_FAILURE))
-	    madvise_thp (brk, size);
-          LIBC_PROBE (memory_sbrk_more, 2, brk, size);
-        }
+    else if (!tried_mmap){
+      /* We can at least try to use to mmap memory. If new_heap 
+      fails it is unlikely that trying to allocate huge pages will
+      succeed. */
+      char *mm = sysmalloc_mmap (nb, pagesize, 0);
+      if (mm != MAP_FAILED)
+        return mm;
+    }
+  }
 
-      if (brk == (char *) (MORECORE_FAILURE))
-        {
-          /*
-             If have mmap, try using it as a backup when MORECORE fails or
-             cannot be used. This is worth doing on systems that have "holes" in
-             address space, so sbrk cannot extend to give contiguous space, but
-             space is available elsewhere.  Note that we ignore mmap max count
-             and threshold limits, since the space will not be used as a
-             segregated mmap region.
-           */
+  /* av == main_arena */
+  else{
+    /* Request enough space for nb + pad + overhead */
+    size = nb + mp_.top_pad + MINSIZE;
 
-	  size_t fallback_size = nb + mp_.top_pad + MINSIZE;
-	  char *mbrk = MAP_FAILED;
-	  if (mp_.hp_pagesize > 0)
-	    mbrk = sysmalloc_mmap_fallback (&size, fallback_size,
-					    mp_.hp_pagesize,
-					    mp_.hp_pagesize, mp_.hp_flags);
-	  if (mbrk == MAP_FAILED)
-	    mbrk = sysmalloc_mmap_fallback (&size, fallback_size,
-	                                    MMAP_AS_MORECORE_SIZE,
-	                                    pagesize, 0);
-	  if (mbrk != MAP_FAILED)
-	    {
-	      __set_vma_name (mbrk, fallback_size, " glibc: malloc");
+    /* If contiguous, we can subtract out existing space 
+    that we hope to combine with new space. We add it back 
+    later only if we don't actually get contiguous space. */
+    if (contiguous (av))
+      size -= old_size;
 
-	      /* Record that we no longer have a contiguous sbrk region.  After the first
-		 time mmap is used as backup, we do not ever rely on contiguous space
-		 since this could incorrectly bridge regions.  */
-	      set_noncontiguous (av);
+    /* Round to a multiple of page size or huge page size.
+    If MORECORE is not contiguous, this ensures that we 
+    only call it with whole-page arguments. And if MORECORE 
+    is contiguous and this is not first time through, this 
+    preserves page-alignment of previous calls. Otherwise, 
+    we correct to page-align below. */
 
-	      /* We do not need, and cannot use, another sbrk call to find end */
-	      brk = mbrk;
-	      snd_brk = brk + size;
-	    }
-        }
+    /* Ensure thp_pagesize is initialized. */
+    thp_init();
 
+    if (__glibc_unlikely (mp_.thp_pagesize != 0)){
+      uintptr_t lastbrk = (uintptr_t)MORECORE (0);
+      uintptr_t top = ALIGN_UP(lastbrk + size, mp_.thp_pagesize);
+      size = (top - lastbrk);
+    }
+    else{
+      size = ALIGN_UP(size, GLRO(dl_pagesize));
+    }
+
+    /* Don't try to call MORECORE if argument is so big as 
+    to appear negative. Note that since mmap takes size_t arg, 
+    it may succeed below even if we cannot call MORECORE. */
+
+    if ((ssize_t) size > 0){
+      brk = (char *) (MORECORE ((long) size));
       if (brk != (char *) (MORECORE_FAILURE))
-        {
-          if (mp_.sbrk_base == NULL)
-            mp_.sbrk_base = brk;
-          av->system_mem += size;
+        madvise_thp (brk, size);
 
-          /*
-             If MORECORE extends previous space, we can likewise extend top size.
-           */
+      LIBC_PROBE (memory_sbrk_more, 2, brk, size);
+    }
 
-          if (brk == old_end && snd_brk == (char *) (MORECORE_FAILURE))
-            set_head (old_top, (size + old_size) | PREV_INUSE);
+    if (brk == (char *)(MORECORE_FAILURE)){
+      /* If have mmap, try using it as a backup when MORECORE 
+      fails or cannot be used. This is worth doing on systems 
+      that have "holes" in address space, so sbrk cannot extend 
+      to give contiguous space, but space is available elsewhere. 
+      Note that we ignore mmap max count and threshold limits, 
+      since the space will not be used as a segregated mmap region. */
 
-          else if (contiguous (av) && old_size && brk < old_end)
-	    /* Oops!  Someone else killed our space..  Can't touch anything.  */
-	    malloc_printerr ("break adjusted to free malloc space");
+      size_t fallback_size = nb + mp_.top_pad + MINSIZE;
+      char *mbrk = MAP_FAILED;
 
-          /*
-             Otherwise, make adjustments:
+      if (mp_.hp_pagesize > 0)
+        mbrk = sysmalloc_mmap_fallback(
+          &size, fallback_size,
+          mp_.hp_pagesize,
+          mp_.hp_pagesize, mp_.hp_flags
+        );
 
-           * If the first time through or noncontiguous, we need to call sbrk
-              just to find out where the end of memory lies.
+      if (mbrk == MAP_FAILED)
+        mbrk = sysmalloc_mmap_fallback(
+          &size, fallback_size,
+          MMAP_AS_MORECORE_SIZE,
+          pagesize, 0
+        );
 
-           * We need to ensure that all returned chunks from malloc will meet
-              MALLOC_ALIGNMENT
+      if (mbrk != MAP_FAILED){
+        __set_vma_name(mbrk, fallback_size, " glibc: malloc");
 
-           * If there was an intervening foreign sbrk, we need to adjust sbrk
-              request size to account for fact that we will not be able to
-              combine new space with existing space in old_top.
+        /* Record that we no longer have a contiguous sbrk region. 
+        After the first time mmap is used as backup, we do not ever 
+        rely on contiguous space since this could incorrectly bridge 
+        regions. */
+        set_noncontiguous(av);
 
-           * Almost all systems internally allocate whole pages at a time, in
-              which case we might as well use the whole last page of request.
-              So we allocate enough more memory to hit a page boundary now,
-              which in turn causes future contiguous calls to page-align.
-           */
+        /* We do not need, and cannot use, another sbrk call to find end */
+        brk = mbrk;
+        snd_brk = brk + size;
+      }
+    }
 
-          else{
-              front_misalign = 0;
-              end_misalign = 0;
-              correction = 0;
-              aligned_brk = brk;
+    if (brk != (char *)(MORECORE_FAILURE)){
+      if (mp_.sbrk_base == NULL)
+        mp_.sbrk_base = brk;
 
-              /* handle contiguous cases. */
-              if (contiguous (av)){
-                  /* Count foreign sbrk as system_mem. */
-                  if (old_size)
-                    av->system_mem += brk - old_end;
+      av->system_mem += size;
 
-                  /* Guarantee alignment of first new chunk made from this space */
+      /* If MORECORE extends previous space, we can likewise 
+      extend top size. */
+      if (
+        brk == old_end && 
+        snd_brk == (char*)(MORECORE_FAILURE)
+      )
+        set_head(old_top, (size + old_size) | PREV_INUSE);
 
-                  front_misalign = (INTERNAL_SIZE_T) chunk2mem(brk) & MALLOC_ALIGN_MASK;
-                  if (front_misalign > 0){
-                      /*
-                         Skip over some bytes to arrive at an aligned position.
-                         We don't need to specially mark these wasted front bytes.
-                         They will never be accessed anyway because
-                         prev_inuse of av->top (and any chunk created from its start)
-                         is always true after initialization.
-                       */
+      else if (
+        contiguous(av) && 
+        old_size && 
+        brk < old_end
+      )
+        /* Oops!  Someone else killed our space..  Can't touch anything. */
+        malloc_printerr ("break adjusted to free malloc space");
 
-                      correction = MALLOC_ALIGNMENT - front_misalign;
-                      aligned_brk += correction;
-                    }
+      /* Otherwise, make adjustments:
 
-                  /* If this isn't adjacent to existing space, then we will not
-                     be able to merge with old_top space, so must add to 2nd request. */
+        * If the first time through or noncontiguous, we need to call sbrk
+          just to find out where the end of memory lies.
 
-                  correction += old_size;
+        * We need to ensure that all returned chunks from malloc will meet
+          MALLOC_ALIGNMENT
 
-                  /* Extend the end address to hit a page boundary */
-                  end_misalign = (INTERNAL_SIZE_T) (brk + size + correction);
-                  correction += (ALIGN_UP (end_misalign, pagesize)) - end_misalign;
+        * If there was an intervening foreign sbrk, we need to adjust sbrk
+          request size to account for fact that we will not be able to
+          combine new space with existing space in old_top.
 
-                  assert(correction >= 0);
-                  snd_brk = (char*)MORECORE(correction);
+        * Almost all systems internally allocate whole pages at a time, in
+          which case we might as well use the whole last page of request.
+          So we allocate enough more memory to hit a page boundary now,
+          which in turn causes future contiguous calls to page-align.
+      */
+      else{
+        front_misalign = 0;
+        end_misalign   = 0;
+        correction  = 0;
+        aligned_brk = brk;
 
-                  /*
-                     If can't allocate correction, try to at least find out current
-                     brk.  It might be enough to proceed without failing.
+        /* handle contiguous cases. */
+        if (contiguous (av)){
+          /* Count foreign sbrk as system_mem. */
+          if (old_size)
+            av->system_mem += brk - old_end;
 
-                     Note that if second sbrk did NOT fail, we assume that space
-                     is contiguous with first sbrk. This is a safe assumption unless
-                     program is multithreaded but doesn't use locks and a foreign sbrk
-                     occurred between our first and second calls.
-                   */
+          /* Guarantee alignment of first new chunk made from this space. */
+          front_misalign = (INTERNAL_SIZE_T) chunk2mem(brk) & MALLOC_ALIGN_MASK;
+          if (front_misalign > 0){
 
-                  if (snd_brk == (char *) (MORECORE_FAILURE)){
-                    correction = 0;
-                    snd_brk = (char *) (MORECORE (0));
-                  }
-		  else
-		    madvise_thp (snd_brk, correction);
-                }
+            /* Skip over some bytes to arrive at an aligned position.
+            We don't need to specially mark these wasted front bytes.
+            They will never be accessed anyway because
+            prev_inuse of av->top (and any chunk created from its start)
+            is always true after initialization. */
+            correction = MALLOC_ALIGNMENT - front_misalign;
+            aligned_brk += correction;
+          }
 
-              /* handle non-contiguous cases */
-              else{
-                  if (MALLOC_ALIGNMENT == CHUNK_HDR_SZ)
-                    /* MORECORE/mmap must correctly align */
-                    assert (((unsigned long) chunk2mem (brk) & MALLOC_ALIGN_MASK) == 0);
-                  else{
-                      front_misalign = (INTERNAL_SIZE_T) chunk2mem (brk) & MALLOC_ALIGN_MASK;
-                      if (front_misalign > 0){
-                          /*
-                             Skip over some bytes to arrive at an aligned position.
-                             We don't need to specially mark these wasted front bytes.
-                             They will never be accessed anyway because
-                             prev_inuse of av->top (and any chunk created from its start)
-                             is always true after initialization.
-                           */
+          /* If this isn't adjacent to existing space, then we will not
+          be able to merge with old_top space, so must add to 2nd request. */
+          correction += old_size;
 
-                          aligned_brk += MALLOC_ALIGNMENT - front_misalign;
-                        }
-                    }
+          /* Extend the end address to hit a page boundary */
+          end_misalign = (INTERNAL_SIZE_T) (brk + size + correction);
+          correction += (ALIGN_UP (end_misalign, pagesize)) - end_misalign;
 
-                  /* Find out current end of memory. */
-                  if (snd_brk == (char *) (MORECORE_FAILURE)){
-                    snd_brk = (char *) (MORECORE (0));
-                  }
-                }
+          assert(correction >= 0);
+          snd_brk = (char*)MORECORE(correction);
 
-              /* Adjust top based on results of second sbrk. */
-              if (snd_brk != (char *) (MORECORE_FAILURE)){
-                  av->top = (mchunkptr) aligned_brk;
-                  set_head (av->top, (snd_brk - aligned_brk + correction) | PREV_INUSE);
-                  av->system_mem += correction;
+          /* If can't allocate correction, try to at least find out 
+          current brk. It might be enough to proceed without failing.
 
-                  /*
-                     If not the first time through, we either have a
-                     gap due to foreign sbrk or a non-contiguous region.  Insert a
-                     double fencepost at old_top to prevent consolidation with space
-                     we don't own. These fenceposts are artificial chunks that are
-                     marked as inuse and are in any case too small to use.  We need
-                     two to make sizes and alignments work out.
-                   */
-
-                  if (old_size != 0){
-                      /*
-                         Shrink old_top to insert fenceposts, keeping size a
-                         multiple of MALLOC_ALIGNMENT. We know there is at least
-                         enough space in old_top to do this.
-                       */
-                      old_size = (old_size - 2 * CHUNK_HDR_SZ) & ~MALLOC_ALIGN_MASK;
-                      set_head (old_top, old_size | PREV_INUSE);
-
-                      /*
-                         Note that the following assignments completely overwrite
-                         old_top when old_size was previously MINSIZE.  This is
-                         intentional. We need the fencepost, even if old_top otherwise gets
-                         lost.
-                       */
-
-                      set_head(
-                        chunk_at_offset(old_top, old_size),
-                        CHUNK_HDR_SZ | PREV_INUSE
-                      );
-                      set_head(
-                        chunk_at_offset(old_top, old_size + CHUNK_HDR_SZ),
-                        CHUNK_HDR_SZ | PREV_INUSE
-                      );
-
-                      /* If possible, release the rest. */
-                      if (old_size >= MINSIZE){
-                        _int_free_chunk(av, old_top, chunksize(old_top), 1);
-                      }
-                    }
-                }
-            }
+          Note that if second sbrk did NOT fail, we assume that space
+          is contiguous with first sbrk. This is a safe assumption unless
+          program is multithreaded but doesn't use locks and a foreign 
+          sbrk occurred between our first and second calls. */
+          if (snd_brk == (char *) (MORECORE_FAILURE)){
+            correction = 0;
+            snd_brk = (char *) (MORECORE (0));
+          }
+          else
+            madvise_thp (snd_brk, correction);
         }
-    } /* if (av !=  &main_arena) */
+
+        /* handle non-contiguous cases */
+        else{
+          if (MALLOC_ALIGNMENT == CHUNK_HDR_SZ){
+            /* MORECORE/mmap must correctly align */
+            assert (((unsigned long) chunk2mem (brk) & MALLOC_ALIGN_MASK) == 0);
+          }
+          else{
+            front_misalign = (INTERNAL_SIZE_T) chunk2mem (brk) & MALLOC_ALIGN_MASK;
+            if (front_misalign > 0){
+
+              /* Skip over some bytes to arrive at an aligned position.
+              We don't need to specially mark these wasted front bytes.
+              They will never be accessed anyway because prev_inuse of 
+              av->top (and any chunk created from its start) is always 
+              true after initialization. */
+              aligned_brk += MALLOC_ALIGNMENT - front_misalign;
+            }
+          }
+
+          /* Find out current end of memory. */
+          if (snd_brk == (char *) (MORECORE_FAILURE)){
+            snd_brk = (char *) (MORECORE (0));
+          }
+        }
+
+        /* Adjust top based on results of second sbrk. */
+        if (snd_brk != (char*) (MORECORE_FAILURE)){
+          av->top = (mchunkptr)aligned_brk;
+          set_head(
+            av->top, 
+            (snd_brk - aligned_brk + correction) | PREV_INUSE
+          );
+          av->system_mem += correction;
+
+          /* If not the first time through, we either have a
+          gap due to foreign sbrk or a non-contiguous region. 
+          Insert a double fencepost at old_top to prevent 
+          consolidation with space we don't own. These fenceposts 
+          are artificial chunks that are marked as inuse and are 
+          in any case too small to use. We need two to make sizes 
+          and alignments work out. */
+          if (old_size != 0){
+
+            /* Shrink old_top to insert fenceposts, keeping size a
+            multiple of MALLOC_ALIGNMENT. We know there is at least
+            enough space in old_top to do this. */
+            old_size = (old_size - 2 * CHUNK_HDR_SZ) & ~MALLOC_ALIGN_MASK;
+            set_head (old_top, old_size | PREV_INUSE);
+
+
+            /* Note that the following assignments completely 
+            overwrite old_top when old_size was previously MINSIZE. 
+            This is intentional. We need the fencepost, even if 
+            old_top otherwise gets lost. */
+            set_head(
+              chunk_at_offset(old_top, old_size),
+              CHUNK_HDR_SZ | PREV_INUSE
+            );
+            set_head(
+              chunk_at_offset(old_top, old_size + CHUNK_HDR_SZ),
+              CHUNK_HDR_SZ | PREV_INUSE
+            );
+
+            /* If possible, release the rest. */
+            if (old_size >= MINSIZE){
+              _int_free_chunk(av, old_top, chunksize(old_top), 1);
+            }
+          }
+        }
+      }
+    }
+  } /* if (av !=  &main_arena) */
 
   if ((unsigned long)av->system_mem > (unsigned long)av->max_system_mem)
     av->max_system_mem = av->system_mem;
@@ -2739,8 +2750,10 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     remainder_size = (size - nb);
     remainder = chunk_at_offset(p, nb);
     av->top = remainder;
+  
     set_head(p, nb | PREV_INUSE | (av != &main_arena ? NON_MAIN_ARENA : 0));
     set_head(remainder, remainder_size | PREV_INUSE);
+
     check_malloced_chunk(av, p, nb);
     return chunk2mem(p);
   }
@@ -2971,13 +2984,15 @@ static uintptr_t tcache_key;
    in 2^wordsize.  There is probably a higher chance of the performance
    degradation being due to a double free where the first free happened in a
    different thread; that's a case this check does not cover.  */
-static void
-tcache_key_initialize (void)
+static void tcache_key_initialize (void)
 {
   /* We need to use the _nostatus version here, see BZ 29624.  */
-  if (__getrandom_nocancel_nostatus_direct (&tcache_key, sizeof(tcache_key),
-					    GRND_NONBLOCK)
-      != sizeof (tcache_key))
+  if (__getrandom_nocancel_nostatus_direct (
+      &tcache_key, 
+      sizeof(tcache_key),
+      GRND_NONBLOCK
+    ) != sizeof (tcache_key)
+  )
     tcache_key = 0;
 
   /* We need tcache_key to be non-zero (otherwise tcache_double_free_verify's
@@ -2988,16 +3003,17 @@ tcache_key_initialize (void)
   int minimum_bits = __WORDSIZE / 4;
   int maximum_bits = __WORDSIZE - minimum_bits;
 
-  while (tcache_key <= 0x1000000
-      || tcache_key >= ((uintptr_t) ULONG_MAX) - 0x1000000
-      || stdc_count_ones (tcache_key) < minimum_bits
-      || stdc_count_ones (tcache_key) > maximum_bits)
-    {
-      tcache_key = random_bits ();
+  while (
+    tcache_key <= 0x1000000 || 
+    tcache_key >= ((uintptr_t) ULONG_MAX) - 0x1000000 || 
+    stdc_count_ones (tcache_key) < minimum_bits || 
+    stdc_count_ones (tcache_key) > maximum_bits
+  ){
+    tcache_key = random_bits ();
 #if __WORDSIZE == 64
-      tcache_key = (tcache_key << 32) | random_bits ();
+    tcache_key = (tcache_key << 32) | random_bits ();
 #endif
-    }
+  }
 }
 
 static __always_inline size_t
@@ -3020,42 +3036,41 @@ tcache_put_n (mchunkptr chunk, size_t tc_idx, tcache_entry **ep, bool mangled)
      detect a double free.  */
   e->key = tcache_key;
 
-  if (!mangled)
-    {
-      e->next = PROTECT_PTR (&e->next, *ep);
-      *ep = e;
-    }
-  else
-    {
-      e->next = PROTECT_PTR (&e->next, REVEAL_PTR (*ep));
-      *ep = PROTECT_PTR (ep, e);
-    }
+  if (!mangled){
+    e->next = PROTECT_PTR (&e->next, *ep);
+    *ep = e;
+  }
+  else{
+    e->next = PROTECT_PTR (&e->next, REVEAL_PTR (*ep));
+    *ep = PROTECT_PTR (ep, e);
+  }
   --(tcache->num_slots[tc_idx]);
 }
 
 /* Caller must ensure that we know tc_idx is valid and there's
-   available chunks to remove.  Removes chunk from the middle of the
-   list.  */
-static __always_inline void *
+   available chunks to remove. Removes chunk from the middle of 
+   the list. */
+static __always_inline void*
 tcache_get_n (size_t tc_idx, tcache_entry **ep, bool mangled)
 {
   tcache_entry *e;
   if (!mangled)
     e = *ep;
   else
-    e = REVEAL_PTR (*ep);
+    e = REVEAL_PTR(*ep);
 
-  if (__glibc_unlikely (misaligned_mem (e)))
+  if (__glibc_unlikely (misaligned_mem(e)))
     malloc_printerr ("malloc(): unaligned tcache chunk detected");
 
   if (!mangled)
-    *ep = REVEAL_PTR (e->next);
+    *ep = REVEAL_PTR(e->next);
   else
-    *ep = PROTECT_PTR (ep, REVEAL_PTR (e->next));
+    *ep = PROTECT_PTR(ep, REVEAL_PTR(e->next));
 
   ++(tcache->num_slots[tc_idx]);
   e->key = 0;
-  return (void *) e;
+
+  return (void*) e;
 }
 
 static __always_inline void
@@ -3072,18 +3087,21 @@ tcache_get (size_t tc_idx)
 }
 
 static __always_inline tcache_entry **
-tcache_location_large (size_t nb, size_t tc_idx,
-		       bool *mangled, tcache_entry **demangled_ptr)
-{
+tcache_location_large(
+  size_t nb, size_t tc_idx,
+  bool *mangled, 
+  tcache_entry **demangled_ptr
+){
   tcache_entry **tep = &(tcache->entries[tc_idx]);
   tcache_entry *te = *tep;
-  while (te != NULL
-         && __glibc_unlikely (chunksize (mem2chunk (te)) < nb))
-    {
-      tep = & (te->next);
-      te = REVEAL_PTR (te->next);
-      *mangled = true;
-    }
+  while (
+    te != NULL && 
+    __glibc_unlikely (chunksize(mem2chunk(te)) < nb)
+  ){
+    tep = &(te->next);
+    te = REVEAL_PTR(te->next);
+    *mangled = true;
+  }
 
   *demangled_ptr = te;
   return tep;
@@ -3094,21 +3112,26 @@ tcache_put_large (mchunkptr chunk, size_t tc_idx)
 {
   tcache_entry **entry;
   bool mangled = false;
+
   tcache_entry *te;
-  entry = tcache_location_large (chunksize (chunk), tc_idx, &mangled, &te);
+  entry = tcache_location_large (chunksize(chunk), tc_idx, &mangled, &te);
 
   return tcache_put_n (chunk, tc_idx, entry, mangled);
 }
 
-static __always_inline void *
+static __always_inline void*
 tcache_get_large (size_t tc_idx, size_t nb)
 {
   tcache_entry **entry;
   bool mangled = false;
+
   tcache_entry *te;
   entry = tcache_location_large (nb, tc_idx, &mangled, &te);
 
-  if (te == NULL || nb != chunksize (mem2chunk (te)))
+  if (
+    te == NULL || 
+    nb != chunksize(mem2chunk(te))
+  )
     return NULL;
 
   return tcache_get_n (tc_idx, entry, mangled);
@@ -3116,136 +3139,144 @@ tcache_get_large (size_t tc_idx, size_t nb)
 
 static void tcache_init (mstate av);
 
-static __always_inline void *
+static __always_inline void*
 tcache_get_align (size_t nb, size_t alignment)
 {
-  if (nb < mp_.tcache_max_bytes)
-    {
-      size_t tc_idx = csize2tidx (nb);
-      if (__glibc_unlikely (tc_idx >= TCACHE_SMALL_BINS))
-        tc_idx = large_csize2tidx (nb);
+  if (nb < mp_.tcache_max_bytes){
+    size_t tc_idx = csize2tidx (nb);
+    if (__glibc_unlikely (tc_idx >= TCACHE_SMALL_BINS))
+      tc_idx = large_csize2tidx (nb);
 
-      /* The tcache itself isn't encoded, but the chain is.  */
-      tcache_entry **tep = & tcache->entries[tc_idx];
-      tcache_entry *te = *tep;
-      bool mangled = false;
-      size_t csize;
+    /* The tcache itself isn't encoded, but the chain is. */
+    tcache_entry **tep = & tcache->entries[tc_idx];
+    tcache_entry *te = *tep;
+    bool mangled = false;
+    size_t csize;
 
-      while (te != NULL
-	     && ((csize = chunksize (mem2chunk (te))) < nb
-		 || (csize == nb
-	             && !PTR_IS_ALIGNED (te, alignment))))
-        {
-          tep = & (te->next);
-          te = REVEAL_PTR (te->next);
-          mangled = true;
-        }
-
-      /* GCC compiling for -Os warns on some architectures that csize may be
-	 uninitialized.  However, if 'te' is not NULL, csize is always
-	 initialized in the loop above.  */
-      DIAG_PUSH_NEEDS_COMMENT;
-      DIAG_IGNORE_Os_NEEDS_COMMENT (12, "-Wmaybe-uninitialized");
-      if (te != NULL
-	  && csize == nb
-	  && PTR_IS_ALIGNED (te, alignment))
-	return tag_new_usable (tcache_get_n (tc_idx, tep, mangled));
-      DIAG_POP_NEEDS_COMMENT;
+    while (
+      te != NULL && 
+      (
+        (csize = chunksize(mem2chunk(te))) < nb || 
+        (
+          csize == nb 
+          && !PTR_IS_ALIGNED(te, alignment)
+        )
+      )
+    ){
+      tep = & (te->next);
+      te = REVEAL_PTR (te->next);
+      mangled = true;
     }
+
+    /* GCC compiling for -Os warns on some architectures that 
+    csize may be uninitialized. However, if 'te' is not NULL, 
+    csize is always initialized in the loop above. */
+    DIAG_PUSH_NEEDS_COMMENT;
+    DIAG_IGNORE_Os_NEEDS_COMMENT (12, "-Wmaybe-uninitialized");
+    if (
+      te != NULL && 
+      csize == nb && 
+      PTR_IS_ALIGNED(te, alignment)
+    )
+    	return tag_new_usable (tcache_get_n (tc_idx, tep, mangled));
+
+    DIAG_POP_NEEDS_COMMENT;
+  }
   return NULL;
 }
 
 /* Verify if the suspicious tcache_entry is double free.
-   It's not expected to execute very often, mark it as noinline.  */
+   It's not expected to execute very often, mark it as 
+   noinline. */
 static __attribute__ ((noinline)) void
 tcache_double_free_verify (tcache_entry *e)
 {
   tcache_entry *tmp;
-  for (size_t tc_idx = 0; tc_idx < TCACHE_MAX_BINS; ++tc_idx)
-    {
-      size_t cnt = 0;
-      LIBC_PROBE (memory_tcache_double_free, 2, e, tc_idx);
-      for (tmp = tcache->entries[tc_idx];
-	   tmp;
-	   tmp = REVEAL_PTR (tmp->next), ++cnt)
-	{
-	  if (cnt >= mp_.tcache_count)
-	    malloc_printerr ("free(): too many chunks detected in tcache");
-	  if (__glibc_unlikely (misaligned_mem (tmp)))
-	    malloc_printerr ("free(): unaligned chunk detected in tcache 2");
-	  if (tmp == e)
-	    malloc_printerr ("free(): double free detected in tcache 2");
-	}
+  for (
+    size_t tc_idx = 0; 
+    tc_idx < TCACHE_MAX_BINS; 
+    ++tc_idx
+  ){
+    size_t cnt = 0;
+    LIBC_PROBE (memory_tcache_double_free, 2, e, tc_idx);
+
+    for (
+      tmp = tcache->entries[tc_idx];
+      tmp;
+      tmp = REVEAL_PTR (tmp->next), ++cnt
+    ){
+      if (cnt >= mp_.tcache_count)
+        malloc_printerr ("free(): too many chunks detected in tcache");
+      if (__glibc_unlikely (misaligned_mem (tmp)))
+        malloc_printerr ("free(): unaligned chunk detected in tcache 2");
+      if (tmp == e)
+        malloc_printerr ("free(): double free detected in tcache 2");
     }
-  /* No double free detected - it might be in a tcache of another thread,
-     or user data that happens to match the key.  Since we are not sure,
-     clear the key and retry freeing it.  */
+  }
+
+  /* No double free detected - it might be in a tcache of 
+  another thread, or user data that happens to match the 
+  key. Since we are not sure, clear the key and retry 
+  freeing it. */
   e->key = 0;
-  __libc_free (e);
+  __libc_free(e);
 }
 
-static void
-tcache_thread_shutdown (void)
+static void tcache_thread_shutdown (void)
 {
   int i;
   mchunkptr p;
   tcache_perthread_struct *tcache_tmp = tcache;
-  int need_free = tcache_enabled ();
+  int need_free = tcache_enabled();
 
-  /* Disable the tcache and prevent it from being reinitialized.  */
-  tcache_set_disabled ();
+  /* Disable the tcache and prevent it from being reinitialized. */
+  tcache_set_disabled();
   if (! need_free)
     return;
 
   /* Free all of the entries and the tcache itself back to the arena
-     heap for coalescing.  */
-  for (i = 0; i < TCACHE_MAX_BINS; ++i)
-    {
-      while (tcache_tmp->entries[i])
-	{
-	  tcache_entry *e = tcache_tmp->entries[i];
-	  if (__glibc_unlikely (misaligned_mem (e)))
-	    malloc_printerr ("tcache_thread_shutdown(): "
-			     "unaligned tcache chunk detected");
-	  tcache_tmp->entries[i] = REVEAL_PTR (e->next);
-	  e->key = 0;
-	  p = mem2chunk (e);
-	  _int_free_chunk (arena_for_chunk (p), p, chunksize (p), 0);
-	}
+     heap for coalescing. */
+  for (i = 0; i < TCACHE_MAX_BINS; ++i){
+    while (tcache_tmp->entries[i]){
+      tcache_entry *e = tcache_tmp->entries[i];
+      if (__glibc_unlikely (misaligned_mem (e)))
+        malloc_printerr ("tcache_thread_shutdown(): unaligned tcache chunk detected");
+
+  	  tcache_tmp->entries[i] = REVEAL_PTR (e->next);
+	    e->key = 0;
+	    p = mem2chunk (e);
+  	  _int_free_chunk (arena_for_chunk(p), p, chunksize(p), 0);
     }
+  }
 
   p = mem2chunk (tcache_tmp);
-  _int_free_chunk (arena_for_chunk (p), p, chunksize (p), 0);
+  _int_free_chunk (arena_for_chunk(p), p, chunksize(p), 0);
 }
 
-/* Initialize tcache.  In the rare case there isn't any memory available,
-   later calls will retry initialization.  */
-static void
-tcache_init (mstate av)
+/* Initialize tcache. In the rare case there isn't any 
+memory available, later calls will retry initialization. */
+static void tcache_init (mstate av)
 {
-  /* Set this unconditionally to avoid infinite loops.  */
-  tcache_set_disabled ();
+  /* Set this unconditionally to avoid infinite loops. */
+  tcache_set_disabled();
   if (mp_.tcache_count == 0)
     return;
 
   size_t bytes = sizeof (tcache_perthread_struct);
   if (av)
-    tcache =
-      (tcache_perthread_struct *) _int_malloc (av, request2size (bytes));
+    tcache = (tcache_perthread_struct *) _int_malloc (av, request2size (bytes));
   else
     tcache = (tcache_perthread_struct *) __libc_malloc2 (bytes);
 
-  if (tcache == NULL)
-    {
-      /* If the allocation failed, don't try again.  */
-      tcache_set_disabled ();
-    }
-  else
-    {
-      memset (tcache, 0, bytes);
-      for (int i = 0; i < TCACHE_MAX_BINS; i++)
-	tcache->num_slots[i] = mp_.tcache_count;
-    }
+  if (tcache == NULL){
+    /* If the allocation failed, don't try again. */
+    tcache_set_disabled ();
+  }
+  else{
+    memset (tcache, 0, bytes);
+    for (int i = 0; i < TCACHE_MAX_BINS; i++)
+      tcache->num_slots[i] = mp_.tcache_count;
+  }
 }
 
 #else  /* !USE_TCACHE */
@@ -5245,133 +5276,126 @@ libc_hidden_def(__libc_mallopt)
 
    The MORECORE function must have the following properties:
 
-   If MORECORE_CONTIGUOUS is false:
+  If MORECORE_CONTIGUOUS is false:
 
- * MORECORE must allocate in multiples of pagesize. It will
-      only be called with arguments that are multiples of pagesize.
+  * MORECORE must allocate in multiples of pagesize. It will
+    only be called with arguments that are multiples of pagesize.
+  * MORECORE(0) must return an address that is at least
+    MALLOC_ALIGNMENT aligned. (Page-aligning always suffices.)
 
- * MORECORE(0) must return an address that is at least
-      MALLOC_ALIGNMENT aligned. (Page-aligning always suffices.)
+  else (i.e. If MORECORE_CONTIGUOUS is true):
 
-   else (i.e. If MORECORE_CONTIGUOUS is true):
+  * Consecutive calls to MORECORE with positive arguments
+    return increasing addresses, indicating that space has been
+    contiguously extended.
+  * MORECORE need not allocate in multiples of pagesize.
+    Calls to MORECORE need not have args of multiples of pagesize.
+  * MORECORE need not page-align.
 
- * Consecutive calls to MORECORE with positive arguments
-      return increasing addresses, indicating that space has been
-      contiguously extended.
+  In either case:
 
- * MORECORE need not allocate in multiples of pagesize.
-      Calls to MORECORE need not have args of multiples of pagesize.
+  * MORECORE may allocate more memory than requested. (Or even less,
+    but this will generally result in a malloc failure.)
+  * MORECORE must not allocate memory when given argument zero, but
+    instead return one past the end address of memory from previous
+    nonzero call. This malloc does NOT call MORECORE(0)
+    until at least one call with positive arguments is made, so
+    the initial value returned is not important.
+  * Even though consecutive calls to MORECORE need not return contiguous
+    addresses, it must be OK for malloc'ed chunks to span multiple
+    regions in those cases where they do happen to be contiguous.
+  * MORECORE need not handle negative arguments -- it may instead
+    just return MORECORE_FAILURE when given negative arguments.
+    Negative arguments are always multiples of pagesize. MORECORE
+    must not misinterpret negative args as large positive unsigned
+    args. You can suppress all such calls from even occurring by 
+    defining MORECORE_CANNOT_TRIM,
 
- * MORECORE need not page-align.
+  There is some variation across systems about the type of the
+  argument to sbrk/MORECORE. If size_t is unsigned, then it cannot
+  actually be size_t, because sbrk supports negative args, so it is
+  normally the signed type of the same width as size_t (sometimes
+  declared as "intptr_t", and sometimes "ptrdiff_t").  It doesn't much
+  matter though. Internally, we use "long" as arguments, which should
+  work across all reasonable possibilities.
 
-   In either case:
+  Additionally, if MORECORE ever returns failure for a positive
+  request, then mmap is used as a noncontiguous system allocator. This
+  is a useful backup strategy for systems with holes in address spaces
+  -- in this case sbrk cannot contiguously expand the heap, but mmap
+  may be able to map noncontiguous space.
 
- * MORECORE may allocate more memory than requested. (Or even less,
-      but this will generally result in a malloc failure.)
+  If you'd like mmap to ALWAYS be used, you can define MORECORE to be
+  a function that always returns MORECORE_FAILURE.
 
- * MORECORE must not allocate memory when given argument zero, but
-      instead return one past the end address of memory from previous
-      nonzero call. This malloc does NOT call MORECORE(0)
-      until at least one call with positive arguments is made, so
-      the initial value returned is not important.
+  If you are using this malloc with something other than sbrk (or its
+  emulation) to supply memory regions, you probably want to set
+  MORECORE_CONTIGUOUS as false.  As an example, here is a custom
+  allocator kindly contributed for pre-OSX macOS.  It uses virtually
+  but not necessarily physically contiguous non-paged memory (locked
+  in, present and won't get swapped out).  You can use it by
+  uncommenting this section, adding some #includes, and setting up the
+  appropriate defines above:
 
- * Even though consecutive calls to MORECORE need not return contiguous
-      addresses, it must be OK for malloc'ed chunks to span multiple
-      regions in those cases where they do happen to be contiguous.
+    *#define MORECORE osMoreCore
+    *#define MORECORE_CONTIGUOUS 0
 
- * MORECORE need not handle negative arguments -- it may instead
-      just return MORECORE_FAILURE when given negative arguments.
-      Negative arguments are always multiples of pagesize. MORECORE
-      must not misinterpret negative args as large positive unsigned
-      args. You can suppress all such calls from even occurring by defining
-      MORECORE_CANNOT_TRIM,
+  There is also a shutdown routine that should somehow be called for
+  cleanup upon program exit.
 
-   There is some variation across systems about the type of the
-   argument to sbrk/MORECORE. If size_t is unsigned, then it cannot
-   actually be size_t, because sbrk supports negative args, so it is
-   normally the signed type of the same width as size_t (sometimes
-   declared as "intptr_t", and sometimes "ptrdiff_t").  It doesn't much
-   matter though. Internally, we use "long" as arguments, which should
-   work across all reasonable possibilities.
+    *#define MAX_POOL_ENTRIES 100
+    *#define MINIMUM_MORECORE_SIZE  (64 * 1024)
 
-   Additionally, if MORECORE ever returns failure for a positive
-   request, then mmap is used as a noncontiguous system allocator. This
-   is a useful backup strategy for systems with holes in address spaces
-   -- in this case sbrk cannot contiguously expand the heap, but mmap
-   may be able to map noncontiguous space.
+    static int next_os_pool;
+    void *our_os_pools[MAX_POOL_ENTRIES];
 
-   If you'd like mmap to ALWAYS be used, you can define MORECORE to be
-   a function that always returns MORECORE_FAILURE.
+    void *osMoreCore(int size){
+      void *ptr = 0;
+      static void *sbrk_top = 0;
 
-   If you are using this malloc with something other than sbrk (or its
-   emulation) to supply memory regions, you probably want to set
-   MORECORE_CONTIGUOUS as false.  As an example, here is a custom
-   allocator kindly contributed for pre-OSX macOS.  It uses virtually
-   but not necessarily physically contiguous non-paged memory (locked
-   in, present and won't get swapped out).  You can use it by
-   uncommenting this section, adding some #includes, and setting up the
-   appropriate defines above:
+      if (size > 0){
+        if (size < MINIMUM_MORECORE_SIZE)
+          size = MINIMUM_MORECORE_SIZE;
 
- *#define MORECORE osMoreCore
- *#define MORECORE_CONTIGUOUS 0
+        if (CurrentExecutionLevel() == kTaskLevel)
+          ptr = PoolAllocateResident(size + RM_PAGE_SIZE, 0);
 
-   There is also a shutdown routine that should somehow be called for
-   cleanup upon program exit.
+        if (ptr == 0){
+          return (void *) MORECORE_FAILURE;
+        }
 
- *#define MAX_POOL_ENTRIES 100
- *#define MINIMUM_MORECORE_SIZE  (64 * 1024)
-   static int next_os_pool;
-   void *our_os_pools[MAX_POOL_ENTRIES];
+        // save ptrs so they can be freed during cleanup
+        our_os_pools[next_os_pool] = ptr;
+        next_os_pool++;
+        ptr = (void *) ((((unsigned long) ptr) + RM_PAGE_MASK) & ~RM_PAGE_MASK);
+        sbrk_top = (char *) ptr + size;
+        return ptr;
+      }
 
-   void *osMoreCore(int size)
-   {
-    void *ptr = 0;
-    static void *sbrk_top = 0;
-
-    if (size > 0)
-    {
-      if (size < MINIMUM_MORECORE_SIZE)
-         size = MINIMUM_MORECORE_SIZE;
-      if (CurrentExecutionLevel() == kTaskLevel)
-         ptr = PoolAllocateResident(size + RM_PAGE_SIZE, 0);
-      if (ptr == 0)
-      {
+      else if (size < 0){
+        // we don't currently support shrink behavior
         return (void *) MORECORE_FAILURE;
       }
-      // save ptrs so they can be freed during cleanup
-      our_os_pools[next_os_pool] = ptr;
-      next_os_pool++;
-      ptr = (void *) ((((unsigned long) ptr) + RM_PAGE_MASK) & ~RM_PAGE_MASK);
-      sbrk_top = (char *) ptr + size;
-      return ptr;
-    }
-    else if (size < 0)
-    {
-      // we don't currently support shrink behavior
-      return (void *) MORECORE_FAILURE;
-    }
-    else
-    {
-      return sbrk_top;
-    }
-   }
 
-   // cleanup any allocated memory pools
-   // called as last thing before shutting down driver
-
-   void osCleanupMem(void)
-   {
-    void **ptr;
-
-    for (ptr = our_os_pools; ptr < &our_os_pools[MAX_POOL_ENTRIES]; ptr++)
-      if (*ptr)
-      {
-         PoolDeallocate(*ptr);
- * ptr = 0;
+      else{
+        return sbrk_top;
       }
-   }
+    }
 
- */
+    // cleanup any allocated memory pools
+    // called as last thing before shutting down driver
+    void osCleanupMem(void){
+      void **ptr;
+
+      for (ptr = our_os_pools; ptr < &our_os_pools[MAX_POOL_ENTRIES]; ptr++){
+        if (*ptr){
+          PoolDeallocate(*ptr);
+          *ptr = 0;
+        }
+      }
+    }
+
+*/
 
 
 /* Helper code. */
