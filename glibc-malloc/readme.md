@@ -28,7 +28,7 @@ A complete description of glibc-malloc
 - [Chunk Description Labs](#chunk-description-labs)
 - [The Bookkeeping System, Part 0: The Problem](#the-bookkeeping-system-part-0-the-problem)
 - [The Bookkeeping System, Part 1: The Implementation Of Bins](#the-bookkeeping-system-part-1-the-implementation-of-bins)
-  - [Premise](#premise)
+  - [Note](#note)
   - [Single D.C linked list](#single-dc-linked-list)
   - [A collection of D.C linked lists](#a-collection-of-dc-linked-lists)
     - [Method1: List\*](#method1-list)
@@ -838,72 +838,72 @@ The facts we can't verify yet, because we don't know what exactly is small and l
 
 ---
 
-Now that we understand chunks, let's explore how freed chunks are managed, i.e, **the bookkeeping process**.
+Now that we understand chunks, let's explore how freed chunks are managed, i.e., **the bookkeeping process**.
 
 # The Bookkeeping System, Part 0: The Problem
 
 The bookkeeping system sits at the core of glibc-malloc. It is the framework based on which the whole malloc-free pathways are stacked. It is probably the most challenging piece to write.
 
-In the chunk description section, what the author flagged as "misleading, but accurate and necessary" was simply a lack of proper documentation of the design decisions. What makes writing the bookkeeping section a challenging pursuit is the presence of an unfathomable amount of inconsistencies that simply don't make sense. As we will explore, we will find pretty interesting things.
+In the chunk description section, what the author flagged as "misleading, but accurate and necessary" was simply a lack of proper documentation of the design decisions.
 
-There are annotations which don't align with the implementation. You might argue that someone updated something and forgot. *No one realized it in the span of more than two decades?* Then there are two annotations about a single topic which don't converge. That alone is enough to break your mind because, it is supposed that two annotations explaining the same topic will be coherent. *How can something exist in two different states at the same time?* It can only exist in one and we are left finding it out ourselves.
-
-There is literally an annotation that acknowledges the rapidly advancing ecosystem.
-```
-The above was written in 2001. Since then the world has changed a lot.
-```
-- The moment this annotation was written is the moment the author and the maintainers lost the excuse that "we can't invest in updating the annotations which are present only for one reason, to explain what is happening."
-- If something was changed in the implementation, the annotation(s) that accounts for it must be updated too. It shouldn't get complicated than that.
-
-glibc adopted dlmalloc@2.7.0 in the glibc-2.3 release. dlmalloc itself confirms that it is 64-bit compatible, but many annotations were never updated to reflect the 64-bit realty.
-
-Not updating the annotations was a deliberate choice that the author and the maintainers made.
-
-Everything points to the fact that these inconsistencies exist out of pure laziness. There is simply no reason for them to exist. But no one was bothered to do the boring work for updating the theoretical model.
-
-You don't have to believe me. I will show the facts and you can independently decide whether the writer is talking "out of thin air" or "with everything grounded in reality as per the source".
+The bookkeeping section comes with its own challenges, and those challenges can be easily summed up in one sentence. ***I perceive annotations as the theoretical model of glibc-malloc's functioning, and this model is not aligning with the runtime reality as expressed by the code.***
+  1. There are annotations which reflect the 32-bit reality only. The reader is left thinking about the 64-bit reality.
+  2. There are annotations which are quite confusing and don't make much sense.
+  3. There are two annotations about the same topic which don't converge. *How can something exist in two different states at the same time?* It can only exist in one and we are left finding it out ourselves.
+  4. There is an annotation accepting that as times passes, things change. But the problem is, when something is no longer fully correct, or is no longer applicable, it is still not updated.
+  5. Many of the annotations are never changed since the time they appeared.
 
 It's not "all bad", but a lot of it is.
 
 ---
 
-The situation is really tiring and it is in the best of our interest to avoid carrying all the three configs together. We will stick to 64-bit and later apply our understanding to the other two configs.
+The situation is quite tiring and it is in the best of our interest to avoid carrying all the three configs together. We will stick to 64-bit and later apply our understanding to the other two configs.
 
 To reduce cognitive load as much as it is possible, I have divided the exploration into three headings that build on each other.
-  1. **The implementation of bins data structure**: Here we will explore a lookalike of `malloc_chunk` which was not properly documented and this time, the author chose to waive-off by saying "the repositioning trick".
-  2. **Static analysis bins[]**: Here we will statically explore the state of bins and find all the inconsistencies.
-  3. **Dynamic analysis of bins[]**: Here will verify all the facts at runtime and build the final structure of bins.
+  1. **The implementation of bins data structure**: Here we will explore something similar to `malloc_chunk`, which was not properly documented; "the repositioning trick".
+  2. **Static analysis of bins[]**: Here we will read the source (code and annotations) and find all the facts about bins.
+  3. **Dynamic analysis of bins[]**: Here we will run some experiments to find the runtime all reality and build the final structure of bins.
   4. Extending our understanding to build the model of the other two configs as well.
 
-Although I believe that understanding bins will suffice, but I'll still give proper historical evidence in the end to prove that situation started worse, it didn't got worse overtime.
+---
+
+That's a very big statement from a naive about a project this big. But I request you to continue reading as I will present all the facts I have gathered in this journey in the end and you can decide whether the writer is talking "out of thin air". 
+
+**--- IMPORTANT NOTE ---**
+  - I have invested a lot of time, energy and attention on this section.
+  - This section has been a great source of frustration and agitation for about 3 months. That's a lot of time, which includes medical issues, environmental issues and psychological issues. So, everything happened all at once.
+  - When things calmed down after 3 months, the arrival of fresh insights started reducing my frustration. I am no longer as frustrated and agitated as I was before.
+  - I have learned to update my views and beliefs when new information with proper evidence arrives. That's what happened this time as well. Versions before this have a sort of "angry voice" and versions starting from this will have a more "calm voice".
+  - If anyone reads the commit history, they are sure to find a lot of things. While I won't say they are "immature", they are just a reaction of my past self, that tried to make sense of this codebase and repeatedly found nothing except confusion.
+  - This note is left to acknowledge that.
 
 ---
 
 # The Bookkeeping System, Part 1: The Implementation Of Bins
 
-***A bin is a data structure, based on "circular doubly linked list", which is used to manage free chunks. Another name for a bin is "free list".***
+***A bin is a data structure, based on "circular doubly linked list", which is used to manage free chunks. Another name for bins is "free list".***
 
-Conceptually, we have three class of bins: **smallbins** for small chunks, **largebins** for large chunks and a bin to hold chunks temporarily, called **the unsorted bin**. Because these are just names given to the same backend, we have two choices.
+Conceptually, we have three class of bins: **smallbins** (for small chunks), **largebins** (for large chunks) and a bin to hold chunks temporarily, called **the unsorted bin**. Because these are just different names given to the same data structure, we have two choices in implementing them.
   1. Implement three different variables for each bin type.
   2. Implement one variable that has pointers to all the bins.
 
-Therefore, at the implementation level, we have **only one** data structure, containing pointers to all the bins, i.e. an array.
+Therefore, at the implementation level, we have **only one** data structure, containing pointers to all the bins, i.e. ***an array***.
 
 There are multiple ways to implement this array. To understand which one is the best, we have to understand how a "doubly circular linked list" works.
 
-## Premise
+## Note
 
-1. If you have taken any data structures course, you might be familiar with linked lists, but familiarity alone is not enough to understand this implementation.
-2. Data structure questions are generally solved in object oriented languages like C++/Java (this is what I have seen on the internet), which are completely different from C's procedural approach.
-3. I have tried to find implementations on the internet, which I can link here to save myself some time and efforts, but I couldn't find a single of them that satisfies the requirements.
+1. Linked list is a fundamental data structure, discussed in every beginners data structure course. So, if you have taken one, it's highly likely you are already familiar with it, but familiarity alone is not enough to understand bins[].
+2. Data structure courses are often structured around object oriented languages like C++/Java. This is what I have seen in the Indian YouTube space. It is different from C's procedural approach.
+3. I have tried to find implementations on the internet, which I can link here to save myself some time and efforts, but I couldn't find a single of them that satisfies my requirements.
 
-For these reasons, I have created 4 linked list implementations in the [./linked-list-code/](./linked-list-code/) directory. This is helpful in two ways.
-  - Those who feel rusty about their understanding can quickly visit the code to strengthen it. They don't have to waste time on the internet.
+For these reasons, I have implemented all the linked lists required to understand bins[] implementation myself. They are in the [./linked-list-code/](./linked-list-code/) directory. This is helpful in two ways.
+  - Those who feel rusty about their understanding can quickly visit the code to strengthen it. They don't have to waste their time searching one.
   - As a writer, I can be sure that my reader and I have the same base model of the problem. We can, and should, differ in the later ideas, but our foundation is the same.
 
-**Note: Reading them is not a precursor. I have mentioned when it is required.**
+**Note: Reading them is not a precursor. I have mentioned when it is required to read one.**
 
-Let's revise our understanding of double circular linked lists.
+Let's start with a single doubly circular linked list.
 
 ## Single D.C linked list
 
