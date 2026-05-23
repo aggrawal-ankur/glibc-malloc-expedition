@@ -1,5 +1,5 @@
 # This script is entirely based on the pyramid.
-# Therefore, it is only theoretically correct.
+# Therefore, it represents theoretical correctness only.
 
 # Generate Arrays of base sizes for each category.
 # ---
