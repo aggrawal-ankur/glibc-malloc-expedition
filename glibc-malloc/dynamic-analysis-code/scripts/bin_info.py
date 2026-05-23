@@ -96,6 +96,7 @@ def generate_largebins(MIN_LARGE_SIZE:int, SMALLBIN_WIDTH:int, arch:str):
 
   bin_ = 64
   while (bin_ != 126):
+    # Note: We only touch the 126th bin.
     bin_num = largebin_index(sz, arch)
 
     if bin_num not in bin_size_map:
@@ -111,7 +112,7 @@ def generate_largebins(MIN_LARGE_SIZE:int, SMALLBIN_WIDTH:int, arch:str):
 
 # Output saved directly to a file.
 def generate_mapping(smallbins:list, largebins:dict, arch:str):
-  output_file = f"./bin-size-mapping-{arch}"
+  output_file = f"./bin-size-mapping-{arch}.txt"
   with open(output_file, "w") as f:
     f.write("The unsorted bin and the smallbins.\n\n")
     f.write("| Sr. | Bin #    | Size Class | Bin Width | Bin Headers            | Fake_node Address |\n")
@@ -123,15 +124,17 @@ def generate_mapping(smallbins:list, largebins:dict, arch:str):
     BIN_HDRS = 2
     ARENA_OFFSET = 24
 
-    for sr, sbin in enumerate(smallbins):
+    i = 2
+    for sbin in smallbins:
       lb = f"(bins[{BIN_HDRS}],"
       ub = f"bins[{BIN_HDRS+1}])"
       ma = f"<main_arena+{ARENA_OFFSET}>"
-      f.write(f"| {sr:<3} | Bin #{BIN_NUM:<3} | {sbin:<10} | pow(2, 4) | {lb:<11} {ub:<10} | {ma:<17} |\n")
+      f.write(f"| {i:<3} | Bin #{BIN_NUM:<3} | {sbin:<10} | pow(2, 4) | {lb:<11} {ub:<10} | {ma:<17} |\n")
 
       BIN_NUM  += 1
       BIN_HDRS += 2
       ARENA_OFFSET += 16
+      i += 1
 
     f.write("\n\n")
 
