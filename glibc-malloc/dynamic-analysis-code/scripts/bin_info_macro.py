@@ -52,24 +52,24 @@ def largebin_index_64(sz):
 
 
 # Config #3
-def largebin_index_32_big(sz):
-  if ((sz >> 6) <= 45):
-    return ((sz >> 6) + 49)
+# def largebin_index_32_big(sz):
+#   if ((sz >> 6) <= 45):
+#     return ((sz >> 6) + 49)
 
-  elif ((sz >> 9) <= 20):
-    return ((sz >> 9) + 91)
+#   elif ((sz >> 9) <= 20):
+#     return ((sz >> 9) + 91)
 
-  elif ((sz >> 12) <= 10):
-    return ((sz >> 12) + 110)
+#   elif ((sz >> 12) <= 10):
+#     return ((sz >> 12) + 110)
 
-  elif ((sz >> 15) <= 4):
-    return ((sz >> 15) + 119)
+#   elif ((sz >> 15) <= 4):
+#     return ((sz >> 15) + 119)
 
-  elif ((sz >> 18) <= 2):
-    return ((sz >> 18) + 124)
+#   elif ((sz >> 18) <= 2):
+#     return ((sz >> 18) + 124)
 
-  else:
-    return 126
+#   else:
+#     return 126
 
 
 # Orchestrator
@@ -79,8 +79,8 @@ def largebin_index(sz, arch):
       return largebin_index_32(sz)
     case "64":
       return largebin_index_64(sz)
-    case "32_big":
-      return largebin_index_32_big(sz)
+    # case "32_big":
+    #   return largebin_index_32_big(sz)
 
 
 # Generate smallbins
@@ -112,29 +112,27 @@ def generate_largebins(MIN_LARGE_SIZE:int, SMALLBIN_WIDTH:int, arch:str):
 
 # Output saved directly to a file.
 def generate_mapping(smallbins:list, largebins:dict, arch:str):
-  output_file = f"./bin-size-mapping-{arch}.txt"
+  output_file = f"./bin-info-runtime-{arch}.txt"
   with open(output_file, "w") as f:
     f.write("The unsorted bin and the smallbins.\n\n")
-    f.write("| Sr. | Bin #    | Size Class | Bin Width | Bin Headers            | Fake_node Address |\n")
-    f.write("| --- | -----    | ---------- | --------- | -----------            | ----------------- |\n")
-    f.write("| 1   | Bin #1   | NA         | NA        | (bins[0],   bins[1])   | <main_arena+8>    |\n")
+    f.write("| Sr. | Bin #    | Size Class | Bin Headers            | Fake_node Address |\n")
+    f.write("| --- | -----    | ---------- | -----------            | ----------------- |\n")
+    f.write("| 1   | Bin #1   | NA         | (bins[0],   bins[1])   | <main_arena+8>    |\n")
 
 
-    BIN_NUM = 2
+    sr = 2
     BIN_HDRS = 2
     ARENA_OFFSET = 24
 
-    i = 2
     for sbin in smallbins:
       lb = f"(bins[{BIN_HDRS}],"
       ub = f"bins[{BIN_HDRS+1}])"
       ma = f"<main_arena+{ARENA_OFFSET}>"
-      f.write(f"| {i:<3} | Bin #{BIN_NUM:<3} | {sbin:<10} | pow(2, 4) | {lb:<11} {ub:<10} | {ma:<17} |\n")
+      f.write(f"| {sr:<3} | Bin #{sr:<3} | {sbin:<10} | {lb:<11} {ub:<10} | {ma:<17} |\n")
 
-      BIN_NUM  += 1
       BIN_HDRS += 2
       ARENA_OFFSET += 16
-      i += 1
+      sr += 1
 
     f.write("\n\n")
 
@@ -143,31 +141,31 @@ def generate_mapping(smallbins:list, largebins:dict, arch:str):
     f.write("| Sr. | Bin # | Bin Headers            | Fake Node         | Base Class | Last Class | Fixed Classes |\n")
     f.write("| --- | ----- | -----------            | ---------         | ---------- | ---------- | ------------- |\n")
 
-    i = 1
-    for key, value in largebins.items():
+    sr = 1
+    for bin_num, bins in largebins.items():
       lb = f"(bins[{BIN_HDRS}],"
       ub = f"bins[{BIN_HDRS+1}])"
       ma = f"<main_arena+{ARENA_OFFSET}>"
 
-      f.write(f"| {i:<3} | {key:<5} | {lb:<11} {ub:<10} | {ma:<17} | {value[0]:<10} | {value[-1]:<10} | ({len(value)}) {value} |\n")
-      i += 1
+      f.write(f"| {sr:<3} | {bin_num:<5} | {lb:<11} {ub:<10} | {ma:<17} | {bins[0]:<10} | {bins[-1]:<10} | ({len(bins)}) {bins} |\n")
 
       BIN_HDRS += 2
       ARENA_OFFSET += 16
+      sr += 1
 
 
 def main():
   SMALLBINS_32 = generate_smallbins(8)
-  SMALLBINS_64 = generate_smallbins(16)
-  SMALLBINS_32_BIG = generate_smallbins(8)
-
   LARGEBINS_32 = generate_largebins(512, 8, "32")
-  LARGEBINS_64 = generate_largebins(1024, 16, "64")
-  LARGEBINS_32_BIG = generate_largebins(512, 8, "32_big")
-
   generate_mapping(SMALLBINS_32, LARGEBINS_32, "32")
+
+  SMALLBINS_64 = generate_smallbins(16)
+  LARGEBINS_64 = generate_largebins(1024, 16, "64")
   generate_mapping(SMALLBINS_64, LARGEBINS_64, "64")
-  generate_mapping(SMALLBINS_32_BIG, LARGEBINS_32_BIG, "32_big")
+
+  # SMALLBINS_32_BIG = generate_smallbins(8)
+  # LARGEBINS_32_BIG = generate_largebins(512, 8, "32_big")
+  # generate_mapping(SMALLBINS_32_BIG, LARGEBINS_32_BIG, "32_big")
 
 
 main()
