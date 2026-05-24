@@ -83,6 +83,14 @@ def largebin_index(sz, arch):
     #   return largebin_index_32_big(sz)
 
 
+def bin_at(i:int, arch:str):
+  match arch:
+    case "32":
+      return ((i-1)*2 - int(8/4))
+    case "64":
+      return ((i-1)*2 - int(16/8))
+
+
 # Generate smallbins
 def generate_smallbins(SBIN_WIDTH):
   return [i*SBIN_WIDTH for i in range(2, 63+1)]
@@ -115,9 +123,13 @@ def generate_mapping(smallbins:list, largebins:dict, arch:str):
   output_file = f"./bin-info-runtime-{arch}.txt"
   with open(output_file, "w") as f:
     f.write("The unsorted bin and the smallbins.\n\n")
-    f.write("| Sr. | Bin #    | Size Class | Bin Headers            | Fake_node Address |\n")
-    f.write("| --- | -----    | ---------- | -----------            | ----------------- |\n")
-    f.write("| 1   | Bin #1   | NA         | (bins[0],   bins[1])   | <main_arena+8>    |\n")
+    f.write("| Sr. | Bin #   | Fake_node (gdb)   | Fake_Node (bins) | Bin Headers            | Size Class |\n")
+    f.write("| --- | -----   | ---------------   | ---------------- | -----------            | ---------- |\n")
+    f.write("|     | (i)     | bin_at(M, i)      | bin_at(M, i)     | fake_node->(fd, bk)    |            |\n")
+    f.write("| --- | -----   | ------------      | ------------     | -------------------    | ---------- |\n")
+
+    fn_bin = f"bins[{bin_at(1, arch)}]"
+    f.write(f"| 1   | Bin #1  | <main_arena+8>    | {fn_bin:<16} | (bins[0],   bins[1])   | NA         |\n")
 
 
     sr = 2
@@ -128,7 +140,8 @@ def generate_mapping(smallbins:list, largebins:dict, arch:str):
       lb = f"(bins[{BIN_HDRS}],"
       ub = f"bins[{BIN_HDRS+1}])"
       ma = f"<main_arena+{ARENA_OFFSET}>"
-      f.write(f"| {sr:<3} | Bin #{sr:<3} | {sbin:<10} | {lb:<11} {ub:<10} | {ma:<17} |\n")
+      fn_bin = f"bins[{bin_at(sr, arch)}]"
+      f.write(f"| {sr:<3} | Bin #{sr:<2} | {ma:<17} | {fn_bin:<16} | {lb:<11} {ub:<10} | {sbin:<10} |\n")
 
       BIN_HDRS += 2
       ARENA_OFFSET += 16
@@ -138,16 +151,19 @@ def generate_mapping(smallbins:list, largebins:dict, arch:str):
 
 
     f.write("Largebins.\n\n")
-    f.write("| Sr. | Bin # | Bin Headers            | Fake Node         | Base Class | Last Class | Fixed Classes |\n")
-    f.write("| --- | ----- | -----------            | ---------         | ---------- | ---------- | ------------- |\n")
+    f.write("| Sr. | Bin #    | Fake_Node (gdb)   | Fake_Node (bins) | Bin Headers            | Base Class | Last Class | Fixed Classes |\n")
+    f.write("| --- | -----    | ---------------   | ---------------- | -----------            | ---------- | ---------- | ------------- |\n")
+    f.write("|     | (i)      | bin_at(M, i)      | bin_at(M, i)     | fake_node->(fd, bk)    |            |            |               |\n")
+    f.write("| --- | -----    | ------------      | ---------------- | -------------------    | ---------- | ---------- | ------------- |\n")
 
     sr = 1
     for bin_num, bins in largebins.items():
       lb = f"(bins[{BIN_HDRS}],"
       ub = f"bins[{BIN_HDRS+1}])"
       ma = f"<main_arena+{ARENA_OFFSET}>"
+      fn_bin = f"bins[{bin_at(bin_num, arch)}]"
 
-      f.write(f"| {sr:<3} | {bin_num:<5} | {lb:<11} {ub:<10} | {ma:<17} | {bins[0]:<10} | {bins[-1]:<10} | ({len(bins)}) {bins} |\n")
+      f.write(f"| {sr:<3} | Bin #{bin_num:<3} | {ma:<17} | {fn_bin:<16} | {lb:<11} {ub:<10} | {bins[0]:<10} | {bins[-1]:<10} | ({len(bins)}) {bins} |\n")
 
       BIN_HDRS += 2
       ARENA_OFFSET += 16
