@@ -1418,7 +1418,11 @@ The last smallbin size class is for (MIN_LARGE_SIZE-SMALLBIN_WIDTH) bytes. On 32
   - In the range of [509, 568], we have 8 multiples of SMALLBIN_WIDTH. They are: [512, 520, 528, 536, 544, 552, 560, 568].
   - Isn't this is what a size class means?
 
-***Therefore, a largebin is basically a collection of smallbins. A single largebin can manage what multiple smallbins would.***
+***Therefore, a largebin is basically a collection of smallbins.***
+
+To find the number of fixed classes in a category, just divide the bin width by SMALLBIN_WIDTH. For example: On 32-bit,
+  - smallbins have a width of 8 bytes and SMALLBIN_WIDTH is 8 bytes too. We get 1, which is correct as one smallbin corresponds to one size class only.
+  - largebin category #1 has a width of 64 bytes. Divide it by 8, we get 8, which is correct, as we have seen above.
 
 ### Largebin Categories
 ---
@@ -1777,7 +1781,97 @@ This solves the mystery of the indexing paradigm in use and how the fake node im
 
 ## Largebin Size Ranges, Part 2
 
+These are the largebin_index macros. We don't have to look at the config #3 macro yet.
+```c
+#define largebin_index_32(sz)  ( \
+  (((unsigned long)(sz) >>  6) <= 38) ?  56 + ((unsigned long)(sz) >>  6) : \
+  (((unsigned long)(sz) >>  9) <= 20) ?  91 + ((unsigned long)(sz) >>  9) : \
+  (((unsigned long)(sz) >> 12) <= 10) ? 110 + ((unsigned long)(sz) >> 12) : \
+  (((unsigned long)(sz) >> 15) <=  4) ? 119 + ((unsigned long)(sz) >> 15) : \
+  (((unsigned long)(sz) >> 18) <=  2) ? 124 + ((unsigned long)(sz) >> 18) : \
+  126 \
+)
 
+#define largebin_index_64(sz)   ( \
+  (((unsigned long)(sz) >>  6) <= 48) ?  48 + ((unsigned long)(sz) >>  6) : \
+  (((unsigned long)(sz) >>  9) <= 20) ?  91 + ((unsigned long)(sz) >>  9) : \
+  (((unsigned long)(sz) >> 12) <= 10) ? 110 + ((unsigned long)(sz) >> 12) : \
+  (((unsigned long)(sz) >> 15) <=  4) ? 119 + ((unsigned long)(sz) >> 15) : \
+  (((unsigned long)(sz) >> 18) <=  2) ? 124 + ((unsigned long)(sz) >> 18) : \
+  126 \
+)
+```
+
+Bitwise right shift is a very specific case of division.
+  1. The denominator is a fixed power-of-2 value.
+  2. The decimal part is always lost and the output is an integer, i.e. *floor division*.
+
+We can rewrite these macros as:
+```c
+#define largebin_index_32(sz)  ( \
+  (((unsigned long)(sz) / pow(2,  6)) <= 38) ?  56 + ((unsigned long)(sz) / pow(2,  6)) : \
+  (((unsigned long)(sz) / pow(2,  9)) <= 20) ?  91 + ((unsigned long)(sz) / pow(2,  9)) : \
+  (((unsigned long)(sz) / pow(2, 12)) <= 10) ? 110 + ((unsigned long)(sz) / pow(2, 12)) : \
+  (((unsigned long)(sz) / pow(2, 15)) <=  4) ? 119 + ((unsigned long)(sz) / pow(2, 15)) : \
+  (((unsigned long)(sz) / pow(2, 18)) <=  2) ? 124 + ((unsigned long)(sz) / pow(2, 18)) : \
+  126 \
+)
+
+#define largebin_index_64(sz)   ( \
+  (((unsigned long)(sz) / pow(2,  6)) <= 48) ?  48 + ((unsigned long)(sz) / pow(2,  6)) : \
+  (((unsigned long)(sz) / pow(2,  9)) <= 20) ?  91 + ((unsigned long)(sz) / pow(2,  9)) : \
+  (((unsigned long)(sz) / pow(2, 12)) <= 10) ? 110 + ((unsigned long)(sz) / pow(2, 12)) : \
+  (((unsigned long)(sz) / pow(2, 15)) <=  4) ? 119 + ((unsigned long)(sz) / pow(2, 15)) : \
+  (((unsigned long)(sz) / pow(2, 18)) <=  2) ? 124 + ((unsigned long)(sz) / pow(2, 18)) : \
+  126 \
+)
+```
+
+Each row in the macro represents a condition that evaluates the bins in that category. We divide the size with the bin width in that category.
+  - If the output is `<=` an integer, we add a value to the output and it returned to the caller.
+  - If the output is `>` the integer in the condition, the condition is evaluated as false and we move to the next condition in the macro. It is repeated until a condition is met. Otherwise, it is the last bin, the "what's left" bin.
+
+According to these macros, the last bin in the collection is the 126th bin. This proves that there are 126 bins, and our analysis was right.
+
+Anyways, on 64-bit, the first largebin in category #1 has a range of [1009, 1009+64), or [1009, 1073) bytes. The size classes in this range are: [1024, 1040, 1056, 1072].
+  - When we right shift these sizes by 6 bits, we get [16, 16, 16, 16]. Nothing interesting. Because these size classes belong to one single bin, they all must yield the same output.
+  - When we divide these sizes by 2<sup>6</sup>, we get [16.0, 16.25, 16.50, 16.75]. While it is the same thing as above, hold on to it. It will become interesting at the right moment.
+
+For 32-bit, the first largebin in category #1 has a range of [505, 505+64), or [505, 569) bytes. The size classes in this range are: [512, 520, 528, 536, 544, 552, 560, 568].
+  - Right shift by 6 bits, we get: [8, 8, 8, 8, 8, 8, 8, 8].
+  - Divide by 2<sup>6</sup>, we get: [8.0, 8.125, 8.25, 8.375, 8.5, 8.625, 8.75, 8.875]
+
+It is both tedious and error prone to do this manually. So, there are two scripts, written to automate this process. They are in the `glibc-malloc/dynamic-analysis/scripts` directory, prefixed with `bin_info_*`. Both the scripts use elementary python constructs and generate one output file per config. Don't run them, just read.
+
+One script is based on the pyramid, while the other is based on the macros. Why? Run both the scripts and read the 64-bit output files. The scripts are dense, as they are constructed with dynamic analysis in mind, so focus on the last 3 columns of the largebin tables.
+
+We can notice a significant difference b/w the theoretical (pyramid-based) output and the runtime (macro-based) output. The boundary bins, where two categories transition, have an unusual amount of fixed classes. What explains that?
+
+The truth is, the pyramid can't be implemented without these distorted bin ranges. It is simply not possible mathematically. That's another huge statement that requires proper evidence.
+
+Just before this, we have seen that dividing the size classes in a largebin by its width generates an output where the integral part remains the same while the fractional part varies. Let's repeat this for the second bin in the first category, i.e. [1088, 1104, 1120, 1136].
+  - We get [17.0, 17.25, 17.50, 17.75].
+  - This is an arithmetic progression, where the difference between two consecutive elements is a constant.
+
+Now notice the first crack in the bin order in 64-bit. There are 33 bins of width 64 bytes. That's because the condition accepts one extra bin.
+  - 1024 will generate 16 and 3056 will generate 47. But it is set at 48. That's the cause of one extra bin.
+  - Even if we have corrected this condition, we can't change anything.
+
+Now open the theoretical output for 64-bit and focus on `bin #112`. It is the first largebin in category #3, with a width of 4096 bytes. Now divide 11264 by 4096, we get 2.75. That should not happen as the first size class in any bin yields `X.0`. It can't happen because 11264 is not a multiple of 4096. That's why `bin #112` has an unexpected number of bins and `bin #113` continues normally as 12288 is a multiple of 4096.
+
+Now focus on `bin #120`. It is the first largebin in category #4. It has a width of 32768 bytes. Divide 44032 by 32768 and the script will repeat. "44032 is not a multiple of 32768" and now it is very clearly visible.
+
+---
+
+That's what the second aspect of the statement: "approximately logarithmically spaced" probably is. *"Not all bins are logarithmically spaced."*
+
+If you read past versions of this file, you will notice a lot of rage and angered stuff in this section. I have trusted the pyramid too much and tried to understand `largebin_index_64` from that lens. That was the source of all of the anxiety, frustration, agitation and anger I have gone through.
+
+Just seeing largebin_index_64 would make me angry and no matter how persistent efforts I make, it always drained me empty. It was until I had divided the size with the bin width, did I noticed the difference and the insights followed. By this time, I knew that bitwise right shift is divide by power-of-2. But I wasn't aware that it is a proper floor division.
+
+Anyways, this summarizes the largebin ranges section. The script is the most reliable method to generate the largebins size ranges.
+
+Now it is time for dynamic analysis.
 
 # The Bookkeeping System, Part 3: Dynamic Analysis of Bins
 
