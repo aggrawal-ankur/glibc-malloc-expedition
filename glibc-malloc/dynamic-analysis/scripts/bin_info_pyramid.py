@@ -25,8 +25,8 @@ def generate_mapping(SMALLBINS, LARGEBINS, arch:str):
   outfile = f"./bin-info-theoretical-{arch}.txt"
   with open(outfile, "w") as f:
     f.write("The unsorted bin and the smallbins.\n\n")
-    f.write("| Sr. | Bin #   | Size Class | Bin Headers            | Fake_node Address |\n")
-    f.write("| --- | -----   | ---------- | -----------            | ----------------- |\n")
+    f.write("| Sr. | Bin #   | Size Class | Bin Headers            | Fake Chunk Addr   |\n")
+    f.write("| --- | -----   | ---------- | -----------            | ---------------   |\n")
     f.write("| 1   | Bin #1  | NA         | (bins[0],   bins[1])   | <main_arena+8>    |\n")
 
     BIN_HDRS = 2
@@ -48,8 +48,8 @@ def generate_mapping(SMALLBINS, LARGEBINS, arch:str):
 
 
     f.write("The largebins.\n\n")
-    f.write("| Sr. | Bin # | Bin Headers            | Fake Node         | Base Class | Last Class | Fixed Classes |\n")
-    f.write("| --- | ----- | -----------            | ---------         | ---------- | ---------- | ------------- |\n")
+    f.write("| Sr. | Bin # | Bin Headers            | Fake Chunk Addr   | Base Class | Last Class | Fixed Classes |\n")
+    f.write("| --- | ----- | -----------            | ---------------   | ---------- | ---------- | ------------- |\n")
 
     sr = 1
     for bin_num, bins in LARGEBINS.items():
