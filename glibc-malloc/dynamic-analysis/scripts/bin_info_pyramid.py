@@ -48,8 +48,8 @@ def generate_mapping(SMALLBINS, LARGEBINS, arch:str):
 
 
     f.write("The largebins.\n\n")
-    f.write("| Sr. | Bin # | Bin Headers            | Fake Chunk Addr   | Base Class | Last Class | Fixed Classes |\n")
-    f.write("| --- | ----- | -----------            | ---------------   | ---------- | ---------- | ------------- |\n")
+    f.write("| Sr. | Bin #    | Bin Headers            | Fake Chunk Addr   | Base Class | Last Class | Fixed Classes |\n")
+    f.write("| --- | -----    | -----------            | ---------------   | ---------- | ---------- | ------------- |\n")
 
     sr = 1
     for bin_num, bins in LARGEBINS.items():
@@ -57,7 +57,7 @@ def generate_mapping(SMALLBINS, LARGEBINS, arch:str):
       ub = f"bins[{BIN_HDRS+1}])"
       ma = f"<main_arena+{ARENA_OFFSET}>"
 
-      f.write(f"| {sr:<3} | {bin_num:<5} | {lb:<11} {ub:<10} | {ma:<17} | {bins[0]:<10} | {bins[-1]:<10} | ({len(bins)}) {bins} |\n")
+      f.write(f"| {sr:<3} | Bin #{bin_num:<3} | {lb:<11} {ub:<10} | {ma:<17} | {bins[0]:<10} | {bins[-1]:<10} | ({len(bins)}) {bins} |\n")
       sr += 1
 
 
