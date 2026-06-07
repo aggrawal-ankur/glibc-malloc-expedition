@@ -1,14 +1,4 @@
-# Why Virtual Memory
-
-Each process believes it owns all the available memory.
-
-**Simplified memory management and predictability** as every process can assume they start from `0x0` or something else.
-  - The Memory Management Unit (MMU) and OS handle address translation from virtual to physical, freeing programmers from manual memory placement and relocation.
-
-**Memory protection and isolation** is enforced via page permissions, eliminating the chance of one process invading other process.
-
-
----
+# What is virtual memory and why it exists?
 
 
 # Virtual Address Space
@@ -54,6 +44,43 @@ High Address
 Low Address
 ```
 
+---
+
+```
+                                     High Address
+0xFFFFFFFFFFFFFFFF *---------------------------------------------* (Top of 64-bit space)
+                   |  Fixed Architecture Maps (VSYSCALL, etc.)   |
+0xFFFFFFFFFF600000 *---------------------------------------------*
+                   |  Kernel Text Segment (.text / modules)     |
+0xFFFFFFFF80000000 *---------------------------------------------*
+                   |  vmemmap (Base struct page array tracking)  |
+0xFFFFEA0000000000 *---------------------------------------------*
+                   |  vmalloc / ioremap Space (Non-contiguous)   |
+0xFFFFC90000000000 *---------------------------------------------*
+                   |  Direct Physical Memory Map (Lowmem / Map)  |
+0xFFFF888000000000 *---------------------------------------------* (Start of Kernel Space)
+                   |                                             |
+                   |        The Non-Canonical "Hole"             |
+                   |   (Hardware Trapped / Unaddressable)        |
+                   |                                             |
+0x0000800000000000 *---------------------------------------------* (End of User Space)
+                   |  Stack (Grows Downward) ↓                   |
+                   *---------------------------------------------*
+                   |  Memory-Mapped Region (mmap libs, etc.)     |
+                   *---------------------------------------------*
+                   |  Free Space / Gap                           |
+                   *---------------------------------------------*
+                   |  Heap (Grows Upward) ↑                      |
+                   *---------------------------------------------*
+                   |  Static / Global (.bss & .data)             |
+                   *---------------------------------------------*
+                   |  Code Execution (.text)                     |
+0x0000000000400000 *---------------------------------------------* (Start of User Space)
+                   |  Reserved / Zero-Page Traps                 |
+0x0000000000000000 *---------------------------------------------*
+                                     Low Address
+```
+
 User space and Kernel space are two logical divisions in virtual memory.
 
 This logical division is achieved by access control privileges and protection rights, which are enforced both at hardware level (CPU) and software level (OS).
@@ -75,61 +102,7 @@ Then there is general area which is accessible to everyone as long as they are a
 
 When you need to do something that requires boss' permission, you go through a standard process, which is exactly how the execution context changes from user space to kernel space when required.
 
-## Hardware Enforced Privilege Levels
-
-**Rings** are hardware-enforced CPU privilege levels, which forms a core part of how modern processors (like x64) separates trusted code (kernel) from untrusted (user) code.
-
-CPUs implement multiple **protection rings** numbered 0 to 3, with:
-  - **Ring 0 = highest privilege (kernel mode)**
-  - **Ring 3 = lowest privilege (user mode)**
-  - **Rings 1 and 2** exist but are rarely used in mainstream Linux.
-
-
----
-
-
-# Virtual Address
-
-***A virtual address is a combination of information that helps in finding the corresponding physical address.***
-
-In x64 systems, we have 64-bit wide registers. It would be huge to manage 2^64 addresses. So we stick to 48-bit virtual addresses. The remaining 16-bits are sign extension of the 47th bit.
-
-That means, there are 2^48 unique virtual addresses, which gives us a huge VAS, sized about ~256 TiB. The lower half represents the user space and the upper half represents the kernel space.
-```
-User space   -> (Lower half, ~128 TiB) -> 0x0000_0000_0000_0000 -> 0x0000_7FFF_FFFF_FFFF
-Kernel space -> (Upper half, ~128 TiB) -> 0xFFFF_8000_0000_0000 -> 0xFFFF_FFFF_FFFF_FFFF
-```
-The middle region, represented by *0x0000_7FFF_FFFF_FFFF to 0xFFFF_8000_0000_0000* is the **unused guard space**.
-
----
-
-A virtual address on x64 for 4-level paging looks like:
-```
-+--------------------+ +--------------+ +--------------+ +------------+ +------------+ +----------------------+
-| sign_ext(47th_bit) | | PML4: 9-bits | | PDPT: 9-bits | | PD: 9-bits | | PT: 9-bits | | Page Offset: 12-bits |
-+--------------------+ +--------------+ +--------------+ +------------+ +------------+ +----------------------+
-63                  48 47            39 38            30 29          21 20          12 11                     0
-```
-
-Every page table has 512 entries, requiring 9-bits to represent them. So, (9*4) 36-bits are reserved for them.
-
-Each 9-bit group is an index in the corresponding page table.
-
-Page offset is the actual byte being addressed within a page. Because a page has 4096 bytes, 12-bit are required to represent it.
-
-Each lookup narrows the address space by 9 bits until the final page is found.
-
----
-
-**Note: Total Addressable space ≠ Total Usable space.**
-  - The program never runs out of virtual memory.
-  - It only runs out of mappings in the physical memory.
-
-
----
-
-
-# User Space
+## User Space Layout
 
 The user space is where unprivileged jobs are managed.
 
@@ -175,10 +148,56 @@ People say, "stack is fast, heap is slow". That can be attributed to how they ar
   - Heap isn't sequential, you can allocate anywhere in the heap, which is why you have to keep extra bookkeeping to manage allocations.
 
 
+## Kernel Space Layout
+
+
+# Hardware Enforced Privilege Levels
+
+**Rings** are hardware-enforced CPU privilege levels, which forms a core part of how modern processors (like x64) separates trusted code (kernel) from untrusted (user) code.
+
+CPUs implement multiple **protection rings** numbered 0 to 3, with:
+  - **Ring 0 = highest privilege (kernel mode)**
+  - **Ring 3 = lowest privilege (user mode)**
+  - **Rings 1 and 2** exist but are rarely used in mainstream Linux.
+
+
+
+# Virtual Address
+
+***A virtual address is a combination of information that helps in finding the corresponding physical address.***
+
+In x64 systems, we have 64-bit wide registers. It would be huge to manage 2^64 addresses. So we stick to 48-bit virtual addresses. The remaining 16-bits are sign extension of the 47th bit.
+
+That means, there are 2^48 unique virtual addresses, which gives us a huge VAS, sized about ~256 TiB. The lower half represents the user space and the upper half represents the kernel space.
+```
+User space   -> (Lower half, ~128 TiB) -> 0x0000_0000_0000_0000 -> 0x0000_7FFF_FFFF_FFFF
+Kernel space -> (Upper half, ~128 TiB) -> 0xFFFF_8000_0000_0000 -> 0xFFFF_FFFF_FFFF_FFFF
+```
+The middle region, represented by *0x0000_7FFF_FFFF_FFFF to 0xFFFF_8000_0000_0000* is the **unused guard space**.
+
 ---
 
+A virtual address on x64 for 4-level paging looks like:
+```
++--------------------+ +--------------+ +--------------+ +------------+ +------------+ +----------------------+
+| sign_ext(47th_bit) | | PML4: 9-bits | | PDPT: 9-bits | | PD: 9-bits | | PT: 9-bits | | Page Offset: 12-bits |
++--------------------+ +--------------+ +--------------+ +------------+ +------------+ +----------------------+
+63                  48 47            39 38            30 29          21 20          12 11                     0
+```
 
-# Kernel space layout ASCII
+Every page table has 512 entries, requiring 9-bits to represent them. So, (9*4) 36-bits are reserved for them.
+
+Each 9-bit group is an index in the corresponding page table.
+
+Page offset is the actual byte being addressed within a page. Because a page has 4096 bytes, 12-bit are required to represent it.
+
+Each lookup narrows the address space by 9 bits until the final page is found.
+
+---
+
+**Note: Total Addressable space ≠ Total Usable space.**
+  - The program never runs out of virtual memory.
+  - It only runs out of mappings in the physical memory.
 
 
 ---
@@ -213,7 +232,7 @@ int brk(void* end_data_segment);
 
 `end_data_segment` specifies the new address for the program break. brk will request the kernel to extend/shrink the heap until that address, if possible.
 
-# `libc` Wrappers
+## `libc` Wrappers
 
 `brk` has two wrappers in libc. We can use `man 2 brk` to obtain their signature.
 ```bash
@@ -229,7 +248,7 @@ void *sbrk(intptr_t increment);
 ---
 
 
-# Memory Map (mmap)
+# Memory Map (mmap) Syscall
 
 ***An mmap calls creates a virtual memory area (VMA), which is a contiguous virtual address range, backed by something (a file, anonymous, or nothing), with specific permissions and replacement semantics.***
 
@@ -280,23 +299,30 @@ On failure, `MAP_FAILED`, which means `(void *) -1`.
 ---
 
 
-# 4-Level Paging
+# 5-Level Paging
+
+The Linux kernel ships with 5-level paging and uses page folding to fold the levels the hardware doesn't support. For example, x64 has 4-level paging.
+
+Hardware manufactures use different naming for these page tables, that's why, the Linux kernel can't confirm to any one of them. Instead, the kernel uses it's own naming convention.
+
+These levels are as follows:
+  1. Page Global Directory (PGD).
+  2. Page Level 4 Directory (P4D).
+  3. Page Upper Directory.
+  4. Page Middle Directory.
+  5. Page Table Entry (PTe).
+
+Each level in the page table hierarchy contains an array of pointers. To obtain the total number of pointers (entries) in a page table, divide the size of the page by the width of a pointer. For example,
+  - x64 has 8 bytes wide pointers and the standard page size is 4-KiB. 4096/8 is 512.
+  - x86 has 4 bytes wide pointers and the standard page size is 4-KiB. 4096/4 is 1024.
+
+
+
+
+
+Each level uses 9 bits of the virtual address (2^9 = 512). This narrows the search space by a factor of 512 at each step.
 
 The 4-level paging architecture utilizes 4 pointer tables, each reducing the sample space by (1/512), helping in finding the right 4-KiB page in just 4 iterations.
-
-The 4 page tables are:
-  1. Page Table (PT).
-  2. Page Directory (PD).
-  3. Page Directory Pointer Table (PDPT).
-  4. Page Map Level 4 Table (PML4).
-
-Each table has exactly 512 entries because the page size (4-KiB) divided by the number of addressable bytes (4096/8) is 512.
-
-Each entry is a pointer, so every entry is 8 bytes in size.
-
-Remember,
-  - *A page is a collection of individual bytes.*
-  - *A 4-KiB page is a collection of 4096 addressable bytes in the virtual memory.*
 
 ## Page Table (PT)
 
@@ -374,86 +400,59 @@ In theory, the maximum fan-out possible is:
 
 But in practice, no process occupies this much memory so only a subset of this hierarchy is actually populated.
 
+# Page Table Entries
 
----
+## PML4, PDPT and PD Page Tables
 
+The PML4, PDPT and PD entries are different from PT entries.
 
-# Demand Paging
+A PML4E, PDPTE and PDE is likes this:
+```bash
+                                                                            Flag Bits
+                                                     ╭----------------------------------------------------------╮
 
-***Demand paging loads a page into memory only when it is accessed. The idea is only actively used pages should occupy physical memory.***
+*----* *-------------* *---------------------------* *---------+ +---+----+---+---+-----+-----+-----+-----+---*
+| NX | | OS Reserved | | phy_addr(NEXT_PAGE_TABLE) | | Ignored | | G | PS |   | A | PCD | PWT | U/S | R/W | P |
+*----* *-------------* *---------------------------* *---------+ +---+----+---+---+-----+-----+-----+-----+---*
+63     62           52 51                         12 11        9   8   7    6   5    4     3     2     1    0
+```
+  - Bit 6, 8: Ignored/reserved.
+  - NX: No-execute or execute-disable bit.
 
-The remaining pages stay on disk until a virtual address accesses them and a #PF occurs, which triggers demand paging.
+Pages are sized 4 KiB. They occupy the lower 12 bits, i.e. [0, 11]. Because of page alignment, these bits are always unused in the physical address.
 
-It reduces memory usage and startup time by avoiding loading pages which have no immediate use.
+## Page Table Entry (PTe)
 
+```bash
+                                                                    Flag Bits
+                                             ╭----------------------------------------------------------╮
 
----
+*----* *-------------* *-------------------* *----------+ +---+-----+---+---+-----+-----+-----+-----+---*
+| NX | | OS Reserved | | Page Frame Number | | Reserved | | G | PAT | D | A | PCD | PWT | U/S | R/W | P |
+*----* *-------------* *-------------------* *----------+ +---+-----+---+---+-----+-----+-----+-----+---*
+  63   62           52 51                 12 11         9   8    7    6   5    4     3     2     1    0
+```
 
+## Description of flag bits (incomplete)
 
-# Page Fault
+| Bits | Name | Description |
+| ---- | :--- | :---------- |
+| 0    | P    | **Present bit**: Tells if the virtual page is mapped to a physical frame. (0: NO, 1: YES) |
+| 1    | R/W  | **Writeable bit**: Tells if the page is writeable (1) or read-only (0). |
+| 2    | U/S  | **User mode bit**: Tells if the page is accessible from user-space. (0: NO (supervisor-mode), 1: YES) |
+| 3    | PWT  | **Page-level write through**: Controls how writes propagate to memory. 0 = write-back caching (default), 1 = write-through caching. |
+| 4    | PCD  | **Page-level cache disable**: Used for memory-mapped I/O or device regions. 0 = caching enabled, 1 = caching disabled. |
+| 5    | A    | **Accessed bit**: Set by the CPU on any access (read/write/exec). OS uses it for page replacement decisions. Cleared by software when resetting paging info. |
+| 6    | D    | **Dirty bit**: Set by CPU when the page is written to. Relevant only for writable mappings. Used to decide if a page must be written back to disk. |
+| 7    | PAT  | **Page attribute table index**: Selects one of the memory types from PAT (used with PCD/PWT). Defines caching behavior. |
+| 8    | G    | **Global bit**: If Set, translation stays in TLB across CR3 reloads. Used for kernel-space pages that remain constant across processes. |
+| 9-11 |      | OS Reserved |
 
-***A page fault is an exception (interrupt) generated by the CPU when a virtual address cannot be translated to a physical address during a page walk. The MMU triggers it, and control is transferred to the OS.***
+## Page Frame Number (PFN)
 
-The page table entry (PTE) for the virtual address is marked not present (Present bit = 0).
+***The page frame number (PFN) identifies the physical page in the RAM that backs a virtual page.***
 
-The CPU stops the current instruction, pushes error information on stack and jumps to the *page fault handler* defined in the OS's *interrupt descriptor table*.
-
-The OS checks why the page fault occurred.
-  - If the page isn't loaded yet, the OS brings it from disk (demand paging).
-  - If it's a protection violation, the OS may kill the process (segmentation fault).
-
-The OS then updates the page tables to reflect the new mapping or terminate the process and returns to the instruction that caused the fault.
-
-# Page Fault Reasons
-
-The main reasons a page fault can occur include:
-
-A page that is not present (Present-bit is 0).
-  - The virtual address has no valid mapping in the page tables.
-  - A typical case for demand paging: the page hasn't been loaded from disk yet.
-
-Page protection violation (Present-bit is 1, but invalid access).
-  - Writing to a read-only page.
-  - User-mode process accessing a kernel page.
-  - Executing from a non-executable page (NX bit).
-
-# Why #PF
-
-*A page is considered loaded when it has a valid physical frame mapped in the page tables and the Present bit = 1 in the PTE.*
-  - If the present bit is 0, the page is not loaded yet. A #PF occurs on access.
-  - If the present bit is 1, the page exists and the virtual address just translates to a physical frame and the access succeeds.
-
-Multiple virtual addresses can map to the same page [at varying offsets] but a #PF is about the virtual address not translated successfully, not the physical frame.
-
----
-
-Pages aren't always pre-loaded when a process starts. The OS uses lays down the required metadata to load the information later when it is required via demand paging.
-
-The OS reserves virtual address ranges based on the requirements as specified in the executable file and updates the process's page tables to map virtual addresses for that range.
-  - But the OS does not immediately copy all those bytes from the file into RAM.
-  - Instead, the PTEs are set up with Present = 0 (not present) and some metadata about where to load the page from (file offset, protection flags, etc.).
-  - Now the page 'exists' virtually as a range in the process's address space.
-  - The physical page starts to exist when it is first accessed.
-
-When a virtual address triggers a #PF, the OS loads the page from the disk, updates the PTE's to make the present bit as 1 and the virtual address resolves to a physical frame.
-
----
-
-A #PF is simply the CPU trying to access a virtual page that has a valid mapping in the OS's bookkeeping but isn't backed by a physical frame yet.
-  - It's not about virtual addresses never translated in general, but about this particular virtual page not being present in RAM yet.
-  - Once the page is loaded, any access to any virtual address mapped to it will succeed (no #PF).
-
-Therefore, a #PF is not worrisome. It is often the very first access to a virtual address whose page isn't in RAM yet, even if the virtual memory layout is prepared by the OS.
-
----
-
-This architecture exists because executable files and shared libraries can be huge, and not every page is required immediately. Therefore, just like we defer relocating certain symbols which aren't required immediately, we defer mapping most of the pages because that boosts startup time and is a more efficient option that front-loading everything.
-
-So, "*loading an executable file in virtual memory for execution*" is largely about laying the metadata in the address space and page tables so that when those pages aer demanded, the system can load them immediately.
-
-A virtual page exists when the system lays down the necessary metadata to load a page and the page table entries have present bit set to 0.
-
-A physical page exists when the CPU tries to use the value at a virtual address but can't do that because a physical page doesn't exist yet. A #PF is triggered and OS's #PF handler takes charge and loads the page.
+In x64 PTEs, bits 51-12 hold the PFN. Each PFN points to a 4-KiB-aligned physical frame.
 
 
 ---
@@ -479,7 +478,7 @@ The CPU reads the CR3 register, which points to the PML4 table, which sits at th
 
 Each table is itself a physical page, so every memory access during the walk is also translated.
 
-# Example
+## Example
 
 Let's take a random virtual address: 0x000055F7C34D1000
 
@@ -528,69 +527,6 @@ The final physical address corresponding to 0x000055F7C34D1000 is given by CR3[1
 
 ---
 
-
-# Entries In The PML4, PDPT and PD Page Tables
-
-The PML4, PDPT and PD entries are different from PT entries.
-
-A PML4E, PDPTE and PDE is likes this:
-```bash
-*----* *-------------* *---------------------------* * ------*
-| NX | | OS Reserved | | phy_addr(NEXT_PAGE_TABLE) | | Flags |
-*----* *-------------* *---------------------------* *-------*
-63     62           52 51                         12 11      0
-```
-Only a few flag bits are different, the rest are the same as a PTE.
-
-# Page Table Entry (PTE)
-
-A page table entry (PTE) is the real gateway to a page.
-
-***A page table entry encapsulates information which helps in translating a virtual page into its corresponding physical page frame.***
-
-A page table entry for 4 KiB pages on x64 architecture looks like:
-```bash
-*----* *-------------* *-------------------* * ------*
-| NX | | OS Reserved | | Page Frame Number | | Flags |
-*----* *-------------* *-------------------* *-------*
-63     62           52 51                 12 11      0
-```
-
-## Flag Bits
-
-The flag bits are the 12 lower bits (0-11), which are as follows:
-```bash
-*-------------*---*-----*---*---*-----*-----*----*----*---*
-| OS Reserved | G | PAT | D | A | PCD | PWT | US | RW | P |
-*-------------*---*-----*---*---*-----*-----*----*----*---*
-    11 - 9      8    7    6   5    4     3    2    1    0
-```
-
-Description of flag bits:
-
-| Flag Bits | Name | Description |
-| :-------- | :--- | :---------- |
-| 0 | P   | Present bit: tells if the virtual page is mapped to a physical frame. (0: NO, 1: YES) |
-| 1 | RW  | Writeable bit: tells if the page is writeable (1) or read-only (0). |
-| 2 | US  | User mode: tells if the page is accessible from user-space. (0: NO, 1: YES) |
-| 3 | PWT | Page write through: 0 = write-back caching (default), 1 = write-through caching. Controls how writes propagate to memory. |
-| 4 | PCD | Page cache disable: 0 = caching enabled, 1 = caching disabled. Used for memory-mapped I/O or device regions. |
-| 5 | A   | Accessed bit: set by CPU on any access (read/write/exec). OS uses it for page replacement decisions. Cleared by software when resetting aging info. |
-| 6 | D   | Dirty bit: set by CPU when the page is written to. Relevant only for writable mappings. Used to decide if a page must be written back to disk. |
-| 7 | PAT | Page attribute table index: selects one of the memory types from PAT (used with PCD/PWT). Defines caching behavior. |
-| 8 | G   | Global bit: If set, translation stays in TLB across CR3 reloads. Used for kernel-space pages that remain constant across processes. |
-| 9-11 |  | OS Reserved |
-
-## Page Frame Number (PFN)
-
-***The page frame number (PFN) identifies the physical page in the RAM that backs a virtual page.***
-
-In x64 PTEs, bits 51-12 hold the PFN. Each PFN points to a 4-KiB-aligned physical frame.
-
-
----
-
-
 # Types Of Paging
 
 | Serial | Type | Description |
@@ -603,9 +539,32 @@ In x64 PTEs, bits 51-12 hold the PFN. Each PFN points to a 4-KiB-aligned physica
 | 6 | Zero-fill-on-demand paging | Allocates new pages initialized with zeros when first accessed.  |
 | 7 | Mapped file paging | Pages backed by files instead of anonymous memory. |
 
+---
+
+
+# Why Paging?
+
+Memory is **byte-addressable**. In 2025, most laptops comes with 8 GiB RAM at least. How many bytes does 8 GiB have?
+
+  - 1 GiB = 1024 MiB
+  - 1 MiB = 1024 KiB
+  - 1 KiB = 1024 bytes
+  - Therefore, 1 GiB = 1024 * 1024 * 1024 bytes = 1,073,741,824 bytes.
+  - So, 8 GiB = 8 * 1073741824 = 8589934592 bytes or ~8.6 billion bytes.
+
+Tracking every single byte in a flat table would make ~8.6 billion entries.
+  - A 16 GiB RAM would have to manage ~17.2 billion bytes.
+  - A 32 GiB RAM would have to manage ~34.4 billion bytes.
 
 ---
 
+***Instead of managing these bytes flat, we manage them in groups. These group of bytes are called pages.***
+
+Mainstream computing on x86 and x64 processors defaults to a page size of 4 KiB. But pages of huge sizes exist too. For example
+  - macOS on Intel-based Macs uses 4 KiB pages, adhering to the standard for the x86-64 architecture and 16 KiB pages on Apple Silicon (ARM64), which is optimized for the performance characteristics of Apple's M-series chips.
+  - intel and amd
+
+4 KiB = 4 * 1024 bytes or 4096 bytes. Therefore, *a page is a gateway to 4096 unique byte-addressable locations.*
 
 # Why page tables?
 
@@ -635,39 +594,5 @@ Binary search reduces the search space by half (1/2) with each iteration.
 
 More precisely, both binary search and 4-level paging reduce the sample space of possibilities **logarithmically**.
 
----
 
-4-level paging uses a hierarchy of 4 page table, named:
-
-  1. Page Table (PT).
-  2. Page Directory (PD).
-  3. Page Directory Pointer Table (PDPT).
-  4. Page Map Level 4 Table (PML4).
-
-
----
-
-
-# Why Paging?
-
-Memory is **byte-addressable**. In 2025, most laptops comes with 8 GiB RAM at least. How many bytes does 8 GiB have?
-
-  - 1 GiB = 1024 MiB
-  - 1 MiB = 1024 KiB
-  - 1 KiB = 1024 bytes
-  - Therefore, 1 GiB = 1024 * 1024 * 1024 bytes = 1,073,741,824 bytes.
-  - So, 8 GiB = 8 * 1073741824 = 8589934592 bytes or ~8.6 billion bytes.
-
-Tracking every single byte in a flat table would make ~8.6 billion entries.
-  - A 16 GiB RAM would have to manage ~17.2 billion bytes.
-  - A 32 GiB RAM would have to manage ~34.4 billion bytes.
-
----
-
-***Instead of managing these bytes flat, we manage them in groups. These group of bytes are called pages.***
-
-Mainstream computing on x86 and x64 processors defaults to a page size of 4 KiB. But huge page sizes do exist. For example, macOS on Intel-based Macs uses 4 KiB pages, adhering to the standard for the x86-64 architecture and 16 KiB pages on Apple Silicon (ARM64), which is optimized for the performance characteristics of Apple's M-series chips.
-
-4 KiB = 4 * 1024 bytes or 4096 bytes.
-  - Therefore, *a page is a gateway to 4096 unique byte-addressable locations.*
-
+# PAE: Page address extension
