@@ -9,9 +9,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y \
   vim nano \
   wget
 
-RUN git clone --shallow-since=2025-12-01 https://sourceware.org/git/glibc.git /glibc && \
-  cd /glibc && \
-  git checkout glibc-2.43
+RUN git clone --depth 1 --branch glibc-2.43 https://sourceware.org/git/glibc.git && cd /glibc
 
 RUN mkdir /glibc-build && cd /glibc-build && \
   /glibc/configure \
@@ -21,7 +19,7 @@ RUN mkdir /glibc-build && cd /glibc-build && \
     make install
 
 # Get the setup file from the repository
-RUN cd / && wget https://raw.githubusercontent.com/aggrawal-ankur/systems-dives/refs/heads/main/glibc-malloc/dynamic-analysis-code/setup
+RUN cd / && wget https://raw.githubusercontent.com/aggrawal-ankur/systems-dives/refs/heads/main/glibc-malloc/dynamic-analysis/setup
 
 # Execute the setup file
 RUN chmod u+x setup && . ./setup

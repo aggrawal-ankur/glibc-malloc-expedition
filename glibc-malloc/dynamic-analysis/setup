@@ -20,20 +20,22 @@ sleep 1
 
 echo -e "[SETTING UP THE EXPERIMENTS]....\n"
 git sparse-checkout init --no-cone
-git sparse-checkout set "glibc-malloc/dynamic-analysis-code/*"
+git sparse-checkout set "glibc-malloc/dynamic-analysis/*"
 git checkout
 sleep 1
 
 echo -e "[CLEANUP]....\n"
-mv glibc-malloc/dynamic-analysis-code/* .
+mv glibc-malloc/dynamic-analysis/* .
 rm -rf glibc-malloc/
 echo -e "....[CLEANUP DONE; SETUP DONE]\n"
 sleep 1
 
 echo -e "[EXPERIMENTS DIRECTORY PREPARED WITH THE CODE]....\n"
 
-echo -e "[INSIDE experiments/]....\n"
-cd experiments/
+chmod u+x chunk/build
+chmod u+x bins/build
 
-echo -e "[USE THE DOCUMENT FOR WALKTHROUGH]....\n"
-echo -e "[USE THE BUILD SCRIPT FOR BUILDING AN EXPERIMENT. OPTIONALLY, READ IT TO FIND THE DETAILS]....\n"
+echo -e "[CHANGE DIRECTORY TO experiments/]....\n"
+echo -e "[CHOOSE YOUR EXPERIMENTS DIRECTORY AND CD INTO IT]....\n"
+echo -e "[OPEN AN EXPERIMENT IN VIM AND READ THE CODE AND THE WALKTHROUGH]....\n"
+echo -e "[USE THE BUILD SCRIPT TO BUILD AND EXECUTE AN EXPERIMENT.]....\n"
