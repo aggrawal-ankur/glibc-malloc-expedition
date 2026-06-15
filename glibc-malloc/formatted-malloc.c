@@ -1450,7 +1450,7 @@ mmap_size (mchunkptr p)
   return mmap_base_offset(p) + chunksize(p) + CHUNK_HDR_SZ;
 }
 
-/* Return a new chunk from an mmap. */
+/* Places malloc_chunk on an mmapped segment's base. */
 static __always_inline mchunkptr mmap_set_chunk(
   uintptr_t mmap_base, 
   size_t mmap_size, 
@@ -2258,18 +2258,19 @@ static void do_check_malloc_state(mstate av)
 /* ----------- Routines dealing with system allocation -------------- */
 
 /* Allocate a mmap chunk - used for large block sizes or as a fallback.
-   Round up size to nearest page.  Add padding if MALLOC_ALIGNMENT is
-   larger than CHUNK_HDR_SZ. Add CHUNK_HDR_SZ at the end so that mmap
-   chunks have the same layout as regular chunks. */
+   - Round the size up to the nearest page.
+   - Add padding if MALLOC_ALIGNMENT is larger than CHUNK_HDR_SZ. (This is ideally not possible, but need confirmation)
+   - Add CHUNK_HDR_SZ at the end so that mmap chunks have the same 
+   layout as regular chunks. */
 static void* sysmalloc_mmap(
   INTERNAL_SIZE_T nb, 
   size_t pagesize, 
   int extra_flags
 ){
-  size_t padding = MALLOC_ALIGNMENT - CHUNK_HDR_SZ;
+  size_t padding = MALLOC_ALIGNMENT - CHUNK_HDR_SZ;    /* Effectively 0, as both the macros have the same values in all the three configurations. BUT NEEDS CONFIRMATION.*/
   size_t size = ALIGN_UP(nb + padding + CHUNK_HDR_SZ, pagesize);
 
-  char *mm = (char*)MMAP(
+  char *mm = (char*) MMAP(
     NULL, 
     size,
 		mtag_mmap_flags | PROT_READ | PROT_WRITE,
@@ -2278,10 +2279,11 @@ static void* sysmalloc_mmap(
   if (mm == MAP_FAILED)
     return mm;
   if (extra_flags == 0)
-    madvise_thp(mm, size);
+    madvise_thp(mm, size);    /* [TODO]: Memory advise related. */
 
-  __set_vma_name(mm, size, " glibc: malloc");
+  __set_vma_name(mm, size, " glibc: malloc");    /* [TODO]: Virtual memory related. */
 
+  /* Add malloc_chunk to the base of the newly mmapped segment */
   mchunkptr p = mmap_set_chunk(
     (uintptr_t)mm, 
     size, 
@@ -2297,14 +2299,13 @@ static void* sysmalloc_mmap(
   sum = atomic_fetch_add_relaxed (&mp_.mmapped_mem, size) + size;
   atomic_max (&mp_.max_mmapped_mem, sum);
 
-  check_chunk(NULL, p);
-
+  check_chunk(NULL, p);    // A MALLOC_DEBUG check; A no-op when MALLOC_DEBUG is not defined.
   return chunk2mem(p);
 }
 
 /* Allocate memory using mmap() based on S and NB requested size,
    aligning to PAGESIZE if required. The EXTRA_FLAGS is used on 
-   mmap() call. If the call succeeds S is updated with the allocated 
+   mmap() call. If the call succeeds, S is updated with the allocated 
    size. This is used as a fallback if MORECORE fails. */
 static void* sysmalloc_mmap_fallback(
   size_t *s, 
@@ -2336,9 +2337,9 @@ static void* sysmalloc_mmap_fallback(
 
 static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 {
-  mchunkptr old_top;              /* incoming value of av->top */
-  INTERNAL_SIZE_T old_size;       /* its size */
-  char *old_end;                  /* its end address */
+  mchunkptr old_top;              /* base of the top chunk in the arena (av), i.e. av->top */
+  INTERNAL_SIZE_T old_size;       /* size of the top chunk */
+  char *old_end;                  /* end of the top chunk */
 
   size_t size;                    /* arg to first MORECORE or mmap call */
   char *brk;                      /* return value from MORECORE */
@@ -2359,11 +2360,11 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
   bool tried_mmap = false;
 
 
-  /* If have mmap, and the request size meets the mmap threshold,
-  and the system supports mmap, and there are few enough currently
-  allocated mmapped regions, try to directly map this request
-  rather than expanding top. */
-
+  /* [PATH 1]: Use sysmalloc_mmap (mmap) directly, if:
+     1. the request size meets the mmap threshold, and
+     2. the number of currently allocated mmapped regions is less than the total mmapped regions allowed.
+  */
+  /* [TODO]: Why (av == NULL) is required. */
   if (
     av == NULL ||
     (
@@ -2373,6 +2374,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
   ){
     char *mm;
 
+    /* [HUGE_PAGE sub-path] */
     /* There is no need to issue the THP madvise call 
     if Huge Pages are used directly. */
     if (mp_.hp_pagesize > 0 && nb >= mp_.hp_pagesize){
@@ -2381,6 +2383,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
   	    return mm;
 	  }
 
+    /* [Standard page size sub-path] */
     mm = sysmalloc_mmap(nb, pagesize, 0);
     if (mm != MAP_FAILED)
     	return mm;
@@ -2393,15 +2396,28 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     return NULL;
 
   /* Record incoming configuration of top. */
-
   old_top  = av->top;
   old_size = chunksize(old_top);
-  old_end  = (char*)chunk_at_offset(old_top, old_size);
+  old_end  = (char*) chunk_at_offset(old_top, old_size);
 
-  brk = snd_brk = (char*)(MORECORE_FAILURE);
+  /* Initialize the program breaks. */
+  brk = snd_brk = (char*)MORECORE_FAILURE;
 
-  /* If not the first time through, we require old_size 
-     to be at least MINSIZE and to have prev_inuse set. */
+  /* If it is the first time, the top chunk must point to 
+     initial_top(av). 
+     Because main_arena goes on static storage, everything 
+     is zero, except the 3 members that get initialized 
+     manually while creating it. Because initial_top(av) is
+     just bin_at(M, 1), which resolves to a pointer inside
+     main_arena (prior to bins), the element with which 
+     mchunk_size overlaps is going to be zero, making old_size
+     zero with surety.
+     If not zero, main_arena is corrupted, and we should exit.
+
+     If it is not the first time, 
+       1. the size of the top chunk (old_size) must be at least 
+          MINSIZE bytes, and 
+     2. the PREV_INUSE bit must be set (1). */
   assert(
     (old_top == initial_top(av) && old_size == 0) ||
     (
