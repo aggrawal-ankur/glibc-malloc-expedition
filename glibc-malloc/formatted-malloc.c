@@ -2417,7 +2417,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
      If it is not the first time, 
        1. the size of the top chunk (old_size) must be at least 
           MINSIZE bytes, and 
-     2. the PREV_INUSE bit must be set (1). */
+       2. the PREV_INUSE bit must be set (1). */
   assert(
     (old_top == initial_top(av) && old_size == 0) ||
     (
@@ -2427,15 +2427,23 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     )
   );
 
-  /* Precondition: not enough current space to satisfy nb request */
+  /* sysmalloc is all about extending the top chunk in the current arena.
+     This is done only when the top size is less than the required bytes
+     alongwith MINSIZE bytes. 
+     MINSIZE is the smallest chunk size, and top is a valid chunk. We 
+     must have these many bytes after carving a chunk from the top to 
+     maintain the integrity of the top chunk. */
   assert((unsigned long)(old_size) < (unsigned long)(nb + MINSIZE));
 
+  // [Path 2]: Non-main arena.
   if (av != &main_arena){
-    heap_info *old_heap, *heap;
+    heap_info *old_heap;
+    heap_info *heap;
     size_t old_heap_size;
 
-    /* First try to extend the current heap. */
-    old_heap = heap_for_ptr(old_top);
+    /* [ATTEMPT 1]: Try to extend the current heap. */
+
+    old_heap = heap_for_ptr(old_top);    // The base of the heap.
     old_heap_size = old_heap->size;
 
     if (
@@ -2449,25 +2457,32 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       );
     }
 
+    /* .... [ATTEMPT 1] .... */
+
     else if (
       (heap = new_heap (nb + (MINSIZE + sizeof (*heap)), mp_.top_pad))
     ){
-      /* Use a newly allocated heap.  */
+      /* Use a newly allocated heap. */
       heap->ar_ptr = av;
       heap->prev = old_heap;
       av->system_mem += heap->size;
 
-      /* Set up the new top.  */
-        top (av) = chunk_at_offset (heap, sizeof (*heap));
-        set_head (top (av), (heap->size - sizeof (*heap)) | PREV_INUSE);
+      /* Set up the new top. */
+        top(av) = chunk_at_offset(heap, sizeof(*heap));
+        set_head(
+          top(av), 
+          (heap->size - sizeof(*heap)) | PREV_INUSE
+        );
 
       /* Setup fencepost and free the old top chunk with a multiple of
       MALLOC_ALIGNMENT in size. */
+
       /* The fencepost takes at least MINSIZE bytes, because it might
       become the top chunk again later.  Note that a footer is set
       up, too, although the chunk is marked in use. */
+
       old_size = (old_size - MINSIZE) & ~MALLOC_ALIGN_MASK;
-      set_head (
+      set_head(
         chunk_at_offset(old_top, old_size + CHUNK_HDR_SZ),
 		    0 | PREV_INUSE
       );
@@ -2506,6 +2521,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
         return mm;
     }
   }
+  // .... Non main-arena logic end.
 
   /* av == main_arena */
   else{
@@ -2515,7 +2531,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     /* If contiguous, we can subtract out existing space 
     that we hope to combine with new space. We add it back 
     later only if we don't actually get contiguous space. */
-    if (contiguous (av))
+    if (contiguous(av))
       size -= old_size;
 
     /* Round to a multiple of page size or huge page size.
@@ -2529,27 +2545,30 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     thp_init();
 
     if (__glibc_unlikely (mp_.thp_pagesize != 0)){
-      uintptr_t lastbrk = (uintptr_t)MORECORE (0);
+      uintptr_t lastbrk = (uintptr_t) MORECORE(0);
       uintptr_t top = ALIGN_UP(lastbrk + size, mp_.thp_pagesize);
       size = (top - lastbrk);
     }
     else{
       size = ALIGN_UP(size, GLRO(dl_pagesize));
     }
+    // Here we have calculated the aligned size to request from the kernel.
+
 
     /* Don't try to call MORECORE if argument is so big as 
     to appear negative. Note that since mmap takes size_t arg, 
     it may succeed below even if we cannot call MORECORE. */
 
-    if ((ssize_t) size > 0){
-      brk = (char *) (MORECORE ((long) size));
-      if (brk != (char *) (MORECORE_FAILURE))
-        madvise_thp (brk, size);
+    // If the size is very huge, size_t will still interpret as a positive value (after wrap-around). However, ssize_t will interpret it as a negative value, which is helpful here in detecting overwrap.
+    if ((ssize_t)(size) > 0){
+      brk = (char*) MORECORE((long)size);
+      if (brk != (char*)(MORECORE_FAILURE))
+        madvise_thp(brk, size);
 
       LIBC_PROBE (memory_sbrk_more, 2, brk, size);
     }
 
-    if (brk == (char *)(MORECORE_FAILURE)){
+    if (brk == (char*)(MORECORE_FAILURE)){
       /* If have mmap, try using it as a backup when MORECORE 
       fails or cannot be used. This is worth doing on systems 
       that have "holes" in address space, so sbrk cannot extend 
@@ -2589,7 +2608,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       }
     }
 
-    if (brk != (char *)(MORECORE_FAILURE)){
+    if (brk != (char*)(MORECORE_FAILURE)){
       if (mp_.sbrk_base == NULL)
         mp_.sbrk_base = brk;
 
@@ -2671,9 +2690,9 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
           is contiguous with first sbrk. This is a safe assumption unless
           program is multithreaded but doesn't use locks and a foreign 
           sbrk occurred between our first and second calls. */
-          if (snd_brk == (char *) (MORECORE_FAILURE)){
+          if (snd_brk == (char*)(MORECORE_FAILURE)){
             correction = 0;
-            snd_brk = (char *) (MORECORE (0));
+            snd_brk = (char*) MORECORE(0);
           }
           else
             madvise_thp (snd_brk, correction);
@@ -2686,7 +2705,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
             assert (((unsigned long) chunk2mem (brk) & MALLOC_ALIGN_MASK) == 0);
           }
           else{
-            front_misalign = (INTERNAL_SIZE_T) chunk2mem (brk) & MALLOC_ALIGN_MASK;
+            front_misalign = (INTERNAL_SIZE_T) chunk2mem(brk) & MALLOC_ALIGN_MASK;
             if (front_misalign > 0){
 
               /* Skip over some bytes to arrive at an aligned position.
@@ -2699,8 +2718,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
           }
 
           /* Find out current end of memory. */
-          if (snd_brk == (char *) (MORECORE_FAILURE)){
-            snd_brk = (char *) (MORECORE (0));
+          if (snd_brk == (char*)(MORECORE_FAILURE)){
+            snd_brk = (char*) MORECORE(0);
           }
         }
 
@@ -2750,7 +2769,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
         }
       }
     }
-  } /* if (av !=  &main_arena) */
+  }
 
   if ((unsigned long)av->system_mem > (unsigned long)av->max_system_mem)
     av->max_system_mem = av->system_mem;
@@ -3314,56 +3333,58 @@ __libc_malloc2 (size_t bytes)
 
   if (SINGLE_THREAD_P){
     victim = tag_new_usable (_int_malloc (&main_arena, bytes));
-    assert (!victim || chunk_is_mmapped (mem2chunk (victim)) ||
-      &main_arena == arena_for_chunk (mem2chunk (victim)));
+    assert (
+      !victim || 
+      chunk_is_mmapped(mem2chunk(victim)) ||
+      &main_arena == arena_for_chunk(mem2chunk(victim))
+    );
     return victim;
   }
 
-  arena_get (ar_ptr, bytes);
+  arena_get(ar_ptr, bytes);
 
-  victim = _int_malloc (ar_ptr, bytes);
-  /* Retry with another arena only if we were able to find a usable arena
-     before.  */
-  if (!victim && ar_ptr != NULL)
-    {
-      LIBC_PROBE (memory_malloc_retry, 1, bytes);
-      ar_ptr = arena_get_retry (ar_ptr, bytes);
-      victim = _int_malloc (ar_ptr, bytes);
-    }
+  victim = _int_malloc(ar_ptr, bytes);
+  /* Retry with another arena only if we were able to find 
+  a usable arena before. */
+  if (!victim && ar_ptr != NULL){
+    LIBC_PROBE (memory_malloc_retry, 1, bytes);
+    ar_ptr = arena_get_retry (ar_ptr, bytes);
+    victim = _int_malloc (ar_ptr, bytes);
+  }
 
   if (ar_ptr != NULL)
     __libc_lock_unlock (ar_ptr->mutex);
 
   victim = tag_new_usable (victim);
 
-  assert (!victim || chunk_is_mmapped (mem2chunk (victim)) ||
-          ar_ptr == arena_for_chunk (mem2chunk (victim)));
+  assert (
+    !victim || 
+    chunk_is_mmapped(mem2chunk(victim)) ||
+    ar_ptr == arena_for_chunk(mem2chunk(victim))
+  );
+
   return victim;
 }
 
-void *
-__libc_malloc (size_t bytes)
+void* __libc_malloc (size_t bytes)
 {
 #if USE_TCACHE
   size_t nb = checked_request2size (bytes);
 
-  if (nb < mp_.tcache_max_bytes)
-    {
-      size_t tc_idx = csize2tidx (nb);
+  if (nb < mp_.tcache_max_bytes){
+    size_t tc_idx = csize2tidx (nb);
 
-      if (__glibc_likely (tc_idx < TCACHE_SMALL_BINS))
-        {
-	  if (tcache->entries[tc_idx] != NULL)
-	    return tag_new_usable (tcache_get (tc_idx));
-	}
-      else
-        {
-	  tc_idx = large_csize2tidx (nb);
-	  void *victim = tcache_get_large (tc_idx, nb);
-	  if (victim != NULL)
-	    return tag_new_usable (victim);
-	}
+    if (__glibc_likely (tc_idx < TCACHE_SMALL_BINS)){
+      if (tcache->entries[tc_idx] != NULL)
+        return tag_new_usable (tcache_get (tc_idx));
     }
+    else{
+      tc_idx = large_csize2tidx (nb);
+      void *victim = tcache_get_large (tc_idx, nb);
+      if (victim != NULL)
+        return tag_new_usable (victim);
+    }
+	}
 #endif
 
   return __libc_malloc2 (bytes);
@@ -3377,8 +3398,7 @@ tcache_free_init (void *mem)
   __libc_free (mem);
 }
 
-void
-__libc_free (void *mem)
+void __libc_free (void *mem)
 {
   mchunkptr p;                          /* chunk corresponding to mem */
 
