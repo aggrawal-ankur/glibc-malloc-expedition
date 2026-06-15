@@ -72,3 +72,9 @@ These are the ideas I want to explore in future, either because I am interested 
 15. Host my own website, on my own hardware, and on a custom managed remote server.
 
 16. Make my own markdown-based personal note taking application for Linux with sync with mobile.
+
+17. Caching (Untouched).
+
+18. Array Indexing (Or, Indexing in general).
+
+19. Branch prediction (Untouched).
