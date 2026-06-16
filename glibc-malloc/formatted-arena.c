@@ -74,9 +74,11 @@ typedef struct _heap_info
 {
   mstate ar_ptr;              /* Arena for this heap. */
   struct _heap_info *prev;    /* Previous heap. */
-  size_t size;                /* The amount of memory that the process is actively using. */
-  size_t mprotect_size;       /* The size that has been mprotected (PROT_READ | PROT_WRITE)
-                                 and available to be allocated to the process. */
+  size_t size;                /* The total memory available to this heap segment with [PROT_NONE]. */
+  size_t mprotect_size;       /* The memory that has been mprotected with read/write permissions. i.e. 
+                                 (PROT_READ | PROT_WRITE) and available to be allocated to the process. */
+  /* [RELATIONSHIP]: mprotect_size <= size */
+
   size_t pagesize;            /* Page size used when allocating the arena. */
 
   /* Make sure the following data is properly aligned, particularly that 
@@ -372,7 +374,9 @@ static heap_info* alloc_new_heap(
   size_t min_size = heap_min_size();
   size_t max_size = heap_max_size();
 
-  /* [STEP 1]: Calculate the size to mmap. */
+  /* [STEP 1]: Calculate the size to reserve for this heap segment, 
+     i.e. [PROT_NONE] memory. */
+  /* This size revolves in the range: [HEAP_MIN_SIZE, HEAP_MAX_SIZE] */
 
   if (size + top_pad < min_size)
     size = min_size;
@@ -390,15 +394,43 @@ static heap_info* alloc_new_heap(
 
   /* ....[STEP 1].... */
 
-  /* A memory region aligned to a multiple of max_size is needed.
-     No swap space needs to be reserved for the following large
-     mapping (on Linux, this is the case for all non-writable 
-     mappings anyway). */
+
+  /* We need a memory region whose base is a multiple of max_size
+     (HEAP_MAX_SIZE). This is a massive block of memory. When a 
+     program requests a massive block of writable memory, the 
+     kernel checks if the system has enough memory in the RAM and 
+     the swap space combined to back it up. If the system doesn't 
+     have it, the kernel denies the allocation to prevent crashing 
+     later.
+
+     Here we are not requesting a massive block of writable memory.
+     We are asking for a non-writable block of memory, which doesn't
+     require swap space anyways (on Linux). */
+
+  /* [PATH 1]: Use aligned_heap_area. */
+  /* [NEEDS TO BE CHECKED]: For the first time, aligned_heap_area should be 0. */
+  /* [TODO]: What is aligned_heap_area? */
+
   p2 = MAP_FAILED;
   if (aligned_heap_area){
     p2 = (char*) MMAP(aligned_heap_area, max_size, PROT_NONE, mmap_flags);
     aligned_heap_area = NULL;
 
+    /* Without MAP_FIXED, the first argument to mmap, i.e. the address, is 
+       just a hint, which, the kernel can ignore for some reason and choose 
+       a more suitable address. This address may or may not be aligned to 
+       HEAP_MAX_SIZE. Therefore, we have to check if the returned address is
+       actually aligned. A few points.
+       - Since we have immediately made aligned_heap_area NULL, there is no
+         way to verify if the kernel honored our hint or returned what it 
+         found suitable. 
+       - The if block only checks whether the returned memory is aligned to
+         a HEAP_MAX_SIZE multiple or not. It doesn't care about whether our
+         suggestion got honored or not.
+       - It also acts as an integrity check where aligned_heap_area might be 
+         corrupted somehow, but the corruption must not hamper everything else. 
+
+       If the returned address is not aligned, we unmap the region immediately. */
     if (
       p2 != MAP_FAILED && 
       ((unsigned long)(p2) & (max_size-1))
