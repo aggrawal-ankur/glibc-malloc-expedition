@@ -406,6 +406,7 @@ static heap_info* alloc_new_heap(
      Here we are not requesting a massive block of writable memory.
      We are asking for a non-writable block of memory, which doesn't
      require swap space anyways (on Linux). */
+  /* [TODO]: But why do we need the base to be a multiple of HEAP_MAX_SIZE?
 
   /* [PATH 1]: Use aligned_heap_area. */
   /* [NEEDS TO BE CHECKED]: For the first time, aligned_heap_area should be 0. */
@@ -420,7 +421,7 @@ static heap_info* alloc_new_heap(
        just a hint, which, the kernel can ignore for some reason and choose 
        a more suitable address. This address may or may not be aligned to 
        HEAP_MAX_SIZE. Therefore, we have to check if the returned address is
-       actually aligned. A few points.
+       actually aligned. A few points:
        - Since we have immediately made aligned_heap_area NULL, there is no
          way to verify if the kernel honored our hint or returned what it 
          found suitable. 
@@ -440,6 +441,43 @@ static heap_info* alloc_new_heap(
     }
   }
 
+  /* [Path 2]:
+     - Request twice of HEAP_MAX_SIZE and let the kernel choose the
+       base of the mapping.
+     - The address returned by mmap may or may not be a multiple of
+       HEAP_MAX_SIZE. This makes it mandatory for us to align it.
+     - We use an ALIGN_UP operation to achieve this. It handles both
+       the cases flawlessly.
+     - [Case 1]:
+         - If p1 is already a multiple of HEAP_MAX_SIZE, p2 will be
+           equal to p1 and ul will be zero.
+         - The returned memory basically comprises of two HEAP_MAX_SIZE
+           segments, like this: [HEAP_MAX_SIZE_1, HEAP_MAX_SIZE_2].
+         - We keep the first segment and store the pointer to the second
+           segment, in aligned_heap_area, i.e. (p2 + HEAP_MAX_SIZE).
+     - [Case 2]:
+         - If p1 is not a multiple of HEAP_MAX_SIZE, p2 will contain
+           a value which will be greater than p1.
+         - p1 can be divided into two parts: "base value", which is
+           already a multiple of HEAP_MAX_SIZE and "excess value",
+           which is preventing the base value to be a multiple of
+           HEAP_MAX_SIZE.
+         - When p1 undergoes alignment, we add a number to this
+           "excess value" that converts the whole address into a
+           multiple of HEAP_MAX_SIZE.
+         - Based on this, we can construct what the returned memory
+           means for us: [HEAP_MAX_SIZE-excess, HEAP_MAX_SIZE, excess].
+         - We want to keep the aligned segment and munmap the remaining
+           two fragments.
+           - We know that adding "x" to the "excess value" makes the
+             address aligned to HEAP_MAX_SIZE. To obtain this x, all
+             we have to do is to subtarct the excess bytes from
+             HEAP_MAX_SIZE, i.e. HEAP_MAX_SIZE-excess, or, (p2-p1).
+           - After munmapping the first fragment, the second fragment
+             is simply the excess bytes. They start from
+             (p2+HEAP_MAX_SIZE) and they are (HEAP_MAX_SIZE-x), or,
+             (HEAP_MAX_SIZE-ul).
+      */
   if (p2 == MAP_FAILED){
     p1 = (char*) MMAP(NULL, max_size << 1, PROT_NONE, mmap_flags);
     if (p1 != MAP_FAILED){
@@ -451,6 +489,7 @@ static heap_info* alloc_new_heap(
 
       else
         aligned_heap_area = p2 + max_size;
+
         __munmap(p2 + max_size, max_size - ul);
     }
 
