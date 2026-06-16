@@ -367,8 +367,8 @@ static heap_info* alloc_new_heap(
   size_t size, size_t top_pad, 
   size_t pagesize, int mmap_flags
 ){
-  char *p1, *p2;
-  unsigned long ul;
+  char *p1, *p2;     /* Their description is made clear in the later of the fn. */
+  unsigned long ul;  /* Explained later. */
   heap_info *h;
 
   size_t min_size = heap_min_size();
@@ -409,8 +409,8 @@ static heap_info* alloc_new_heap(
   /* [TODO]: But why do we need the base to be a multiple of HEAP_MAX_SIZE?
 
   /* [PATH 1]: Use aligned_heap_area. */
-  /* [NEEDS TO BE CHECKED]: For the first time, aligned_heap_area should be 0. */
-  /* [TODO]: What is aligned_heap_area? */
+  /* [NOTE 1]: If the first time through, aligned_heap_area will be 0. */
+  /* [NOTE 2]: Explore path 2 before this path to understand better. */
 
   p2 = MAP_FAILED;
   if (aligned_heap_area){
@@ -441,21 +441,36 @@ static heap_info* alloc_new_heap(
     }
   }
 
-  /* [Path 2]:
-     - Request twice of HEAP_MAX_SIZE and let the kernel choose the
-       base of the mapping.
-     - The address returned by mmap may or may not be a multiple of
-       HEAP_MAX_SIZE. This makes it mandatory for us to align it.
-     - We use an ALIGN_UP operation to achieve this. It handles both
-       the cases flawlessly.
-     - [Case 1]:
+  /* [Path 2]: Manage to mmap a HEAP_MAX_SIZE sized segment which is
+               mandatorily a multiple of HEAP_MAX_SIZE. */
+
+  if (p2 == MAP_FAILED){
+    /* [PATH 2A]: Request a region twice of HEAP_MAX_SIZE bytes and 
+                  let the kernel choose the base of the mapping.*/
+
+    /* We are not hinting the kernel with a HEAP_MAX_SIZE aligend
+       address. Therefore, the kernel can return any address, which
+       might be off by any number of bytes (including a perfectly 
+       aligned address with 0 off byte as well.
+       - For this reason, we can not choose an arbitray number of 
+         extra bytes on top of HEAP_MAX_SIZE.
+       - Therefore, we request a region of (HEAP_MAX_SIZE * 2) bytes.
+
+       We align the returned address to the next multiple of 
+       HEAP_MAX_SIZE, which is a simple ALIGN_UP operation. It handles 
+       both the cases elegantly.
+       - [Case 1]:
          - If p1 is already a multiple of HEAP_MAX_SIZE, p2 will be
            equal to p1 and ul will be zero.
-         - The returned memory basically comprises of two HEAP_MAX_SIZE
-           segments, like this: [HEAP_MAX_SIZE_1, HEAP_MAX_SIZE_2].
-         - We keep the first segment and store the pointer to the second
-           segment, in aligned_heap_area, i.e. (p2 + HEAP_MAX_SIZE).
-     - [Case 2]:
+         - The returned memory is worth two HEAP_MAX_SIZE segments, 
+           like this: [HEAP_MAX_SIZE_1, HEAP_MAX_SIZE_2].
+         - We keep the first segment and store the pointer to the 
+           second segment in `aligned_heap_area`, i.e. 
+           (p2 + HEAP_MAX_SIZE). Next time, when we allocate a new
+           heap, instead of going back box in a huge virtual memory,
+           we directly map the memory after the current heap segment,
+           keeping things sequential.
+       - [Case 2]:
          - If p1 is not a multiple of HEAP_MAX_SIZE, p2 will contain
            a value which will be greater than p1.
          - p1 can be divided into two parts: "base value", which is
@@ -477,8 +492,7 @@ static heap_info* alloc_new_heap(
              is simply the excess bytes. They start from
              (p2+HEAP_MAX_SIZE) and they are (HEAP_MAX_SIZE-x), or,
              (HEAP_MAX_SIZE-ul).
-      */
-  if (p2 == MAP_FAILED){
+    */
     p1 = (char*) MMAP(NULL, max_size << 1, PROT_NONE, mmap_flags);
     if (p1 != MAP_FAILED){
       p2 = (char*)(((uintptr_t)(p1) + (max_size-1)) & ~(max_size-1));
@@ -490,16 +504,20 @@ static heap_info* alloc_new_heap(
       else
         aligned_heap_area = p2 + max_size;
 
-        __munmap(p2 + max_size, max_size - ul);
+      __munmap(p2 + max_size, max_size - ul);
     }
 
+    /* [PATH 2B]: If a request of (HEAP_MAX_SIZE * 2) bytes failed 
+       for some reason (like resource restrictions), we attempt for 
+       HEAP_MAX_SIZE, in hope we get an aligned region. */
     else{
-      /* Try to take the chance that an allocation of only max_size
-         is already aligned. */
       p2 = (char*) MMAP(NULL, max_size, PROT_NONE, mmap_flags);
       if (p2 == MAP_FAILED)
         return NULL;
 
+      /* If the returned address is not a multiple of HEAP_MAX_SIZE, 
+         the segment is useless for us as glibc operates on strict 
+         alignment rules. Therefore, we have to munmap it. */
       if ((unsigned long)(p2) & (max_size-1)){
         __munmap(p2, max_size);
         return NULL;
@@ -507,6 +525,17 @@ static heap_info* alloc_new_heap(
     }
   }
 
+
+  /* If path 1 failed, we go to path 2. If path 2 fails, we exit this
+     function. So, if we have reached this part, that means, one of 
+     the paths have successed.
+     
+     There were two (char*) pointers, i.e. p1 and p2 declared on top.
+     The first path only uses p2, while the second path uses p1 as a
+     scratch variable and keeps the aligned one in p2. */
+
+  /* [Step 2]: Update the permissions to read-write for `size` bytes 
+     of memory in the whole heap segment. */
   if (__mprotect(
       p2, size, 
       mtag_mmap_flags | PROT_READ | PROT_WRITE
@@ -517,8 +546,10 @@ static heap_info* alloc_new_heap(
   }
 
   /* Only considere the actual usable range.  */
+  /* [WHAT IS THIS FOR] */
   __set_vma_name (p2, size, " glibc: malloc arena");
 
+  /* [Advice the kernel to make it a huge page?] */
   madvise_thp (p2, size);
 
   h = (heap_info*) p2;
