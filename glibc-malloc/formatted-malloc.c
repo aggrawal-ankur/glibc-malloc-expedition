@@ -2362,7 +2362,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
   /* [PATH 1]: Use sysmalloc_mmap (mmap) directly, if:
      1. the request size meets the mmap threshold, and
-     2. the number of currently allocated mmapped regions is less than the total mmapped regions allowed.
+     2. the number of currently allocated mmapped regions
+        is less than the total mmapped regions allowed.
   */
   /* [TODO]: Why (av == NULL) is required. */
   if (
@@ -2374,7 +2375,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
   ){
     char *mm;
 
-    /* [HUGE_PAGE sub-path] */
+    /* [PATH 1A]: Use huge pages if enabled. */
     /* There is no need to issue the THP madvise call 
     if Huge Pages are used directly. */
     if (mp_.hp_pagesize > 0 && nb >= mp_.hp_pagesize){
@@ -2383,7 +2384,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
   	    return mm;
 	  }
 
-    /* [Standard page size sub-path] */
+    /* [PATH 1B]: Use standard page size. */
     mm = sysmalloc_mmap(nb, pagesize, 0);
     if (mm != MAP_FAILED)
     	return mm;
@@ -2401,7 +2402,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
   old_end  = (char*) chunk_at_offset(old_top, old_size);
 
   /* Initialize the program breaks. */
-  brk = snd_brk = (char*)MORECORE_FAILURE;
+  brk = snd_brk = (char*)(MORECORE_FAILURE);
 
   /* If it is the first time, the top chunk must point to 
      initial_top(av). 
@@ -2410,13 +2411,13 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
      manually while creating it. Because initial_top(av) is
      just bin_at(M, 1), which resolves to a pointer inside
      main_arena (prior to bins), the element with which 
-     mchunk_size overlaps is going to be zero, making old_size
-     zero with surety.
+     mchunk_size overlaps is going to be zero, making
+     old_size zero with surety.
      If not zero, main_arena is corrupted, and we should exit.
 
      If it is not the first time, 
-       1. the size of the top chunk (old_size) must be at least 
-          MINSIZE bytes, and 
+       1. the size of the top chunk (old_size) must be at
+          least MINSIZE bytes, and 
        2. the PREV_INUSE bit must be set (1). */
   assert(
     (old_top == initial_top(av) && old_size == 0) ||
@@ -2427,44 +2428,61 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     )
   );
 
-  /* sysmalloc is all about extending the top chunk in the current arena.
-     This is done only when the top size is less than the required bytes
-     alongwith MINSIZE bytes. 
-     MINSIZE is the smallest chunk size, and top is a valid chunk. We 
-     must have these many bytes after carving a chunk from the top to 
-     maintain the integrity of the top chunk. */
+  /* sysmalloc is all about extending the top chunk in the
+     current arena. This is done only when the top size is
+     less than the required bytes + MINSIZE bytes.
+     - If the top chunk had exactly as many bytes as `nb`,
+       there will be no space left for the top chunk after
+       the request is serviced.
+     - Therefore, we ensure that the top chunk has at least
+       (nb + MINSIZE) bytes. */
   assert((unsigned long)(old_size) < (unsigned long)(nb + MINSIZE));
 
-  // [Path 2]: Non-main arena.
+  // [PATH 2]: Non-main arena.
   if (av != &main_arena){
     heap_info *old_heap;
     heap_info *heap;
     size_t old_heap_size;
 
-    /* [ATTEMPT 1]: Try to extend the current heap. */
+    /* [PATH 2A]: Extend the current heap. */
 
     old_heap = heap_for_ptr(old_top);    // The base of the heap.
-    old_heap_size = old_heap->size;
+    old_heap_size = old_heap->size;      // Save the existing heap size before grow_heap() is called.
 
+    /* `nb + MINSIZE` is the amount of new bytes required. `old_size`
+        is the current size of the top chunk. Subtracting old_size from
+        the new bytes required, we get the number of bytes that the
+        allocator doesn't have right now.
+
+        We call grow_heap() with these many bytes as the request. */
     if (
       (long)(MINSIZE + nb - old_size) > 0 && 
       grow_heap(old_heap, MINSIZE + nb - old_size) == 0
     ){
-      av->system_mem += old_heap->size - old_heap_size;
+      av->system_mem += (old_heap->size - old_heap_size);  /* (updated - old) */
+
+      /* Add a malloc_chunk struct before the payload memory.*/
       set_head(
         old_top, 
-        (((char *) old_heap + old_heap->size) - (char *) old_top) | PREV_INUSE
+        (((char*)(old_heap) + old_heap->size) - (char*)(old_top)) | PREV_INUSE
       );
     }
 
-    /* .... [ATTEMPT 1] .... */
+    /* [PATH 2B]: Allocate a new heap segment and use it. */
 
+    /* [CONDITION]: Allocate a new heap, store the pointer in
+       `heap` and check we have succeeded or not. */
     else if (
-      (heap = new_heap (nb + (MINSIZE + sizeof (*heap)), mp_.top_pad))
+      (heap = new_heap(nb + (MINSIZE + sizeof(*heap)), mp_.top_pad))
     ){
-      /* Use a newly allocated heap. */
+      /* Attach this heap to the arena. */
       heap->ar_ptr = av;
+
+      /* Attach this heap to the previous heap in the linked list
+         of heaps managed by this arena. */
       heap->prev = old_heap;
+
+      /* Update the memory footprint of the arena. */
       av->system_mem += heap->size;
 
       /* Set up the new top. */
