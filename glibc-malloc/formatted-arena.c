@@ -74,10 +74,10 @@ typedef struct _heap_info
 {
   mstate ar_ptr;              /* Arena for this heap. */
   struct _heap_info *prev;    /* Previous heap. */
-  size_t size;                /* The total memory available to this heap segment with [PROT_NONE]. */
-  size_t mprotect_size;       /* The memory that has been mprotected with read/write permissions. i.e. 
-                                 (PROT_READ | PROT_WRITE) and available to be allocated to the process. */
-  /* [RELATIONSHIP]: mprotect_size <= size */
+  size_t size;                /* The total memory the process is actively using. This is shrinkable. */
+  size_t mprotect_size;       /* The memory that has been mprotected with read/write permissions 
+                                 (PROT_READ | PROT_WRITE). This is non-shrinkable. */
+  /* [RELATIONSHIP]: size <= mprotect_size */
 
   size_t pagesize;            /* Page size used when allocating the arena. */
 
@@ -582,7 +582,7 @@ static heap_info* new_heap(size_t size, size_t top_pad)
   return alloc_new_heap(size, top_pad, GLRO(dl_pagesize), 0);
 }
 
-/* Grow a heap. size is automatically rounded up to a
+/* Grow a heap. `size` is automatically rounded up to a
    multiple of the page size. */
 static int grow_heap(heap_info *h, long diff)
 {
@@ -593,10 +593,28 @@ static int grow_heap(heap_info *h, long diff)
   diff = ALIGN_UP(diff, pagesize);     // Round up to the next page boundary.
   new_size = (long)(h->size) + diff;
 
-  /* The new size must not exceed the maximum size allowed for a heap. */
+  /* The new size must not exceed the maximum size allowed
+     for a heap segment. */
   if ((unsigned long)(new_size) > (unsigned long)(max_size))
     return -1;
 
+  /* If the heap was shrinked before, (h->size < h->mprotect_size).
+     There can be two cases depending on the value of `diff`.
+     - [Case 1]: (h->size + diff) <= h->mprotect_size
+       - We don't have to call mprotect to update the
+         permissions on the region. It is already RW.
+       - Update h->size to new_size and leave h->mprotect_size.
+     - [Case 2]: (h->size + diff) > h->mprotect_size
+       - This splits the region in two parts: the left
+         side has the right permissions, and the right
+         part that lacks them due to extra bytes.
+       - To obtain the right part (extra bytes), we have
+         to subtract h->mprotect_size from new_size.
+       - Last, we update the h->mprotect_size to reflect
+         the newly mprotected region and put new_size in
+         h->size. */
+
+  /* [Case 2]: (h->size + diff) > h->mprotect_size */
   if ((unsigned long)(new_size) > h->mprotect_size){
     if (__mprotect(
       (char*)(h) + h->mprotect_size,
@@ -605,8 +623,8 @@ static int grow_heap(heap_info *h, long diff)
     ) != 0)
       return -2;
 
-      h->mprotect_size = new_size;
-    }
+    h->mprotect_size = new_size;
+  }
 
   /* mprotect preserves MADV_HUGEPAGE semantics - this means that if the old
      region was marked with MADV_HUGEPAGE, the new region will retain that.  */
