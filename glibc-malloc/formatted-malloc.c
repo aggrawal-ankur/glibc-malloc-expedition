@@ -1388,7 +1388,7 @@ checked_request2size(size_t req) __nonnull (1)
 #define  set_head(p, s)  ((p)->mchunk_size = (s))
 
 /* Set size at footer (only when chunk is not in use) */
-#define  set_foot(p, s)  (((mchunkptr) ((char *) (p) + (s)))->mchunk_prev_size = (s))
+#define  set_foot(p, s)  (((mchunkptr) ((char*)(p) + s))->mchunk_prev_size = (s))
 
 #pragma GCC poison mchunk_size
 #pragma GCC poison mchunk_prev_size
@@ -2438,13 +2438,13 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
        (nb + MINSIZE) bytes. */
   assert((unsigned long)(old_size) < (unsigned long)(nb + MINSIZE));
 
-  // [PATH 2]: Non-main arena.
+  /* [PATH 2]: Non-main arena. */
   if (av != &main_arena){
     heap_info *old_heap;
     heap_info *heap;
     size_t old_heap_size;
 
-    /* [PATH 2A]: Extend the current heap. */
+    /* [PATH 2A]: Extend the current heap segment. */
 
     old_heap = heap_for_ptr(old_top);    // The base of the heap.
     old_heap_size = old_heap->size;      // Save the existing heap size before grow_heap() is called.
@@ -2468,10 +2468,10 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       );
     }
 
-    /* [PATH 2B]: Allocate a new heap segment and use it. */
+    /* [PATH 2B]: Allocate a new heap segment. */
 
-    /* [CONDITION]: Allocate a new heap, store the pointer in
-       `heap` and check we have succeeded or not. */
+    /* [CONDITION BLOCK EXPLAINER]: Request a new heap segment, store 
+       the return value in `heap` and check we have succeeded or not. */
     else if (
       (heap = new_heap(nb + (MINSIZE + sizeof(*heap)), mp_.top_pad))
     ){
@@ -2486,41 +2486,65 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       av->system_mem += heap->size;
 
       /* Set up the new top. */
-        top(av) = chunk_at_offset(heap, sizeof(*heap));
-        set_head(
-          top(av), 
-          (heap->size - sizeof(*heap)) | PREV_INUSE
-        );
 
-      /* Setup fencepost and free the old top chunk with a multiple of
-      MALLOC_ALIGNMENT in size. */
+      // Add malloc_chunk.
+      top(av) = chunk_at_offset(heap, sizeof(*heap));
 
-      /* The fencepost takes at least MINSIZE bytes, because it might
+      // Update mchunk_size and set the PREV_INUSE bit.
+      set_head(
+        top(av), 
+        (heap->size - sizeof(*heap)) | PREV_INUSE
+      );
+
+      /* [WHICH PATHWAY MAKES IT A TOP CHUNK LATER?] 
+      The fencepost takes at least MINSIZE bytes, because it might
       become the top chunk again later.  Note that a footer is set
       up, too, although the chunk is marked in use. */
 
+      /* Setup a fencepost chunk at the end of the old heap segment.
+         It's size is 0 and the PREV_INUSE bit is set (1). To do this,
+         the top chunk of this heap is reduced by MINSIZE bytes and the
+         resulting value is aligned down to a MALLCO_ALIGN_MASK boundary.
+         This is important as the top chunk is converted into a regular
+         chunk and binned to be used by the process. If the chunk is not
+         aligned to a MALLOC_ALIGN_MASK boundary, it might cause
+         alignment issues later.
+
+         An ALIGN_DOWN operation is favored because an ALIGN_UP
+         operation would reduce the size of the fencepost from MINSIZE,
+         and a chunk less than this is not possible. */
+
+      // Computer the new top size after excluding the fencepost 
+      // bytes (including alignment constraints).
       old_size = (old_size - MINSIZE) & ~MALLOC_ALIGN_MASK;
+
+      // ??
       set_head(
         chunk_at_offset(old_top, old_size + CHUNK_HDR_SZ),
 		    0 | PREV_INUSE
       );
 
       if (old_size >= MINSIZE){
+        // ??
         set_head(
-          chunk_at_offset (old_top, old_size),
+          chunk_at_offset(old_top, old_size),
           CHUNK_HDR_SZ | PREV_INUSE
         );
 
+        // ??
         set_foot(
           chunk_at_offset(old_top, old_size), 
           CHUNK_HDR_SZ
         );
 
+        // Update the size, including the lower bits of the newly formed
+        // top chunk in the old heap segment.
         set_head(
           old_top, 
           old_size | PREV_INUSE | NON_MAIN_ARENA
         );
 
+        // Regularize the top chunk of the old heap and bin (free) it.
         _int_free_chunk(av, old_top, chunksize (old_top), 1);
       }
 
