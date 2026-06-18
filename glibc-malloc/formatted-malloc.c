@@ -1310,7 +1310,8 @@ checked_request2size(size_t req) __nonnull (1)
 /* size field is or'ed with PREV_INUSE when previous adjacent chunk in use */
 #define  PREV_INUSE  0x1
 
-/* extract inuse bit of previous chunk */
+/* Extract the in-use bit of the chunk `p` */
+/* It confirms whether the chunk previous to `p` is free (0), or in-use (1). */
 #define  prev_inuse(p)  ((p)->mchunk_size & PREV_INUSE)
 
 
@@ -2501,21 +2502,24 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       become the top chunk again later.  Note that a footer is set
       up, too, although the chunk is marked in use. */
 
+      // [NEEDS CORRECTION]
       /* Setup a fencepost chunk at the end of the old heap segment.
          It's size is 0 and the PREV_INUSE bit is set (1). To do this,
          the top chunk of this heap is reduced by MINSIZE bytes and the
          resulting value is aligned down to a MALLCO_ALIGN_MASK boundary.
-         This is important as the top chunk is converted into a regular
-         chunk and binned to be used by the process. If the chunk is not
-         aligned to a MALLOC_ALIGN_MASK boundary, it might cause
-         alignment issues later.
 
-         An ALIGN_DOWN operation is favored because an ALIGN_UP
-         operation would reduce the size of the fencepost from MINSIZE,
-         and a chunk less than this is not possible. */
+         If the top size was corrupted for some reason (like, a bug/race
+         condition), (old_size-MINSIZE) might not land on a clean
+         MALLOC_ALIGN_MASK boundary. As the top chunk is later regularized
+         to be used by the process as a normal chunk, the top chunk must
+         have the right the right size.
 
-      // Computer the new top size after excluding the fencepost 
-      // bytes (including alignment constraints).
+         [But there are two fenceposts!]
+         An ALIGN_DOWN operation is favored because, an ALIGN_UP
+         operation would reduce the size of the fencepost from 
+         MINSIZE, and a chunk less than this is not possible. */
+
+      // Compute the aligned top size after excluding the fencepost bytes.
       old_size = (old_size - MINSIZE) & ~MALLOC_ALIGN_MASK;
 
       // ??
@@ -2545,7 +2549,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
         );
 
         // Regularize the top chunk of the old heap and bin (free) it.
-        _int_free_chunk(av, old_top, chunksize (old_top), 1);
+        _int_free_chunk(av, old_top, chunksize(old_top), 1);
       }
 
       else{
@@ -4487,9 +4491,9 @@ static void* _int_malloc(mstate av, size_t bytes)
 /* -------------------- free -------------------- */
 
 /* Free chunk P of SIZE bytes to the arena.
-  - HAVE_LOCK indicates where the arena for P has 
-  already been locked.
-  - Caller must ensure chunk and size are valid. */
+   - HAVE_LOCK indicates where the arena for P has 
+     already been locked.
+   - Caller must ensure chunk and size are valid. */
 static void _int_free_chunk(
   mstate av, mchunkptr p, 
   INTERNAL_SIZE_T size, 
@@ -4544,30 +4548,31 @@ static void _int_free_chunk(
 }
 
 /* Try to merge chunk P of SIZE bytes with its neighbors.
-  - Put the resulting chunk on the appropriate bin list.
-  - P must not be on a bin list yet, and it can be in use. */
+   - Put the resulting chunk on the appropriate bin list.
+   - P must not be on a bin list yet, and it can be in use. */
 static void _int_free_merge_chunk(
   mstate av, mchunkptr p, 
   INTERNAL_SIZE_T size
 ){
+  /* Chunk (p+1) */
   mchunkptr nextchunk = chunk_at_offset(p, size);
-  check_inuse_chunk(av, p);
+  check_inuse_chunk(av, p);    // A no-op when MALLOC_DEBUG is not defined.
 
-  // Lightweight tests
+  /* Lightweight tests */
 
-  /* Check whether the block is already the top block. */
+  // [TEST 1]: Check whether the block is already the top block. */
   if (__glibc_unlikely(p == av->top))
     malloc_printerr("double free or corruption (top)");
 
-  /* Check whether the next chunk is beyond the boundaries
-     of the arena. */
+  // [TEST 2]: Check whether the next chunk is beyond the boundaries
+  // of the arena. */
   if (__glibc_unlikely(
     contiguous(av) && 
-    (char*)nextchunk >= ((char*)av->top + chunksize(av->top))
+    (char*)(nextchunk) >= ((char*)(av->top) + chunksize(av->top))
   ))
     malloc_printerr("double free or corruption (out)");
 
-  /* Check whether the block is actually not marked used. */
+  // [TEST 3]: Check whether the block is actually not marked used. */
   if (__glibc_unlikely(!prev_inuse(nextchunk)))
     malloc_printerr("double free or corruption (!prev)");
 
@@ -4578,22 +4583,67 @@ static void _int_free_merge_chunk(
   ))
     malloc_printerr("free(): invalid next size (normal)");
 
+  /* [WHAT IS THIS?] */
   free_perturb(chunk2mem(p), size - CHUNK_HDR_SZ);
 
+
+  /* [THE FUNCTION, IN BRIEF] 
+     - A chunk can undergo forward and backward coalescing.
+     - Suppose the chunk to be freed is pointed to by `p`. We 
+       can call the forward chunk `(p+1)` and the backward 
+       chunk `(p-1)`.
+     - We can check the PREV_INUSE bit of the chunk `p` to 
+       identify the state of `(p-1)` chunk.
+     - If it is free, we add the size of `p` and `(p-1)` 
+       chunks to obtain the size of the backward consolidated
+       chunk and store the pointer to the `(p-1)` chunk in `p`.
+       - We don't have to preserve `p` because, the fn demands 
+         the invariant that `p` is not already managed by bins. [WHY]
+         The reason we update `p` instead of a separate variable
+         is discussed below.
+       - Remember, the metadata of this newly formed chunk is 
+         not updated yet.
+     - If it is not free, we can not perform backward consolidation.
+
+     - If the previous chunk was free, we had consolidated 
+       `(p-1)` and `p` chunks into `p`. If the previous chunk
+       was not free, we would have `p` intact. Either way, we 
+       have a chunk `p`, ready for forward consolidation.
+     - Next we call _int_free_create_chunk() with `p` and 
+       `(p+1)` chunks. Since we might have performed backward
+       consolidation, we can not rely on the size of chunk `p`. 
+       Therefore, we pass the correct one manually. (While we 
+       can obtain the size of the `(p+1)` chunk by `(p + size)`,
+       I am not sure why we are manually passing nextsize, 
+       maybe we don't want to take chance. But I am not sure.)
+
+     - Last, we call _int_free_maybe_trim() with av and the size
+       returned by _int_free_create_chunk().
+
+       [Why we pass `size`? It is not guaranteed that the 
+       resulting chunk is the top chunk.] */
+
+
   /* Consolidate backward. */
+  /* If the (p-1) chunk is free, consolidate it with `p`. */
   if (!prev_inuse(p)){
     INTERNAL_SIZE_T prevsize = prev_size(p);
+
+    // Add the size of `(p-1)` chunk in the size variable for chunk `p`.
     size += prevsize;
 
-    p = chunk_at_offset(p, -((long) prevsize));
+    // Update `p` with the pointer to the `(p-1)` chunk.
+    p = chunk_at_offset(p, -((long)(prevsize)));
+
     if (__glibc_unlikely(chunksize(p) != prevsize))
       malloc_printerr("corrupted size vs. prev_size while consolidating");
 
+    // Unlink chunk (p-1).
     unlink_chunk(av, p);
   }
 
-  /* Write the chunk header, maybe after merging 
-  with the following chunk. */
+  /* Perform forward consolidation (if possible), bin the chunk 
+     and return the size of the final chunk. */
   size = _int_free_create_chunk(av, p, size, nextchunk, nextsize);
   _int_free_maybe_trim(av, size);
 }
@@ -4602,8 +4652,8 @@ static void _int_free_merge_chunk(
    increased to cover the immediately following chunk 
    NEXTCHUNK of NEXTSIZE bytes (if NEXTCHUNK is unused).
    - The chunk at P is not actually read and does not have 
-   to be initialized. After creation, it is placed on the 
-   appropriate bin list.
+     to be initialized. After creation, it is placed on the 
+     appropriate bin list.
    - The function returns the size of the new chunk. */
 static INTERNAL_SIZE_T _int_free_create_chunk(
   mstate av, mchunkptr p, 
@@ -4611,28 +4661,45 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
 	mchunkptr nextchunk, 
   INTERNAL_SIZE_T nextsize
 ){
+  /* [PATH 1]: The nextchunk isn't the top chunk. */
   if (nextchunk != av->top){
     /* get and clear inuse bit */
+    /* For forward consolidation, we need to identify if the `(p+1)` 
+       chunk is free or not. For this, we need to obtain the 
+       PREV_INUSE bit of the `(p+2)` chunk. */
+    /* [The description of this macro is confusing.] */
     bool nextinuse = inuse_bit_at_offset (nextchunk, nextsize);
 
     /* Consolidate forward. */
     if (!nextinuse){
     	unlink_chunk(av, nextchunk);
       size += nextsize;
+      /* Size either contains (p-1, p, p+1)->mchunk_sizes, or
+         (p, p+1)->mchunk_sizes; depending on whether backward
+         consolidation happened or not. */
     }
     else{
+    /* If the nextchunk was an in-use chunk, we can not perform
+       forward consolodation, but we do have to update the 
+       PREV_INUSE bit of this chunk to reflect that the chunk 
+       previous to it is now free. */
       clear_inuse_bit_at_offset(nextchunk, 0);
     }
 
 
-    /* Place large chunks in unsorted chunk list. Large 
-    chunks are not placed into regular bins until after 
-    they have been given one chance to be used in malloc.
+    /* After consolidation, we have to bin the resulting chunk. */
 
-    This branch is first in the if-statement to help branch
-    prediction on consecutive adjacent frees. */
-
+    /* Front and back pointers for the bin. */
     mchunkptr bck, fwd;
+
+    /* [PATH 1A]: If large chunk, place it in the unsorted bin.
+
+       Large chunks are placed in the unsorted bin. This is 
+       done to give them a chance on the next malloc call as
+       they might improve the locality of chunks. This branch 
+       is first in the if-statement to help branch prediction 
+       on consecutive adjacent frees. */
+
     if (!in_smallbin_range(size)){
       bck = unsorted_chunks(av);
       fwd = bck->fd;
@@ -4640,14 +4707,14 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
       if (__glibc_unlikely (fwd->bk != bck))
         malloc_printerr ("free(): corrupted unsorted chunks");
 
+      /* Skip list pointers are not maintained in unsorted chunks. */
       p->fd_nextsize = NULL;
       p->bk_nextsize = NULL;
     }
 
-    /* Place small chunks directly in their smallbin, 
-    so they don't pollute the unsorted bin. */
+    /* [PATH 1B]: If small chunk, place it in the appropriate smallbin. */
     else{
-      int chunk_index = smallbin_index (size);
+      int chunk_index = smallbin_index(size);
       bck = bin_at(av, chunk_index);
       fwd = bck->fd;
 
@@ -4657,22 +4724,36 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
       mark_bin(av, chunk_index);
     }
 
+    // Update the bin pointers. Skip list pointers are not maintained
+    // in small chunks.
     p->bk = bck;
     p->fd = fwd;
+
+    // Update the bin pointers.
     bck->fd = p;
     fwd->bk = p;
 
+    /* Last, update the size and PREV_INUSE bit of the resulting chunk. */
     set_head(p, size | PREV_INUSE);
+
+    /* Update the next chunk's mchunk_prev_size with this chunk's size. */
     set_foot(p, size);
+
+    /* A no-op when MALLOC_DEBUG is not defined (which is the default). */
     check_free_chunk(av, p);
   }
 
-  /* If the chunk borders the current high end of memory,
-  consolidate into top. */
+  /* [THIS PART IS NOT CLEAR YET.] */
+  /* [PATH 2]: If the nextchunk borders with the current high end
+     of the memory, consolidate it with the top chunk and update
+     the top. */
+  /* [BUT WHAT ABOUT THE SIZE OF THE TOP CHUNK?] */
   else{
     size += nextsize;
     set_head(p, size | PREV_INUSE);
     av->top = p;
+
+    /* A no-op when MALLOC_DEBUG is not defined (which is the default). */
     check_chunk(av, p);
   }
 
@@ -4690,8 +4771,8 @@ static void _int_free_maybe_trim(mstate av, INTERNAL_SIZE_T size)
     if (av == &main_arena){
 
 #ifndef MORECORE_CANNOT_TRIM
-      if (chunksize (av->top) >= mp_.trim_threshold)
-  	    systrim (mp_.top_pad, av);
+      if (chunksize(av->top) >= mp_.trim_threshold)
+  	    systrim(mp_.top_pad, av);
 #endif
     }
 
