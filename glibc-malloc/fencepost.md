@@ -1,39 +1,79 @@
+- When it comes to freeing a chunk, we also check if 
+  consolidation is possible.
+- If chunk `p` is asked to be freed, we check if it 
+  can be consolidated with `(p-1)` and `(p+1)` chunks, 
+  i.e. backward and forward consolidation.
 
-- When it comes to freeing a chunk, we check if consolidation is possible.
-- If chunk `p` is asked to be freed, we check if it can be consolidated with 
-  `(p-1)` and `(p+1)` chunks, i.e. backward and forward consolidation.
+- The process of consolidation is simple.
+  - When we consolidate backwards, we check if the `(p-1)` 
+    chunk is actually free. We do this by checking the 
+    PREV_INUSE bit of the `p` chunk. If free, we merge the 
+    `(p-1)` and `p` chunks into `(p-1)`. While the `(p+1)` 
+    chunk already has the PREV_INUSE bit clear (0), we are 
+    still required to update mchunk_prev_size.
+  - When we consolidate forward, we check if the `(p+1)` 
+    chunk is free. We do this by checking the PREV_INUSE 
+    bit of the `(p+2)` chunk. If free, we merge the `p` and 
+    `(p+1)` chunks into `p`. Similarly, we have to update the 
+    mchunk_prev_size of the `(p+2)` chunk.
+  - Therefore, we need [p-1, p] chunks for backwards 
+    consolidation and [p, p+1, p+2] chunks for forward 
+    consolidation.
+  - **Note**: Backward consolidation is not defined for the 
+    first chunk.
 
-- For backward consolidation, we need to know if the `(p-1)` chunk is free.
-  We can identify this by the PREV_INUSE bit of the `p` chunk. So, we need
-  [p-1, p] chunks for backward consolidation.
-- For forward consolidation, we need to know if the `(p+1)` chunk is free.
-  To identify this, we have to check the PREV_INUSE bit of the `(p+2)` 
-  chunk. Therefore, we need [p, p+1, p+2] chunks for forward consolidation.
+- There can be three cases in consolidation.
+  - "Backwards consolidation only". Here, `p` will get merged 
+    into `(p-1)`.
+  - "Forward consolidation only". Here, `(p+1)` is extended 
+    into `p`.
+  - "Full consolidation". `p` will be extended into `(p-1)`, 
+    followed by the `(p+1)` chunk extending into the 
+    resulting one. Only the `(p-1)` chunk will exist after 
+    this operation, pointing to the consolidated memory.
 
-- As long as chunk `p` is surrounded by 2 or more chunks, consolidation 
-  will not incur any problems. However, there are two edge cases.
-- [CASE 1]: (p == (av->top - av->top->mchunk_size))
-  - Here, `p` is the chunk just before the top chunk.
-  - During backward consolidation, there can be two cases. If `p` is not 
-    the first chunk, there is already a chunk before it. However, if `p` 
-    is the first chunk in memory, there is no chunk preceding it. But 
-    because the first chunk has the PREV_INUSE bit set always, backward
-    consolidation will never be triggered.
-  - During forward consolidation, if `p` is the chunk before the top chunk,
-    the `(p+1)` chunk would be the top chunk. Since there is no chunk after 
-    that, we can not access the `(p+2)` chunk.
-- [CASE 2]: (p == av->top), i.e. the top chunk itself.
-  - Both `(p+1)` and `(p+2)` chunks are inaccessible as they don't exist,
-    which means, forward consolidation can not be done.
+- However, there is an edge case. When `p` borders with the 
+  top chunk, `p` is consolidated into the top chunk. This is 
+  opposite to what we have studied earlier, where the previous 
+  chunk is what that survives.
+- In simpler words, if the `(p+1)` chunk is the top chunk, the 
+  chunk that survives consolidation and represents the 
+  consolidated size is the top chunk.
+- Also, forward consolidation requires the `(p+2)` chunk as well.
+  But nothing exists after the top chunk.
+- So, this edge case requires special-casing.
 
-- Both of these edge cases require special-casing. We have to check if the
+- In case of non-main arenas, when a heap segment (heap_info) has 
+  reached its maximum capacity (HEAP_MAX_SIZE) and can no longer 
+  service a request, a new heap is created. This is followed by 
+  the creation of a new top chunk in the segment, and av->top is 
+  updated. The old top is regularized and binned appropriately.
+- Now that it is a regular chunk, it can be allocated and freed. 
+  When it is freed, the allocator will consider the possibility 
+  of consolidation, just as it does with other chunks.
+- Two heap segments are distinct and can not be merged. What 
+  separates them? If there is no separation, we will land into 
+  another heap, which will corrupt the allocator state.
+
+
+[CONTINUE FROM HERE]
+
+
+- Both of these edge cases require special-casing. We have 
+  to check if the
   - current chunk borders with the top chunk,
   - current chunk is the top chunk,
   - the current chunk is the first chunk.
 
-- For a few calls, the overhead of these extra checks is almost invisible.
-  However, it becomes significant as the number of calls increase.
-- The question is, how can we avoid this special casing? By having two more 
+- For a few calls, the overhead of these extra checks is 
+  almost invisible. However, it becomes significant as the 
+  number of calls increase.
+- The question is, how we can avoid this special casing?
+  - If `p` borders with the top chunk, we need one extra 
+    chunk.
+  - If `p` is the top chunk
+
+- By having two more 
   chunks after the top chunk? Even if we had these extra chunks, how we will
   identify them as "special" or "the terminating ones" without any branching?
   Because, if we used any branching, that would defeat the purpose.
