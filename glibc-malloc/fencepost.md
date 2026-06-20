@@ -111,3 +111,6 @@
 - This is done so that we can access fencepost-2 with the usual 
   chunk arithmetic, but we can not access anything past fencepost-2.
   (But I am not sure about it).
+
+- In total, we need MINSIZE bytes for fencepost.
+- Why SIZE_SZ, not INTERNAL_SIZE_T? CHUNK_HDR_SZ is based on SIZE_SZ.

@@ -1360,10 +1360,10 @@ checked_request2size(size_t req) __nonnull (1)
 #define  set_prev_size(p, sz)  ((p)->mchunk_prev_size = (sz))
 
 /* Ptr to previous physical malloc_chunk. Only valid if !prev_inuse (P). */
-#define  prev_chunk(p)  ((mchunkptr) (((char*)(p)) - prev_size(p)))
+#define  prev_chunk(p)  ((mchunkptr) ((char*)(p) - prev_size(p)))
 
 /* Treat space at ptr + offset as a chunk */
-#define  chunk_at_offset(p, s)  ((mchunkptr) (((char*)(p)) + (s)))
+#define  chunk_at_offset(p, s)  ((mchunkptr) ((char*)(p) + s))
 
 /* extract p's inuse bit */
 #define  inuse(p)  (( ((mchunkptr) ((char*)(p) + chunksize(p)))->mchunk_size ) & PREV_INUSE)
@@ -2436,7 +2436,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
        there will be no space left for the top chunk after
        the request is serviced.
      - Therefore, we ensure that the top chunk has at least
-       (nb + MINSIZE) bytes. */
+       (nb + MINSIZE) bytes, so that the remaining top is 
+       still valid structurally. */
   assert((unsigned long)(old_size) < (unsigned long)(nb + MINSIZE));
 
   /* [PATH 2]: Non-main arena. */
@@ -2450,19 +2451,19 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     old_heap = heap_for_ptr(old_top);    // The base of the heap.
     old_heap_size = old_heap->size;      // Save the existing heap size before grow_heap() is called.
 
-    /* `nb + MINSIZE` is the amount of new bytes required. `old_size`
-        is the current size of the top chunk. Subtracting old_size from
-        the new bytes required, we get the number of bytes that the
-        allocator doesn't have right now.
-
-        We call grow_heap() with these many bytes as the request. */
+    /* `nb + MINSIZE` is the amount of new bytes required. 
+        `old_size` is the current size of the top chunk. 
+        - Subtracting old_size from the new bytes required, 
+          we get the number of bytes that the allocator 
+          doesn't have right now.
+        - We call grow_heap() with these many bytes. */
     if (
       (long)(MINSIZE + nb - old_size) > 0 && 
       grow_heap(old_heap, MINSIZE + nb - old_size) == 0
     ){
       av->system_mem += (old_heap->size - old_heap_size);  /* (updated - old) */
 
-      /* Add a malloc_chunk struct before the payload memory.*/
+      /* Update the size of the top chunk.*/
       set_head(
         old_top, 
         (((char*)(old_heap) + old_heap->size) - (char*)(old_top)) | PREV_INUSE
@@ -2486,12 +2487,9 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       /* Update the memory footprint of the arena. */
       av->system_mem += heap->size;
 
-      /* Set up the new top. */
-
-      // Add malloc_chunk.
+      /* Create the top chunk for the new heap segment and update
+         the top chunk for this arena, i.e. av->top. */
       top(av) = chunk_at_offset(heap, sizeof(*heap));
-
-      // Update mchunk_size and set the PREV_INUSE bit.
       set_head(
         top(av), 
         (heap->size - sizeof(*heap)) | PREV_INUSE
@@ -2502,62 +2500,77 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       become the top chunk again later.  Note that a footer is set
       up, too, although the chunk is marked in use. */
 
-      // [NEEDS CORRECTION]
-      /* Setup a fencepost chunk at the end of the old heap segment.
-         It's size is 0 and the PREV_INUSE bit is set (1). To do this,
-         the top chunk of this heap is reduced by MINSIZE bytes and the
-         resulting value is aligned down to a MALLCO_ALIGN_MASK boundary.
+      /* Setup two fencepost chunks at the end of the old heap segment.
+         - Reduce the old top size by MINSIZE bytes and reserve 16 
+           bytes for both the fenceposts.
+         - Align the remaining old top size to a MALLOC_ALIG_MASK 
+           boundary. If the top size was corrupted for some reason 
+           (like, a bug/race condition), (old_size-MINSIZE) might 
+           not land on a clean MALLOC_ALIGN_MASK boundary. As the 
+           top chunk is later regularized to be used by the process 
+           as a normal chunk, the top chunk must have the right the size.
+         - In case the top size was corrupted, alignment would reduce 
+           the size further and there will be some bytes which do not 
+           belong to the top. They are carried by fencepost-1.
+         - An ALIGN_DOWN operation is favored as an ALIGN_UP operation 
+           would disturb the size calculation for fencepost chunks. */
 
-         If the top size was corrupted for some reason (like, a bug/race
-         condition), (old_size-MINSIZE) might not land on a clean
-         MALLOC_ALIGN_MASK boundary. As the top chunk is later regularized
-         to be used by the process as a normal chunk, the top chunk must
-         have the right the right size.
 
-         [But there are two fenceposts!]
-         An ALIGN_DOWN operation is favored because, an ALIGN_UP
-         operation would reduce the size of the fencepost from 
-         MINSIZE, and a chunk less than this is not possible. */
-
-      // Compute the aligned top size after excluding the fencepost bytes.
+      /* Subtract MINSIZE bytes for the fencepost chunks 
+         and align the remaining top size. */
       old_size = (old_size - MINSIZE) & ~MALLOC_ALIGN_MASK;
 
-      // ??
+      /* Setup fencepost-2. */
       set_head(
         chunk_at_offset(old_top, old_size + CHUNK_HDR_SZ),
 		    0 | PREV_INUSE
       );
 
+      /* (If old_size >= MINSIZE), the top chunk still has enough 
+         space to exist as a normal chunk, and fencepost-1 will be 
+         sized CHUNK_HDR_SZ (or, 2*SIZE_SZ) bytes. */
       if (old_size >= MINSIZE){
-        // ??
+        /* Setup fencepost-1. */
+        /* The chunk before fencepost-1 would be binned later, 
+           but until that happens, we must keep it as it was 
+           earlier, so we set the PREV_INUSE bit. */
         set_head(
           chunk_at_offset(old_top, old_size),
           CHUNK_HDR_SZ | PREV_INUSE
         );
 
-        // ??
+        /* Set the mchunk_prev_size of fencepost-2 to the size of 
+           fencepost-1. */
         set_foot(
           chunk_at_offset(old_top, old_size), 
           CHUNK_HDR_SZ
         );
 
-        // Update the size, including the lower bits of the newly formed
-        // top chunk in the old heap segment.
+        /* Update the size and the lower bits of the old top chunk */
         set_head(
           old_top, 
           old_size | PREV_INUSE | NON_MAIN_ARENA
         );
 
-        // Regularize the top chunk of the old heap and bin (free) it.
+        /* Regularize the top chunk of the old heap and bin (free) it. */
         _int_free_chunk(av, old_top, chunksize(old_top), 1);
       }
 
+      /* If (old_size < MINSIZE), it is sure to be (2 * SIZE_SZ) 
+         bytes as we have aligned it to a MALLOC_ALIGN_MASK 
+         boundary. Since the top chunk doesn't have enough space 
+         to exist as a chunk, fencepost-1 absorbs the remaining 
+         size and old_top disappears as a chunk. */
       else{
+        /* Fencepost-1 */
         set_head (old_top, (old_size + CHUNK_HDR_SZ) | PREV_INUSE);
+
+        /* Fencepost-2 updated with the size of fencepost-1. */
         set_foot (old_top, (old_size + CHUNK_HDR_SZ));
       }
     }
 
+    // [WHAT IS THIS PATH]
     else if (!tried_mmap){
       /* We can at least try to use to mmap memory. If new_heap 
       fails it is unlikely that trying to allocate huge pages will
@@ -3444,63 +3457,60 @@ tcache_free_init (void *mem)
   __libc_free (mem);
 }
 
-void __libc_free (void *mem)
+void __libc_free(void *mem)
 {
-  mchunkptr p;                          /* chunk corresponding to mem */
+  mchunkptr p;        /* chunk corresponding to mem */
 
-  if (mem == NULL)                              /* free(0) has no effect */
+  if (mem == NULL)    /* free(0) has no effect */
     return;
 
-  /* Quickly check that the freed pointer matches the tag for the memory.
-     This gives a useful double-free detection.  */
+  /* Quickly check that the freed pointer matches the tag for 
+     the memory. This gives a useful double-free detection. */
   if (__glibc_unlikely (mtag_enabled))
-    *(volatile char *)mem;
+    *(volatile char*)(mem);
 
-  p = mem2chunk (mem);
+  p = mem2chunk(mem);
 
-  /* Mark the chunk as belonging to the library again.  */
-  tag_region (chunk2mem (p), memsize (p));
+  /* Mark the chunk as belonging to the library again. */
+  tag_region(chunk2mem(p), memsize(p));
 
-  INTERNAL_SIZE_T size = chunksize (p);
+  INTERNAL_SIZE_T size = chunksize(p);
 
-  if (__glibc_unlikely (misaligned_chunk (p)))
-    return malloc_printerr_tail ("free(): invalid pointer");
+  if (__glibc_unlikely(misaligned_chunk(p)))
+    return malloc_printerr_tail("free(): invalid pointer");
 
 #if USE_TCACHE
-  if (__glibc_likely (size < mp_.tcache_max_bytes))
+  if (__glibc_likely(size < mp_.tcache_max_bytes))
+  {
+    /* Check to see if it's already in the tcache. */
+    tcache_entry *e = (tcache_entry*) chunk2mem(p);
+
+    /* Check for double free - verify if the key matches. */
+    if (__glibc_unlikely(e->key == tcache_key))
+      return tcache_double_free_verify (e);
+
+    size_t tc_idx = csize2tidx(size);
+    if (__glibc_likely(tc_idx < TCACHE_SMALL_BINS))
     {
-      /* Check to see if it's already in the tcache.  */
-      tcache_entry *e = (tcache_entry *) chunk2mem (p);
+      if (__glibc_likely(tcache->num_slots[tc_idx] != 0))
+  	    return tcache_put(p, tc_idx);
+	  }
+    else{
+      tc_idx = large_csize2tidx(size);
+      if (size >= MINSIZE && __glibc_likely(tcache->num_slots[tc_idx] != 0))
+  	    return tcache_put_large (p, tc_idx);
+	  }
 
-      /* Check for double free - verify if the key matches.  */
-      if (__glibc_unlikely (e->key == tcache_key))
-        return tcache_double_free_verify (e);
-
-      size_t tc_idx = csize2tidx (size);
-      if (__glibc_likely (tc_idx < TCACHE_SMALL_BINS))
-	{
-          if (__glibc_likely (tcache->num_slots[tc_idx] != 0))
-	    return tcache_put (p, tc_idx);
-	}
-      else
-	{
-	  tc_idx = large_csize2tidx (size);
-	  if (size >= MINSIZE
-              && __glibc_likely (tcache->num_slots[tc_idx] != 0))
-	    return tcache_put_large (p, tc_idx);
-	}
-
-      if (__glibc_unlikely (tcache_inactive ()))
-	return tcache_free_init (mem);
-    }
+    if (__glibc_unlikely(tcache_inactive()))
+    	return tcache_free_init (mem);
+  }
 #endif
 
-  /* Check size >= MINSIZE and p + size does not overflow.  */
-  if (__glibc_unlikely (INT_ADD_OVERFLOW ((uintptr_t) p,
-					  size - MINSIZE)))
+  /* Check (size >= MINSIZE) and (p + size) does not overflow. */
+  if (__glibc_unlikely(INT_ADD_OVERFLOW ((uintptr_t)(p), size-MINSIZE)))
     return malloc_printerr_tail ("free(): invalid size");
 
-  _int_free_chunk (arena_for_chunk (p), p, size, 0);
+  _int_free_chunk(arena_for_chunk(p), p, size, 0);
 }
 libc_hidden_def (__libc_free)
 
@@ -4743,11 +4753,8 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
     check_free_chunk(av, p);
   }
 
-  /* [THIS PART IS NOT CLEAR YET.] */
-  /* [PATH 2]: If the nextchunk borders with the current high end
-     of the memory, consolidate it with the top chunk and update
-     the top. */
-  /* [BUT WHAT ABOUT THE SIZE OF THE TOP CHUNK?] */
+  /* [PATH 2]: If the nextchunk is the top chunk, consolidate it 
+     with the top chunk and update av->top to point to `p`. */
   else{
     size += nextsize;
     set_head(p, size | PREV_INUSE);
