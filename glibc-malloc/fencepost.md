@@ -107,3 +107,12 @@
       merge with this chunk. Consolidation stopped.
 
 - These two chunks are called fencepost.
+
+
+- While these fenceposts span across (2 * INTERNAL_SIZE_T) 
+  bytes, their mchunk_size is set up differently. The first 
+  fencepost has a size of CHUNK_HDR_SZ bytes, while the 
+  second fencepost has a size of 0 bytes.
+- This done so that, we can access fencepost-2 with the 
+  usual chunk arithmetic, but we can not access anything 
+  past fencepost-2.
