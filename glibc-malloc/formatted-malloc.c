@@ -1281,6 +1281,9 @@ checked_request2size(size_t req) __nonnull (1)
     "PTRDIFF_MAX is not more than half of SIZE_MAX"
   );
 
+  /* While _int_malloc() already checks this before and returns
+     NULL, we return SIZEMAX instead of NULL for a more safer 
+     exit later, which is discussed later in the pathways. */
   if (__glibc_unlikely(req > PTRDIFF_MAX))
     return SIZE_MAX;
 
@@ -1295,7 +1298,7 @@ checked_request2size(size_t req) __nonnull (1)
   if (__glibc_unlikely(mtag_enabled)){
     /* Ensure this is not evaluated if !mtag_enabled, 
        see gcc PR 99551. */
-    asm ("");
+    asm ("");    // Why?
 
     req = (
       req + (__MTAG_GRANULE_SIZE - 1)
@@ -1931,14 +1934,15 @@ static __always_inline void thp_init (void)
 {
   /* Initialize only once if DEFAULT_THP_PAGESIZE is defined. */
   if (
+    // 0 in sysdeps/generic/malloc-hugepages.h
     DEFAULT_THP_PAGESIZE == 0 || 
     mp_.thp_mode != malloc_thp_mode_not_supported
   )
     return;
 
   /* Set thp_pagesize even if thp_mode is never.
-  This reduces frequency of MORECORE () invocation. */
-  mp_.thp_mode = __malloc_thp_mode ();
+     This reduces frequency of calls to MORECORE(). */
+  mp_.thp_mode = __malloc_thp_mode();
   mp_.thp_pagesize = DEFAULT_THP_PAGESIZE;
 }
 
@@ -2583,40 +2587,53 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
   else{
     /* [STEP 1]: Calculate the size to request from sbrk. */
 
-    /* `nb`: request bytes (aligned)
-        `top_pad`: padding bytes to request more from sbrk
-                   to avoid frequent syscall overhead.
-         `MINSIZE`: top_pad can be zero as well, thanks to
-                    (DEFAULT_TOP_PAD). So we ensure that
-                    there is enough space for the top to
-                    exist.
+    /* `nb`: aligned request bytes.
+       `top_pad`: padding bytes to request more from sbrk
+                  to avoid frequent syscall overhead.
+       `MINSIZE`: top_pad can be zero as well, thanks to
+                  (DEFAULT_TOP_PAD). So we ensure that
+                  there is enough space for the top to
+                  exist after carving a chunk out of it.
        `size`: the amount we will request from sbrk. */
     size = nb + mp_.top_pad + MINSIZE;
 
-    /* While sbrk itself is contigious, there might be cases
-       where a mapping comes closely after the sbrk region,
-       (maybe due to manual sbrk/mmap calls). This ends the
-       contiguity of sbrk and we can no longer increase the
-       program break directly. Therefore, we check if sbrk is
-       contiguous. If yes, we can subtract the existing space
-       in the top chunk and request the remaining bytes. */
+    /* While sbrk is contigious, there might be cases, like 
+       manual sbrk/mmap invocations, where a mapping comes 
+       right after a few hundreds or thousands bytes from the 
+       curernt program break, ending the contiguity of sbrk. 
+       Now we can not increase the program break directly. 
+       Therefore, we check if sbrk is contiguous. If yes, we 
+       can subtract the existing space in the top chunk and 
+       request the remaining bytes. */
     /* [HOW IS THAT POSSIBLE?] We add it back later only if
        we don't actually get contiguous space. */
     if (contiguous(av))
       size -= old_size;
 
-    /* Align `size` up to the next multiple of page size or
-       huge page size.
+    /* Align `size` up to the next multiple of standard page
+       size or huge page size.
        - If MORECORE is not contiguous, this ensures that we 
-         only call it with whole-page arguments.
+         only call it with whole-page arguments. [BUT WHAT IS
+         THE POINT OF USING MORECORE IF IT IS NOT CONTIGUOUS
+         ANYMORE?]
        - If MORECORE is contiguous and this is not first time
          through, this preserves page-alignment of previous
-         calls. */
+         calls.
+       - While it seems that sbrk can increase the program 
+         break arbitrarily, the kernel can not actually 
+         allocate in arbitrary numbers. It works exclusively 
+         at page frames. By keeping the size aligned to pages 
+         (either standard or THP), we can keep everything 
+         consistent and enable optimizations like TLB, where 
+         a where we can hint the kernel to map a huge page out 
+         of many small pages, which requires contiguity in the 
+         pages. 
+       - [ARTICULATE IT BETTER]*/
 
     /* Ensure thp_pagesize is initialized. */
     thp_init();
 
-    /* If huge pages enabled, `size` is aligned up to the
+    /* If huge pages are enabled, `size` is aligned up to the
        next multiple of the huge page size. */
     if (__glibc_unlikely (mp_.thp_pagesize != 0)){
       /* sbrk(0) returns the current program break. */
@@ -2632,10 +2649,28 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     /* [STEP 1] Completed. */
 
 
-    /* [But why we don't check this earlier with sysmalloc_mmap?] */
     /* Don't try to call MORECORE if argument is so big as 
-    to appear negative. Note that since mmap takes size_t arg, 
-    it may succeed below even if we cannot call MORECORE. */
+       to appear negative. Note that since mmap takes
+       `size_t arg`, it may succeed below even if we cannot
+       call MORECORE. */
+    /* sbrk takes a signed argument. Passing a positive value
+       increases the program break, while a negative argument
+       decreases it. So it makes sense not to call sbrk with
+       a negative value. */
+
+    /* There are some points.
+       1. GLIBC likes to service large requests via mmap. The
+          term "large" is defined with DEFALUT_MMAP_THRESHOLD.
+          This is just a fraction of what size_t, or even
+          ssize_t can handle.
+       2. _int_malloc already runs checked_reques2size(sz) to
+          catch overflows. So, nb is already a value which has 
+          not overflowed.
+       3. Inside sysmalloc, the first path checks is nb has 
+          crossed the mmap_threshold. We use sysmalloc then.
+       4. We are moving top-to-bottom, reducing what `nb` could 
+          be in each pass. How it is possible for `size` to 
+          overflow here? */
 
     /* If the size is very huge (beyond what size_t can address),
        it will wrap-around to a smaller positive value. However,
@@ -2653,12 +2688,11 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
     /* Since the program break variables are already initialized
        to MORECORE_FAILURE, we can easily detect if the previous
-       path executed or not. */
+       path executed or if it failed. */
     /* [BUT WE COULD HAVE USED else instead?] */
-    /* [AND, WHAT HAPPENED TO THE OVERFLOWED SIZE? WHEN SIZE HAS
-        OVERFLOWED THE MAX ADDRESSABLE MEMORY, WE SIMPLY CAN NOT
-        ALLOCATE. SO WE MUST HAVE EXITED IN THE START ONLY. BUT 
-        THAT DOESN'T SEEM TO BE HAPPENING. ] */
+    /* [AND, WHAT WOULD HAPPEN IF THE SIZE OVERFLOWED? THERE IS
+       NO POINT IN ALLOCATING AN OVERFLOWED SIZE. BUT THAT DOESN'T
+       SEEM TO BE HAPPENING.] */
     if (brk == (char*)(MORECORE_FAILURE)){
       /* If have mmap, try using it as a backup when MORECORE 
       fails or cannot be used. This is worth doing on systems 
@@ -3961,8 +3995,8 @@ static void* _int_malloc(mstate av, size_t bytes)
   mbinptr bin;                      /* associated bin */
 
   mchunkptr victim;                 /* inspected/selected chunk */
-  INTERNAL_SIZE_T size;             /* its size */
-  int victim_index;                 /* its bin index */
+  INTERNAL_SIZE_T size;             /* victim's size */
+  int victim_index;                 /* victim's bin index */
 
   mchunkptr remainder;              /* remainder from a split */
   unsigned long remainder_size;     /* its size */
@@ -3978,21 +4012,18 @@ static void* _int_malloc(mstate av, size_t bytes)
   size_t tcache_unsorted_count;	    /* count of unsorted chunks processed */
 #endif
 
-  /* Convert request size to internal form by adding 
-  SIZE_SZ bytes overhead plus possibly more to 
-  obtain necessary alignment and/or to obtain a size 
-  of at least MINSIZE, the smallest allocatable size. 
-  Also, checked_request2size returns false for request 
-  sizes that are so large that they wrap around zero 
-  when padded and aligned. */
+  /* Convert the requested size to an internally usable form
+     (in accordance to the size and alignment model) using
+     request2size(sz). */
   if (bytes > PTRDIFF_MAX){
     __set_errno (ENOMEM);
     return NULL;
   }
   nb = checked_request2size(bytes);
 
-  /* There are no usable arenas. Fall back to 
-  sysmalloc to get a chunk from mmap. */
+  /* There are no usable arenas. Fall back to sysmalloc
+     to get a chunk from mmap. */
+  /* If there is no usable arena, we should rather set it up? */
   if (__glibc_unlikely(av == NULL)){
     void *p = sysmalloc(nb, av);
     if (p != NULL)
@@ -4001,29 +4032,34 @@ static void* _int_malloc(mstate av, size_t bytes)
     return p;
   }
 
-  /* If a small request, check regular bin. Since these 
-  "smallbins" hold one size each, no searching within 
-  bins is necessary. (For a large request, we need to 
-  wait until unsorted chunks are processed to find best 
-  fit. But for small ones, fits are exact anyway, so we 
-  can check now, which is faster.) */
+  /* If a small request, check the right smallbin. This is
+     an exact fit path. */
   if (in_smallbin_range(nb)){
     idx = smallbin_index(nb);
     bin = bin_at(av, idx);
 
-    victim = lsat(bin);
-    if (victim != bin){
+    /* [CONDITION BLOCK EXPLAINER]: Take the chunk at bin->bk,
+       put it into victim and check if it is equal to bin. It
+       is about checking whether the bin is empty. */
+    if ((victim = last(bin)) != bin){
       bck = victim->bk;
+
+      /* A corruption check. */
   	  if (__glibc_unlikely(bck->fd != victim))
         malloc_printerr ("malloc(): smallbin double linked list corrupted");
 
+      /* Update the PREV_INUSE bit of the next chunk after the
+         victim in the bin and update the links. */
+      /* [WHAT HAPPENS WHEN THE BIN HAS ONLY ONE CHUNK?] */
       set_inuse_bit_at_offset(victim, nb);
       bin->bk = bck;
       bck->fd = bin;
 
+      /* Set the IS_MMAPPED bit for the non-main arena chunks. */
       if (av != &main_arena)
-  	    set_non_main_arena (victim);
+  	    set_non_main_arena(victim);
 
+      /* A no-op when MALLOC_DEBUG is not defined (default). */
       check_malloced_chunk(av, victim, nb);
 
 #if USE_TCACHE
