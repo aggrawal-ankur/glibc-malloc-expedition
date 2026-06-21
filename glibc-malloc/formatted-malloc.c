@@ -2495,20 +2495,15 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
         (heap->size - sizeof(*heap)) | PREV_INUSE
       );
 
-      /* [WHICH PATHWAY MAKES IT A TOP CHUNK LATER?] 
-      The fencepost takes at least MINSIZE bytes, because it might
-      become the top chunk again later.  Note that a footer is set
-      up, too, although the chunk is marked in use. */
-
       /* Setup two fencepost chunks at the end of the old heap segment.
-         - Reduce the old top size by MINSIZE bytes and reserve 16 
-           bytes for both the fenceposts.
+         - Reduce the old top size by MINSIZE bytes to reserve space
+           for the fencepost chunks.
          - Align the remaining old top size to a MALLOC_ALIG_MASK 
            boundary. If the top size was corrupted for some reason 
            (like, a bug/race condition), (old_size-MINSIZE) might 
-           not land on a clean MALLOC_ALIGN_MASK boundary. As the 
-           top chunk is later regularized to be used by the process 
-           as a normal chunk, the top chunk must have the right the size.
+           not land on a clean MALLOC_ALIGN_MASK boundary. As the top
+           chunk is later regularized to be used by the process as a
+           normal chunk, the top chunk must have the right the size.
          - In case the top size was corrupted, alignment would reduce 
            the size further and there will be some bytes which do not 
            belong to the top. They are carried by fencepost-1.
@@ -2531,9 +2526,9 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
          sized CHUNK_HDR_SZ (or, 2*SIZE_SZ) bytes. */
       if (old_size >= MINSIZE){
         /* Setup fencepost-1. */
-        /* The chunk before fencepost-1 would be binned later, 
-           but until that happens, we must keep it as it was 
-           earlier, so we set the PREV_INUSE bit. */
+        /* The top chunk is a special chunk and it is kept as an
+           in-use chunk. Until it is binned, we must keep the
+           PREV_INUSE bit set (1). */
         set_head(
           chunk_at_offset(old_top, old_size),
           CHUNK_HDR_SZ | PREV_INUSE
@@ -2552,7 +2547,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
           old_size | PREV_INUSE | NON_MAIN_ARENA
         );
 
-        /* Regularize the top chunk of the old heap and bin (free) it. */
+        /* Regularize the top chunk of the old heap and bin it. */
         _int_free_chunk(av, old_top, chunksize(old_top), 1);
       }
 
@@ -2560,7 +2555,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
          bytes as we have aligned it to a MALLOC_ALIGN_MASK 
          boundary. Since the top chunk doesn't have enough space 
          to exist as a chunk, fencepost-1 absorbs the remaining 
-         size and old_top disappears as a chunk. */
+         size and old_top disappears. */
       else{
         /* Fencepost-1 */
         set_head (old_top, (old_size + CHUNK_HDR_SZ) | PREV_INUSE);
@@ -2570,8 +2565,10 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       }
     }
 
-    // [WHAT IS THIS PATH]
+    /* [PATH 3]: If path-1 was not executed, mmap has not been
+       tried with a smaller size (page multiple). So we try that. */
     else if (!tried_mmap){
+      // [WHAT DOES IT MEAN?]
       /* We can at least try to use to mmap memory. If new_heap 
       fails it is unlikely that trying to allocate huge pages will
       succeed. */
@@ -2580,7 +2577,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
         return mm;
     }
   }
-  // .... Non main-arena logic end.
+  /* Non main-arena logic. */
 
   /* av == main_arena */
   else{
