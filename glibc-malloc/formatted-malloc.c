@@ -2565,7 +2565,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       }
     }
 
-    /* [PATH 3]: If path-1 was not executed, mmap has not been
+    /* [PATH 2C]: If path-1 was not executed, mmap has not been
        tried with a smaller size (page multiple). So we try that. */
     else if (!tried_mmap){
       // [WHAT DOES IT MEAN?]
@@ -2577,53 +2577,88 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
         return mm;
     }
   }
-  /* Non main-arena logic. */
 
-  /* av == main_arena */
+
+  /* [PATH 3]: Main arena. */
   else{
-    /* Request enough space for nb + pad + overhead */
+    /* [STEP 1]: Calculate the size to request from sbrk. */
+
+    /* `nb`: request bytes (aligned)
+        `top_pad`: padding bytes to request more from sbrk
+                   to avoid frequent syscall overhead.
+         `MINSIZE`: top_pad can be zero as well, thanks to
+                    (DEFAULT_TOP_PAD). So we ensure that
+                    there is enough space for the top to
+                    exist.
+       `size`: the amount we will request from sbrk. */
     size = nb + mp_.top_pad + MINSIZE;
 
-    /* If contiguous, we can subtract out existing space 
-    that we hope to combine with new space. We add it back 
-    later only if we don't actually get contiguous space. */
+    /* While sbrk itself is contigious, there might be cases
+       where a mapping comes closely after the sbrk region,
+       (maybe due to manual sbrk/mmap calls). This ends the
+       contiguity of sbrk and we can no longer increase the
+       program break directly. Therefore, we check if sbrk is
+       contiguous. If yes, we can subtract the existing space
+       in the top chunk and request the remaining bytes. */
+    /* [HOW IS THAT POSSIBLE?] We add it back later only if
+       we don't actually get contiguous space. */
     if (contiguous(av))
       size -= old_size;
 
-    /* Round to a multiple of page size or huge page size.
-    If MORECORE is not contiguous, this ensures that we 
-    only call it with whole-page arguments. And if MORECORE 
-    is contiguous and this is not first time through, this 
-    preserves page-alignment of previous calls. Otherwise, 
-    we correct to page-align below. */
+    /* Align `size` up to the next multiple of page size or
+       huge page size.
+       - If MORECORE is not contiguous, this ensures that we 
+         only call it with whole-page arguments.
+       - If MORECORE is contiguous and this is not first time
+         through, this preserves page-alignment of previous
+         calls. */
 
     /* Ensure thp_pagesize is initialized. */
     thp_init();
 
+    /* If huge pages enabled, `size` is aligned up to the
+       next multiple of the huge page size. */
     if (__glibc_unlikely (mp_.thp_pagesize != 0)){
+      /* sbrk(0) returns the current program break. */
       uintptr_t lastbrk = (uintptr_t) MORECORE(0);
       uintptr_t top = ALIGN_UP(lastbrk + size, mp_.thp_pagesize);
       size = (top - lastbrk);
     }
+    /* If not, align `size` up to the next standard page
+       boundary. */
     else{
       size = ALIGN_UP(size, GLRO(dl_pagesize));
     }
-    // Here we have calculated the aligned size to request from the kernel.
+    /* [STEP 1] Completed. */
 
 
+    /* [But why we don't check this earlier with sysmalloc_mmap?] */
     /* Don't try to call MORECORE if argument is so big as 
     to appear negative. Note that since mmap takes size_t arg, 
     it may succeed below even if we cannot call MORECORE. */
 
-    // If the size is very huge, size_t will still interpret as a positive value (after wrap-around). However, ssize_t will interpret it as a negative value, which is helpful here in detecting overwrap.
+    /* If the size is very huge (beyond what size_t can address),
+       it will wrap-around to a smaller positive value. However,
+       ssize_t will interpret it as a negative value.
+       - If (ssize_t)(size) < 0, that would help us, IN WHAT WAYS? */
+
+    /* For valid size. */
     if ((ssize_t)(size) > 0){
-      brk = (char*) MORECORE((long)size);
+      brk = (char*) MORECORE((long)(size));
       if (brk != (char*)(MORECORE_FAILURE))
         madvise_thp(brk, size);
 
       LIBC_PROBE (memory_sbrk_more, 2, brk, size);
     }
 
+    /* Since the program break variables are already initialized
+       to MORECORE_FAILURE, we can easily detect if the previous
+       path executed or not. */
+    /* [BUT WE COULD HAVE USED else instead?] */
+    /* [AND, WHAT HAPPENED TO THE OVERFLOWED SIZE? WHEN SIZE HAS
+        OVERFLOWED THE MAX ADDRESSABLE MEMORY, WE SIMPLY CAN NOT
+        ALLOCATE. SO WE MUST HAVE EXITED IN THE START ONLY. BUT 
+        THAT DOESN'T SEEM TO BE HAPPENING. ] */
     if (brk == (char*)(MORECORE_FAILURE)){
       /* If have mmap, try using it as a backup when MORECORE 
       fails or cannot be used. This is worth doing on systems 
