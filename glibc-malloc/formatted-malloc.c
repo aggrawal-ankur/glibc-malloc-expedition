@@ -2366,11 +2366,13 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
 
   /* [PATH 1]: Use sysmalloc_mmap (mmap) directly, if:
-     1. the request size meets the mmap threshold, and
-     2. the number of currently allocated mmapped regions
-        is less than the total mmapped regions allowed.
+     1.  there are no usable arenas, or
+     2A. the request size meets the mmap threshold, and
+     2B. the number of currently allocated mmapped regions
+         is less than the total mmapped regions allowed.
   */
-  /* [TODO]: Why (av == NULL) is required. */
+  /* [TODO]: (av == NULL) doesn't look like a normal case,
+             so I want to know when it is actually possible. */
   if (
     av == NULL ||
     (
@@ -2380,9 +2382,9 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
   ){
     char *mm;
 
-    /* [PATH 1A]: Use huge pages if enabled. */
-    /* There is no need to issue the THP madvise call 
-    if Huge Pages are used directly. */
+    /* [PATH 1A]: If huge pages are enabled and the requested size
+       is >= the huge page size, use huge pages.
+       We don't have to issue the THP madvise call. */
     if (mp_.hp_pagesize > 0 && nb >= mp_.hp_pagesize){
       mm = sysmalloc_mmap(nb, mp_.hp_pagesize, mp_.hp_flags);
       if (mm != MAP_FAILED)
@@ -2397,7 +2399,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     tried_mmap = true;
   }
 
-  /* There are no usable arenas and mmap also failed. */
+  /* [FAIL SAFE PATH]: If there are no usable arenas and mmap 
+     also failed, we can not do anything. */
   if (av == NULL)
     return NULL;
 
@@ -2587,9 +2590,12 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
   else{
     /* [STEP 1]: Calculate the size to request from sbrk. */
 
-    /* `nb`: aligned request bytes.
+    /* `nb`: aligned request bytes as received from 
+             _int_malloc. If (req > PTRDIFF_MAX),
+             checked_request2size(req) returns SIZEMAX
+             to return safely later.
        `top_pad`: padding bytes to request more from sbrk
-                  to avoid frequent syscall overhead.
+                  to avoid syscall overhead.
        `MINSIZE`: top_pad can be zero as well, thanks to
                   (DEFAULT_TOP_PAD). So we ensure that
                   there is enough space for the top to
@@ -2597,14 +2603,16 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
        `size`: the amount we will request from sbrk. */
     size = nb + mp_.top_pad + MINSIZE;
 
-    /* While sbrk is contigious, there might be cases, like 
-       manual sbrk/mmap invocations, where a mapping comes 
-       right after a few hundreds or thousands bytes from the 
-       curernt program break, ending the contiguity of sbrk. 
-       Now we can not increase the program break directly. 
-       Therefore, we check if sbrk is contiguous. If yes, we 
-       can subtract the existing space in the top chunk and 
-       request the remaining bytes. */
+    /* While sbrk itself is contiguous, a foreign sbrk,
+       identified as a manual sbrk call made by the process, 
+       can disturb the contiguity of sbrk. The kernel ensures 
+       that mmap never does this.
+       In this case, we can not increase the program break 
+       directly. Therefore, we check if sbrk is contiguous. 
+       If yes, we can subtract the existing space in the 
+       top chunk and request the remaining bytes. The other 
+       case is discussed later. */
+
     /* [HOW IS THAT POSSIBLE?] We add it back later only if
        we don't actually get contiguous space. */
     if (contiguous(av))
@@ -2612,6 +2620,69 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
     /* Align `size` up to the next multiple of standard page
        size or huge page size.
+
+       To understand why we do this, we have to understand how
+       sbrk works and revise our understanding of memory.
+
+       ~~ [REASON #1] ~~
+
+       sbrk takes a size argument and changes the program break.
+       - When positive, the program break is incremented.
+       - When negative, the program break is decremented.
+
+       Historically, sbrk always requested exact amount of
+       bytes from the physical RAM due to memory constraints.
+       This was before MMU and paging were a thing. This
+       positions sbrk as a syscall that can request arbitrary
+       sizes from the kernel.
+
+       Modern hardware operates on physical page frames. As a
+       result, the kernel also manages memory in virtual pages.
+       - When we request a size which is not page aligned, like
+         100 bytes, the kernel still allocates a whole virtual
+         page. When an address associated to this page is used,
+         the kernel backs the whole page with physical memory.
+       - This turns a request of 100 bytes into a request of a
+         page size, but the program break is not increased up
+         to the next page. It remains at (current+100) bytes.
+         The rest of the 3996 bytes are lying unused.
+         - In future calls, the kernel utilizes this space. If 
+           the request can fit in the current page, no page is allocated further. Only an updated program break is 
+           returned.
+         - When sbrk is not called again, this is basically dead
+           space which creates unused memory, causing fragmentation.
+       - Aligning the final request to a page size (be it standard 
+         or huge) is a way to deal with fragmentation and memory pressure.
+
+       ~~ [REASON #2] ~~
+
+       Issuing a syscall is expensive. This "context switch"
+       involves many steps, like saving the register state and
+       TLB eviction, to a name a few, making this transition
+       expensive. When the price is huge, it is natural to pay
+       it judiciously.
+       - When the size is not aligned, the kernel just returns
+         an increased program break. Nothing much changes.
+       - The price-to-return ratio is simply not making sense.
+         That's why, the effective size is aligned to a page
+         boundary and padding bytes are added to it so that we
+         can request more than what is required and can reduce
+         the number of syscalls and the overhead associated
+         with them.
+
+       We have managed fragmentation and syscall overhead, but
+       aligning the size to a page boundary comes with added
+       advantages. For example:
+       - We can convert several standard 4 KiB pages into a
+         single huge page of size 2 MiB (or more) using THP
+         (transparent huge pages). This reduces the number 
+         of entries in the TLB cache as well.
+       - We can use the madvise syscalll (memory advice) to hint
+         the kernel about our use of memory. Like, when we are
+         done with a specific range of addresses, we can hint the
+         kernel to reclaim the physical memory or do whatever you
+         want with that memory (both are different), among others. 
+
        - If MORECORE is not contiguous, this ensures that we 
          only call it with whole-page arguments. [BUT WHAT IS
          THE POINT OF USING MORECORE IF IT IS NOT CONTIGUOUS
@@ -2619,15 +2690,6 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
        - If MORECORE is contiguous and this is not first time
          through, this preserves page-alignment of previous
          calls.
-       - While it seems that sbrk can increase the program 
-         break arbitrarily, the kernel can not actually 
-         allocate in arbitrary numbers. It works exclusively 
-         at page frames. By keeping the size aligned to pages 
-         (either standard or THP), we can keep everything 
-         consistent and enable optimizations like TLB, where 
-         a where we can hint the kernel to map a huge page out 
-         of many small pages, which requires contiguity in the 
-         pages. 
        - [ARTICULATE IT BETTER]*/
 
     /* Ensure thp_pagesize is initialized. */
@@ -2670,7 +2732,17 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
           crossed the mmap_threshold. We use sysmalloc then.
        4. We are moving top-to-bottom, reducing what `nb` could 
           be in each pass. How it is possible for `size` to 
-          overflow here? */
+          overflow here?
+       5. Also, if mmap can succeed below, because it takes a
+          size_t argument, it can succeed above as well? Why
+          we don't check overflow in the above paths? Is the
+          non-main arena proof of it, or mmap is proof of it?
+          If overflow happened above, we would simply allocate
+          a smaller size through mmap, which would corrupt
+          everything downstream. The overflowed size after wrap
+          around may or may not be greater than the the mmap
+          threshold (path 1). Similarly, there are no checks in
+          the non-main arena path. */
 
     /* If the size is very huge (beyond what size_t can address),
        it will wrap-around to a smaller positive value. However,
