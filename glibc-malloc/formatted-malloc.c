@@ -2371,6 +2371,18 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
      2B. the number of currently allocated mmapped regions
          is less than the total mmapped regions allowed.
   */
+
+  /* If there was a usable arena and `nb` was >= the mmap 
+     threshold, there can be three cases based on what is 
+     inside `nb`.
+     - If (req > PTRDIFF_T), checked_request2size(req) in 
+       _int_malloc() returns SIZEMAX, which is passed as 
+       nb. sysmalloc_mmap() will safely return (-1) as this 
+       exceeds the system limitations.
+     - If `nb` was near PTRDIFF_T, the page alignment steps 
+       might make it > PTRDIFF_T, in which case, we will 
+       get (-1) again.
+     - Otherwise, this path should succeed. */
   /* [TODO]: (av == NULL) doesn't look like a normal case,
              so I want to know when it is actually possible. */
   if (
@@ -2403,6 +2415,36 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
      also failed, we can not do anything. */
   if (av == NULL)
     return NULL;
+
+
+  /* If we are here, there can be three cases. 
+     1. If there were no usable arena, we would have explored mmap by 
+        default. If mmap had succeeded or not, we would have returned 
+        to _int_malloc. Because we are here, this is not possible.
+     2. If there was an arena and `nb` was < the mmap threshold, path-1 
+        is inaccessible and `nb` is not in the shape to overflow. 
+     3. If there was an arena and `nb` crossed the mmap threshold, 
+        either we would have succeeded, in which case, we would 
+        have returned already, or we have failed. mmap could fail for 
+        a variety of reasons, so we can not be sure if nb=SIZEMAX 
+        caused it.
+
+     In case 3, we might think that an overflow check is great. While 
+     it is, I myself am not very sure why it was not placed there and 
+     why we have chosen to wait until the main arena path. One reason 
+     might be that the kernel anyways refuses inappropriate sizes, and 
+     we want to keep this as a fast path to allocation. But again, the 
+     syscall overhead exist and it was chosen over a branch overhead. 
+     In simple words, I am not sure yet.
+
+     In short, these are the possible cases:
+     1. (nb=SIZE_MAX): checked_reques2size either returns (< PTRDIFF_T) 
+        or SIZEMAX. If SIZEMAX, alignment will make it 0 and mmap will 
+        fail safely.
+     2. (nb=near PTRDIFF_T, but less than): the alignment math will 
+        make mmap fail safely.
+     3. (nb=valid_size): this would be less than the mmap threshold 
+        already and the path will succeed. */
 
   /* Record incoming configuration of top. */
   old_top  = av->top;
@@ -2610,11 +2652,10 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
        In this case, we can not increase the program break 
        directly. Therefore, we check if sbrk is contiguous. 
        If yes, we can subtract the existing space in the 
-       top chunk and request the remaining bytes. The other 
-       case is discussed later. */
-
-    /* [HOW IS THAT POSSIBLE?] We add it back later only if
-       we don't actually get contiguous space. */
+       top chunk and request the remaining bytes. However, if 
+       sbrk doesn't return contiguous memory later, meaning, 
+       we know it freshly that sbrk has become contiguous, we 
+       reverse this step. */
     if (contiguous(av))
       size -= old_size;
 
@@ -2647,7 +2688,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
          to the next page. It remains at (current+100) bytes.
          The rest of the 3996 bytes are lying unused.
          - In future calls, the kernel utilizes this space. If 
-           the request can fit in the current page, no page is allocated further. Only an updated program break is 
+           the request can fit in the current page, no page is 
+           allocated further. Only an updated program break is 
            returned.
          - When sbrk is not called again, this is basically dead
            space which creates unused memory, causing fragmentation.
@@ -2681,16 +2723,16 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
          the kernel about our use of memory. Like, when we are
          done with a specific range of addresses, we can hint the
          kernel to reclaim the physical memory or do whatever you
-         want with that memory (both are different), among others. 
+         want with that memory (both are different), among others. */
 
-       - If MORECORE is not contiguous, this ensures that we 
-         only call it with whole-page arguments. [BUT WHAT IS
-         THE POINT OF USING MORECORE IF IT IS NOT CONTIGUOUS
-         ANYMORE?]
-       - If MORECORE is contiguous and this is not first time
-         through, this preserves page-alignment of previous
-         calls.
-       - [ARTICULATE IT BETTER]*/
+    /* If MORECORE is not contiguous, this ensures that we 
+       only call it with whole-page arguments. [BUT WHAT IS
+       THE POINT OF USING MORECORE IF IT IS NOT CONTIGUOUS
+       ANYMORE?]
+       If MORECORE is contiguous and this is not first time
+       through, this preserves page-alignment of previous
+       calls.
+       [ARTICULATE IT BETTER] */
 
     /* Ensure thp_pagesize is initialized. */
     thp_init();
@@ -2721,15 +2763,21 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
        a negative value. */
 
     /* There are some points.
-       1. GLIBC likes to service large requests via mmap. The
-          term "large" is defined with DEFALUT_MMAP_THRESHOLD.
-          This is just a fraction of what size_t, or even
-          ssize_t can handle.
+       1. GLIBC likes to service large requests via mmap, where 
+          the term "large" is defined with DEFALUT_MMAP_THRESHOLD.
+          This is a fraction of what size_t, or even ssize_t can 
+          handle.
        2. _int_malloc already runs checked_reques2size(sz) to
-          catch overflows. So, nb is already a value which has 
-          not overflowed.
-       3. Inside sysmalloc, the first path checks is nb has 
-          crossed the mmap_threshold. We use sysmalloc then.
+          catch overflows. So, nb is either a valid size, or 
+          SIZEMAX, which is returned to fail safely later.
+       3. The first path inside sysmalloc checks if nb is >= the 
+          mmap threshold. If yes, we use sysmalloc.
+          - If nb is SIZEMAX, I hope mmap will return NULL, which 
+            is what "fail-safe" means here. Is it?
+          - If not, nb would be < PTRDIFF_T, which, after alignment, 
+            might become > PTRDOFF_T. Even if not, is it still 
+            mmappable? My guess is, it is not, don't know why though!
+       4. Next is the non-main arena path.
        4. We are moving top-to-bottom, reducing what `nb` could 
           be in each pass. How it is possible for `size` to 
           overflow here?
