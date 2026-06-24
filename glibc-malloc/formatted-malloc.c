@@ -2484,19 +2484,32 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
   /* If it is the first time, the top chunk must point to 
      initial_top(av). 
-     Because main_arena goes on static storage, everything 
-     is zero, except the 3 members that get initialized 
-     manually while creating it. Because initial_top(av) is
-     just bin_at(M, 1), which resolves to a pointer inside
-     main_arena (prior to bins), the element with which 
-     mchunk_size overlaps is going to be zero, making
-     old_size zero with surety.
-     If not zero, main_arena is corrupted, and we should exit.
+     - Because main_arena goes on static storage, everything 
+       is zero, except the 3 members that are initialized 
+       manually while creating it. They are mutex (the first 
+       member), next (seventh member) and attached_threads 
+       (the ninth member).
+     - initial_top(av) is an alias to bin_at(M, 1), i.e. the 
+       first bin. To address the headers of this bin, i.e. 
+       bins[0] and bins[1], the fake chunk is at the address 
+       &bins[-2]. This is treated as the top chunk.
+     - The member `top` is at &bins[-2] and `last_remainder` 
+       at &bins[-1]. Both of these are size_t fields and are 
+       0, thanks to static storage.
+     - &bins[-1] will be the mchunk_size of this fake chunk, 
+       i.e. the initial top. This make the size of initial 
+       top guaranteed to be zero.
+     - If it is the first time and old_size is not zero, 
+       main_arena is corrupted; we will not move further.
+     - It holds for non-main arenas as well as the kernel 
+       zeroes the whole memory before giving it to the 
+       allocator.
 
      If it is not the first time, 
-       1. the size of the top chunk (old_size) must be at
-          least MINSIZE bytes, and 
-       2. the PREV_INUSE bit must be set (1). */
+      1. the size of the top chunk (old_size) must be at
+         least MINSIZE bytes, 
+      2. the PREV_INUSE bit must be set (1), and 
+      3. the top chunk must end at a page aligned boundary. */
   assert(
     (old_top == initial_top(av) && old_size == 0) ||
     (
@@ -2523,24 +2536,36 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     heap_info *heap;
     size_t old_heap_size;
 
-    /* [PATH 2A]: Extend the current heap segment. */
-
     old_heap = heap_for_ptr(old_top);    // The base of the heap.
-    old_heap_size = old_heap->size;      // Save the existing heap size before grow_heap() is called.
+    old_heap_size = old_heap->size;      // Save the existing heap size 
+                                         // before grow_heap() is called.
+
+    /* [PATH 2A]: Extend the current heap segment. */
 
     /* `nb + MINSIZE` is the amount of new bytes required. 
         `old_size` is the current size of the top chunk. 
         - Subtracting old_size from the new bytes required, 
           we get the number of bytes that the allocator 
           doesn't have right now.
-        - We call grow_heap() with these many bytes. */
+        - We call grow_heap() with these many bytes.
+        
+      Possibilities:
+       1. If nb was SIZEMAX, it will become negative after the 
+          alignment math. Since we are casting it to (long), 
+          which is a signed type, we will detect the overflow 
+          easily and fail.
+       2. If nb was near PTRDIFF_MAX, it will pass the first 
+          condition but mmap will safely return MAP_FAILED. 
+       3. If nb has not overflowed, but exceeds what the kernel 
+          has available, the path will fail.
+       4. Success. */
     if (
       (long)(MINSIZE + nb - old_size) > 0 && 
       grow_heap(old_heap, MINSIZE + nb - old_size) == 0
     ){
       av->system_mem += (old_heap->size - old_heap_size);  /* (updated - old) */
 
-      /* Update the size of the top chunk.*/
+      /* Update the size of the top chunk. */
       set_head(
         old_top, 
         (((char*)(old_heap) + old_heap->size) - (char*)(old_top)) | PREV_INUSE
@@ -2548,6 +2573,13 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     }
 
     /* [PATH 2B]: Allocate a new heap segment. */
+
+    /* Possibilities:
+       1. If nb=SIZEMAX, or nb is near PTRDIFF_MAX, it is already 
+          more than HEAP_MAX_SIZE, so alloc_new_heap() will return 
+          NULL. 
+       2. If the kernel does not have enough memory, it will fail.
+       3. Success. */
 
     /* [CONDITION BLOCK EXPLAINER]: Request a new heap segment, store 
        the return value in `heap` and check we have succeeded or not. */
