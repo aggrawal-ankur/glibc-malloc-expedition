@@ -1278,7 +1278,7 @@ checked_request2size(size_t req) __nonnull (1)
   );
 
   /* While _int_malloc() already checks this before and returns
-     NULL, we return SIZEMAX instead of NULL for a more safer 
+     NULL, we return SIZE_MAX instead of NULL for a more safer 
      exit later, which is discussed later in the pathways. */
   if (__glibc_unlikely(req > PTRDIFF_MAX))
     return SIZE_MAX;
@@ -2277,6 +2277,7 @@ static void* sysmalloc_mmap(
 		mtag_mmap_flags | PROT_READ | PROT_WRITE,
 		extra_flags
   );
+
   if (mm == MAP_FAILED)
     return mm;
   if (extra_flags == 0)
@@ -2361,42 +2362,62 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
   bool tried_mmap = false;
 
 
-  /* [PATH 1]: Use sysmalloc_mmap (mmap) directly, if:
-     1.  there are no usable arenas, or
-     2A. the request size meets the mmap threshold, and
-     2B. the number of currently allocated mmapped regions
-         is less than the total mmapped regions allowed.
-  */
+  /* [OVERFLOW MECHANICS]
 
-  /* If there is no usable arena, this path is explored 
-     mandatorily.
+  These are the generalized ranges for primitive types, 
+  where `n` is the number of bits the type can contain.
+  - Unsigned: [0, ((2^n) - 1)]
+  - Signed:   [-(2^(n-1)), ((2^(n-1)) - 1)]
 
-     If there is a usable arena and (nb >= mmap_threshold), 
-     there can be three cases based on what is returned by 
-     checked_request2size(req) to _int_malloc, as the same 
-     is passed as `nb` here. 
-     [1]: If (req > PTRDIFF_MAX), nb=SIZEMAX. This exceeds 
-          the system limitations and sysmalloc_mmap() will 
-          safely return MAP_FAILED.
-     [2]: If (req <= PTRDIFF_MAX), `req` can be near 
-          PTRDIFF_MAX, or far from it.
-      [2A]: If req is near PTRDIFF_MAX, request2size(req) 
-            might make it exceed it. If not, the page 
-            alignment math will almost certainly do it. In 
-            either case, the final value will be too much 
-            for the kernel to allocate and sysmalloc_mmap 
-            is certain to return MAP_FAILED.
-      [2B]: If req is not anywhere near PTRDIFF_MAX and
-            remains the same after request2size(req) and 
-            alignment math, then there is a possibility of 
-            this path succeeding, depending on whether the 
-            system has enough memory to give.
+  For 64-bit types, the ranges are:
 
-     If there is a usable arena and `nb` didn't cross the 
-     mmap threshold, we will move to path-2.
+  - Unsigned: [0, ((2^64) - 1)], 
+              i.e. [0, SIZE_MAX]
 
-     In case of failure, we don't return immedaitely. This 
-     is an important thing about this path. */
+  - Signed:   [-(2^63), ((2^63) - 1)], 
+              i.e. [PTRDIFF_MIN, PTRDIFF_MAX]
+
+  When the data overflows, it moves (or wraps) to the 
+  other side of the range. Here are some examples.
+
+   [1]: ((size_t)(0) - 1) => 18446744073709551615, 
+                             i.e. (2^64) - 1
+   [2]: ((size_t)(SIZE_MAX) + 1) => 0.
+
+   [3]: ((ssize_t)(PTRDIFF_MIN) - 1) => 9223372036854775807, 
+                                        i.e. (2^63) - 1
+   [4]: ((ssize_t)(PTRDIFF_MAX) + 1) => -9223372036854775808,
+                                        i.e. -(2^63)
+
+  : (0-1) became SIZE_MAX, while SIZE_MAX+1 became 0.
+  : (PTRDIFF_MIN-1) became PTRDIFF_MAX and (PTRDIFF_MAX+1) 
+    became PTRDIFF_MIN. */
+
+
+  /* [PATH 1]: Use sysmalloc_mmap directly, if:
+      [1]:  there are no usable arenas, or
+      [2A]: the request size meets the mmap threshold, and
+      [2B]: the number of currently allocated mmapped 
+            regions is less than the total mmapped regions 
+            allowed. */
+
+  /* If there is a usable arena, these are the possibilities.
+     1. If (nb=SIZEMAX), the condition is satisfied, but the 
+        page alignment math will force `nb` to wrap around 0,
+        making it a small positive value that mmap is unlikely
+        to refuse. [How does this not happen?]
+     2. If nb is near (or equal to) PTRDIFF_MAX, the condition 
+        is satisfied again and everything similar to pt1.
+     3. If nb > mmap_threshold, the path will execute, but its 
+        success depends on the available resources.
+     4. If nb < mmap_threshold, the path is inaccessible.
+
+     If there is no usable arena, this path is explored 
+     regardless of what is inside `nb`. As long as `nb` 
+     doesn't overflow, the chances for success are there. 
+     However, when it overflows, I don't know how it is 
+     handled. */
+
 
   /* [TODO]: (av == NULL) doesn't look like a normal case,
              so I want to know when it is actually possible. */
@@ -2433,45 +2454,48 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
 
   /* [Why we are here?]
-     1. If there is no usable arena, mmap is explored by default. 
-        - If mmap succeded, it would return the memory without 
-          waiting. 
-        - If mmap failed, the fail-safe path above would return 
-          NULL.
-        - Regardless of the outcome, "return to _int_malloc" is 
-        inevitable. If we are here, this was not the case.
 
-     2. If there was an arena and `nb` crossed the mmap threshold, 
-        there can be two cases. 
-        - If `nb` is SIZEMAX or near PTRDIFF_MAX, the requested 
-          amount is too much and the system is certain to refuse. 
-          If we are here, path-1 has failed.
-        - If `nb` is not anywhere near PTRDIFF_MAX, the request 
-          might succeed. But if we are here, it didn't.
+  [CASE 1] ~~
+    If there is no usable arena, mmap is explored by default. 
+    - SUCCESS, the memory is returned without a wait.
+    - FAILED, the fail-safe path above would return NULL.
 
-     3. If there was an arena and `nb` didn't cross the mmap 
-        threshold, path-1 is inaccessible and `nb` is not in 
-        the shape to overflow. 
+  Regardless of the outcome, "return" is confirmed. If we are 
+  here, this was not the case.
 
-     It makes sense to catch PTRDIFF_MAX and SIZEMAX early. The 
-     reason glibc doesn't do it is probably due to performance 
-     issues.
-     - We are required to have an extra branch with multiple 
-       conditions that will narrow down `nb` into a 
-       serviceable range. 
-     - A PTRDIFF_MAX or SIZEMAX call happens in rarity. But the 
-       overhead of this extra branch is suffered by every malloc 
-       call.
-     - Among 100 calls, if 2 calls were such calls, are the gains 
-       really enjoyable? 
-     - GLIBC treats this case as yet another case. All the branch 
-       overhead associated to crossing out existing paths only to 
-       return NULL or the syscall overhead associated with calling 
-       mmap so many times only to get MAP_FAILED is contained to 
-       this specific value of `nb` only.
-     - Therefore, converting this case it into a "specific case" 
-       has no advantages over letting it pass through the existing 
-       paths only to return NULL. */
+  [CASE 2] ~~
+    If there was an arena and `nb` crossed the mmap threshold, 
+    there can be two cases.
+    - If `nb` is SIZE_MAX or near PTRDIFF_MAX, the requested 
+      amount is too much and the system is certain to refuse.
+    - If `nb` is not anywhere near PTRDIFF_MAX, the request may, 
+      or may not succeed.
+
+    If we are here, this can be the case. In either case, the 
+    request exceeded the available resources, and we can not 
+    be certain what caused it, until we write some extra 
+    branches, which will create unnecessary overhead.
+
+  [CASE 3] ~~
+    If there was an arena and `nb` didn't cross the mmap 
+    threshold, path-1 is inaccessible and `nb` is not in 
+    the shape to overflow.
+
+
+  It makes sense to catch PTRDIFF_MAX and SIZE_MAX early. The 
+  reason glibc doesn't do it is probably related to performance.
+  - We need to setup an extra branch with multiple conditions 
+    that will narrow down the cause.
+  - A PTRDIFF_MAX or SIZE_MAX call is rare. But the overhead of 
+    this extra branch is suffered by every malloc call.
+  - Among 100 calls, if 2 calls were such calls, are the gains 
+    really worth the overhead?
+  - On the contrary, if we don't make this a special case, such 
+    a call has to go through every existing path and bear the 
+    syscall overhead only to return NULL in the end. But it will 
+    exist for this specific call only. Normals calls would succeed 
+    early.
+  - Therefore, making it a "special case" has no added advantages. */
 
 
   /* Record incoming configuration of top. */
@@ -2550,7 +2574,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
         - We call grow_heap() with these many bytes.
         
       Possibilities:
-       1. If nb was SIZEMAX, it will become negative after the 
+       1. If nb was SIZE_MAX, it will become negative after the 
           alignment math. Since we are casting it to (long), 
           which is a signed type, we will detect the overflow 
           easily and fail.
@@ -2575,7 +2599,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     /* [PATH 2B]: Allocate a new heap segment. */
 
     /* Possibilities:
-       1. If nb=SIZEMAX, or nb is near PTRDIFF_MAX, it is already 
+       1. If nb=SIZE_MAX, or nb is near PTRDIFF_MAX, it is already 
           more than HEAP_MAX_SIZE, so alloc_new_heap() will return 
           NULL. 
        2. If the kernel does not have enough memory, it will fail.
@@ -2694,7 +2718,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
     /* `nb`: aligned request bytes as received from 
              _int_malloc. If (req > PTRDIFF_MAX),
-             checked_request2size(req) returns SIZEMAX
+             checked_request2size(req) returns SIZE_MAX
              to return safely later.
        `top_pad`: padding bytes to request more from sbrk
                   to avoid syscall overhead.
@@ -2821,22 +2845,24 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     /* [STEP 1] Completed. */
 
 
-    /* Don't try to call MORECORE if argument is so big as 
-       to appear negative. Note that since mmap takes
-       `size_t arg`, it may succeed below even if we cannot
-       call MORECORE. */
-    /* sbrk takes a signed argument. Passing a positive value
-       increases the program break, while a negative argument
-       decreases it. So it makes sense not to call sbrk with
-       a negative value. */
+    /* [PATH 3A]:  */
 
+    /* sbrk takes a signed argument (intptr_t, or, long int). 
+       A positive argument increases the program break, while 
+       a negative argument decreases it.
 
-    /* If the size is very huge (beyond what size_t can address),
-       it will wrap-around to a smaller positive value. However,
-       ssize_t will interpret it as a negative value.
-       - If (ssize_t)(size) < 0, that would help us, IN WHAT WAYS? */
+       Based on what is inside `size` 
+       after the alignment math, we have to adjust how we use 
+       it, as `size` is a size_t variable but sbrk expects a 
+       signed argument. These are the possibilities.
+       1. If nb=PTRDIFF_MAX or near PTRDIFF_MAX, the calculation 
+          has already overflowed and with implicit typecasting, 
+          sbrk will receive a negative size.
+       2. If size < PTRDIFF_MAX and far from PTRDIFF_MAX, it is 
+          a valid positive argument.
 
-    /* For valid size. */
+       To detect if overflow has occurred, we have to cast size 
+       manually into ssize_t and check it against 0. */
     if ((ssize_t)(size) > 0){
       brk = (char*) MORECORE((long)(size));
       if (brk != (char*)(MORECORE_FAILURE))
@@ -2845,24 +2871,19 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       LIBC_PROBE (memory_sbrk_more, 2, brk, size);
     }
 
-    /* Since the program break variables are already initialized
-       to MORECORE_FAILURE, we can easily detect if the previous
-       path executed or if it failed. */
-    /* [BUT WE COULD HAVE USED else instead?] */
-    /* [AND, WHAT WOULD HAPPEN IF THE SIZE OVERFLOWED? THERE IS
-       NO POINT IN ALLOCATING AN OVERFLOWED SIZE. BUT THAT DOESN'T
-       SEEM TO BE HAPPENING.] */
+
     if (brk == (char*)(MORECORE_FAILURE)){
-      /* If have mmap, try using it as a backup when MORECORE 
-      fails or cannot be used. This is worth doing on systems 
-      that have "holes" in address space, so sbrk cannot extend 
-      to give contiguous space, but space is available elsewhere. 
-      Note that we ignore mmap max count and threshold limits, 
-      since the space will not be used as a segregated mmap region. */
+      /* If have mmap, try using it as a backup when MORECORE fails 
+         or cannot be used. This is worth doing on systems that have 
+         "holes" in address space, so sbrk cannot extend to give 
+         contiguous space, but space is available elsewhere. Note 
+         that we ignore mmap max count and threshold limits, since 
+         the space will not be used as a segregated mmap region. */
 
       size_t fallback_size = nb + mp_.top_pad + MINSIZE;
       char *mbrk = MAP_FAILED;
 
+      /* [PATH (3A, 1)]: Use huge pages if enabled. */
       if (mp_.hp_pagesize > 0)
         mbrk = sysmalloc_mmap_fallback(
           &size, fallback_size,
@@ -2870,6 +2891,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
           mp_.hp_pagesize, mp_.hp_flags
         );
 
+      /* [PATH (3A, 2)]: Use standard page size. */
       if (mbrk == MAP_FAILED)
         mbrk = sysmalloc_mmap_fallback(
           &size, fallback_size,
@@ -2877,16 +2899,17 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
           pagesize, 0
         );
 
+      /* [WHAT DOES THIS DO?] */
       if (mbrk != MAP_FAILED){
         __set_vma_name(mbrk, fallback_size, " glibc: malloc");
 
         /* Record that we no longer have a contiguous sbrk region. 
-        After the first time mmap is used as backup, we do not ever 
-        rely on contiguous space since this could incorrectly bridge 
-        regions. */
+           After the first time mmap is used as backup, we do not 
+           ever rely on contiguous space since this could incorrectly 
+           bridge regions. */
         set_noncontiguous(av);
 
-        /* We do not need, and cannot use, another sbrk call to find end */
+        /* We do not need, and cannot use, another sbrk call to find end. */
         brk = mbrk;
         snd_brk = brk + size;
       }
