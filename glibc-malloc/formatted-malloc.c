@@ -571,8 +571,9 @@ tag_at (void *ptr)
 /* ---------- Description of public routines ------------ */
 
 #if IS_IN (libc)
-/*
-  malloc(size_t n)
+
+/* malloc(size_t n)
+
   Returns a pointer to a newly allocated chunk of at least n bytes, or null
   if no space is available. Additionally, on failure, errno is
   set to ENOMEM on ANSI C systems.
@@ -591,8 +592,8 @@ libc_hidden_proto (__libc_malloc)
 static void *__libc_calloc2 (size_t);
 static void *__libc_malloc2 (size_t);
 
-/*
-  free(void* p)
+/* free(void* p)
+
   Releases the chunk of memory pointed to by p, that had been previously
   allocated using malloc or a related routine such as realloc.
   It has no effect if p is null. It can have arbitrary (i.e., bad!)
@@ -602,18 +603,18 @@ static void *__libc_malloc2 (size_t);
   when possible, automatically trigger operations that give
   back unused memory to the system, thus reducing program footprint.
 */
-void     __libc_free(void*);
+void __libc_free(void*);
 libc_hidden_proto (__libc_free)
 
-/*
-  calloc(size_t n_elements, size_t element_size);
+/* calloc(size_t n_elements, size_t element_size);
+
   Returns a pointer to n_elements * element_size bytes, with all locations
   set to zero.
 */
-void*  __libc_calloc(size_t, size_t);
+void* __libc_calloc(size_t, size_t);
 
-/*
-  realloc(void* p, size_t n)
+/* realloc(void* p, size_t n)
+
   Returns a pointer to a chunk of size n that contains the same data
   as does chunk p up to the minimum of (n, p's size) bytes, or null
   if no space is available.
@@ -639,11 +640,11 @@ void*  __libc_calloc(size_t, size_t);
   The old unix realloc convention of allowing the last-free'd chunk
   to be used as an argument to realloc is not supported.
 */
-void*  __libc_realloc(void*, size_t);
+void* __libc_realloc(void*, size_t);
 libc_hidden_proto (__libc_realloc)
 
-/*
-  memalign(size_t alignment, size_t n);
+/* memalign(size_t alignment, size_t n);
+
   Returns a pointer to a newly allocated chunk of n bytes, aligned
   in accord with the alignment argument.
 
@@ -654,20 +655,18 @@ libc_hidden_proto (__libc_realloc)
 
   Overreliance on memalign is a sure way to fragment space.
 */
-void*  __libc_memalign(size_t, size_t);
+void* __libc_memalign(size_t, size_t);
 libc_hidden_proto (__libc_memalign)
 
-/*
-  valloc(size_t n);
+/* valloc(size_t n);
   Equivalent to memalign(pagesize, n), where pagesize is the page
   size of the system. If the pagesize is unknown, 4096 is used.
 */
-void*  __libc_valloc(size_t);
+void* __libc_valloc(size_t);
 
 
+/* mallinfo()
 
-/*
-  mallinfo()
   Returns (by copy) a struct containing various summary statistics:
 
   arena:     current total non-mmapped bytes allocated from system
@@ -691,15 +690,14 @@ libc_hidden_proto (__libc_mallinfo2)
 struct mallinfo __libc_mallinfo(void);
 
 
-/*
-  pvalloc(size_t n);
+/* pvalloc(size_t n);
+
   Equivalent to valloc(minimum-page-that-holds(n)), that is,
   round up n to nearest pagesize.
- */
-void*  __libc_pvalloc(size_t);
+*/
+void* __libc_pvalloc(size_t);
 
-/*
-  malloc_trim(size_t pad);
+/* malloc_trim(size_t pad);
 
   If possible, gives memory back to the system (via negative
   arguments to sbrk) if there is unused memory at the `high' end of
@@ -722,10 +720,9 @@ void*  __libc_pvalloc(size_t);
   On systems that do not support "negative sbrks", it will always
   return 0.
 */
-int      __malloc_trim(size_t);
+int __malloc_trim(size_t);
 
-/*
-  malloc_usable_size(void* p);
+/* malloc_usable_size(void* p);
 
   Returns the number of bytes you can actually use in
   an allocated chunk, which may be more than you requested (although
@@ -739,10 +736,10 @@ int      __malloc_trim(size_t);
   assert(malloc_usable_size(p) >= 256);
 
 */
-size_t   __malloc_usable_size(void*);
+size_t __malloc_usable_size(void*);
 
-/*
-  malloc_stats();
+/* malloc_stats();
+
   Prints on stderr the amount of space obtained from the system (both
   via sbrk and mmap), the maximum amount (which may be more than
   current if malloc_trim and/or munmap got called), and the current
@@ -761,14 +758,14 @@ size_t   __malloc_usable_size(void*);
   More information can be obtained by calling mallinfo.
 
 */
-void     __malloc_stats(void);
+void __malloc_stats(void);
 
-/*
-  posix_memalign(void **memptr, size_t alignment, size_t size);
+/* posix_memalign(void **memptr, size_t alignment, size_t size);
 
   POSIX wrapper like memalign(), checking for validity of size.
 */
-int      __posix_memalign(void **, size_t, size_t);
+int __posix_memalign(void **, size_t, size_t);
+
 #endif /* IS_IN (libc) */
 
 /* mallopt(int parameter_number, int parameter_value)
@@ -3078,7 +3075,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     }
   }
 
-  if ((unsigned long)av->system_mem > (unsigned long)av->max_system_mem)
+  if ((unsigned long)(av->system_mem) > (unsigned long)(av->max_system_mem))
     av->max_system_mem = av->system_mem;
 
   check_malloc_state(av);
@@ -3092,7 +3089,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     remainder_size = (size - nb);
     remainder = chunk_at_offset(p, nb);
     av->top = remainder;
-  
+
     set_head(p, nb | PREV_INUSE | (av != &main_arena ? NON_MAIN_ARENA : 0));
     set_head(remainder, remainder_size | PREV_INUSE);
 
@@ -3109,11 +3106,11 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 /* systrim is an inverse of sorts to sysmalloc. It gives 
    memory back to the system (via negative arguments to 
    sbrk) if there is unused memory at the `high' end of 
-   the malloc pool. It is called automatically by free() 
-   when top space exceeds the trim threshold. It is also 
-   called by the public malloc_trim routine. It returns 1 
-   if it actually released any memory, else 0. */
-
+   the malloc pool.
+   - It is called automatically by free() when top space 
+     exceeds the trim threshold. It is also called by the 
+     public malloc_trim routine.
+   - It returns 1 if it actually released any memory, else 0. */
 static int systrim(size_t pad, mstate av)
 {
   long top_size;         /* Amount of top-most memory */
@@ -3124,8 +3121,8 @@ static int systrim(size_t pad, mstate av)
   long top_area;
 
   top_size = chunksize(av->top);
-
   top_area = (top_size - MINSIZE - 1);
+
   if (top_area <= pad)
     return 0;
 
@@ -3142,6 +3139,7 @@ static int systrim(size_t pad, mstate av)
      This avoids problems if there were foreign sbrk calls. */
   current_brk = (char*)MORECORE(0);
   if (current_brk == (char*)(av->top) + top_size){
+
     /* Attempt to release memory. We ignore MORECORE return value,
     and instead call again to find out where new end of memory is.
     This avoids problems if first call releases less than we asked,
@@ -3151,10 +3149,10 @@ static int systrim(size_t pad, mstate av)
     some downstream failure.) */
 
     MORECORE(-extra);
-    new_brk = (char*)MORECORE(0);
+    new_brk = (char*) MORECORE(0);
     LIBC_PROBE(memory_sbrk_less, 2, new_brk, extra);
 
-    if (new_brk != (char*) MORECORE_FAILURE){
+    if (new_brk != (char*)(MORECORE_FAILURE)){
       released = (long)(current_brk - new_brk);
 
       /* Success. Adjust top. */
@@ -3175,14 +3173,15 @@ static void munmap_chunk(mchunkptr p)
 
   assert(chunk_is_mmapped(p));
 
-  uintptr_t mem = (uintptr_t) chunk2mem (p);
-  uintptr_t block = mmap_base (p);
-  size_t total_size = mmap_size (p);
-  /* Unfortunately we have to do the compilers job by hand here.  Normally
-     we would test BLOCK and TOTAL-SIZE separately for compliance with the
-     page size.  But gcc does not recognize the optimization possibility
-     (in the moment at least) so we combine the two values into one before
-     the bit test.  */
+  uintptr_t mem = (uintptr_t) chunk2mem(p);
+  uintptr_t block = mmap_base(p);
+  size_t total_size = mmap_size(p);
+
+  /* Unfortunately we have to do the compilers job by hand here.
+     Normally we would test BLOCK and TOTAL-SIZE separately for 
+     compliance with the page size.  But gcc does not recognize 
+     the optimization possibility (in the moment at least) so we 
+     combine the two values into one before the bit test. */
   if (__glibc_unlikely ((block | total_size) & (pagesize - 1)) != 0
       || __glibc_unlikely (!powerof2 (mem & (pagesize - 1))))
     malloc_printerr ("munmap_chunk(): invalid pointer");
@@ -3190,10 +3189,10 @@ static void munmap_chunk(mchunkptr p)
   atomic_fetch_add_relaxed (&mp_.n_mmaps, -1);
   atomic_fetch_add_relaxed (&mp_.mmapped_mem, -total_size);
 
-  /* If munmap failed the process virtual memory address space is in a
-     bad shape.  Just leave the block hanging around, the process will
-     terminate shortly anyway since not much can be done.  */
-  __munmap ((char *) block, total_size);
+  /* If munmap failed the process virtual memory address space is in 
+     a bad shape.  Just leave the block hanging around, the process 
+     will terminate shortly anyway since not much can be done. */
+  __munmap ((char*)(block), total_size);
 }
 
 #if HAVE_MREMAP
@@ -3639,8 +3638,8 @@ __libc_malloc2 (size_t bytes)
   void *victim;
 
   if (SINGLE_THREAD_P){
-    victim = tag_new_usable (_int_malloc (&main_arena, bytes));
-    assert (
+    victim = tag_new_usable (_int_malloc(&main_arena, bytes));
+    assert(
       !victim || 
       chunk_is_mmapped(mem2chunk(victim)) ||
       &main_arena == arena_for_chunk(mem2chunk(victim))
@@ -3649,10 +3648,10 @@ __libc_malloc2 (size_t bytes)
   }
 
   arena_get(ar_ptr, bytes);
-
   victim = _int_malloc(ar_ptr, bytes);
+
   /* Retry with another arena only if we were able to find 
-  a usable arena before. */
+     a usable arena before. */
   if (!victim && ar_ptr != NULL){
     LIBC_PROBE (memory_malloc_retry, 1, bytes);
     ar_ptr = arena_get_retry (ar_ptr, bytes);
@@ -3762,8 +3761,7 @@ void __libc_free(void *mem)
 }
 libc_hidden_def (__libc_free)
 
-void *
-__libc_realloc (void *oldmem, size_t bytes)
+void* __libc_realloc (void *oldmem, size_t bytes)
 {
   mstate ar_ptr;
   INTERNAL_SIZE_T nb;         /* padded request size */
@@ -3888,16 +3886,14 @@ __libc_realloc (void *oldmem, size_t bytes)
 }
 libc_hidden_def (__libc_realloc)
 
-void *
-__libc_memalign (size_t alignment, size_t bytes)
+void* __libc_memalign (size_t alignment, size_t bytes)
 {
   return _mid_memalign (alignment, bytes);
 }
 libc_hidden_def (__libc_memalign)
 
 /* For ISO C17.  */
-void *
-weak_function
+void* weak_function
 aligned_alloc (size_t alignment, size_t bytes)
 {
 /* Similar to memalign, but starting with ISO C17 the standard
@@ -3914,8 +3910,7 @@ aligned_alloc (size_t alignment, size_t bytes)
 }
 
 /* For ISO C23.  */
-void
-weak_function
+void weak_function
 free_sized (void *ptr, __attribute_maybe_unused__ size_t size)
 {
   /* We do not perform validation that size is the same as the original
@@ -3927,11 +3922,12 @@ free_sized (void *ptr, __attribute_maybe_unused__ size_t size)
 }
 
 /* For ISO C23.  */
-void
-weak_function
-free_aligned_sized (void *ptr, __attribute_maybe_unused__ size_t alignment,
-                    __attribute_maybe_unused__ size_t size)
-{
+void weak_function
+free_aligned_sized (
+  void *ptr, 
+  __attribute_maybe_unused__ size_t alignment,
+  __attribute_maybe_unused__ size_t size
+){
   /* We do not perform validation that size and alignment is the same as
      the original requested size and alignment at this time.  We leave that
      to the sanitizers.  We simply forward to `free`.  This allows existing
@@ -3940,8 +3936,7 @@ free_aligned_sized (void *ptr, __attribute_maybe_unused__ size_t alignment,
   free (ptr);
 }
 
-static void *
-_mid_memalign (size_t alignment, size_t bytes)
+static void* _mid_memalign(size_t alignment, size_t bytes)
 {
   mstate ar_ptr;
   void *p;
@@ -4004,30 +3999,29 @@ _mid_memalign (size_t alignment, size_t bytes)
   return tag_new_usable (p);
 }
 
-void *
-__libc_valloc (size_t bytes)
+void* __libc_valloc (size_t bytes)
 {
-  return _mid_memalign (GLRO (dl_pagesize), bytes);
+  return _mid_memalign (GLRO(dl_pagesize), bytes);
 }
 
-void *
-__libc_pvalloc (size_t bytes)
+void* __libc_pvalloc (size_t bytes)
 {
-  size_t pagesize = GLRO (dl_pagesize);
+  size_t pagesize = GLRO(dl_pagesize);
   size_t rounded_bytes;
   /* ALIGN_UP with overflow check.  */
-  if (__glibc_unlikely (__builtin_add_overflow (bytes,
-						pagesize - 1,
-						&rounded_bytes)))
-    {
-      __set_errno (ENOMEM);
-      return NULL;
-    }
+  if (__glibc_unlikely(__builtin_add_overflow(
+    bytes,
+    pagesize - 1,
+    &rounded_bytes))
+  ){
+    __set_errno (ENOMEM);
+    return NULL;
+  }
 
   return _mid_memalign (pagesize, rounded_bytes & -pagesize);
 }
 
-static void * __attribute_noinline__
+static void* __attribute_noinline__
 __libc_calloc2 (size_t sz)
 {
   mstate av;
@@ -4121,8 +4115,7 @@ __libc_calloc2 (size_t sz)
   return clear_memory ((INTERNAL_SIZE_T *) mem, clearsize);
 }
 
-void *
-__libc_calloc (size_t n, size_t elem_size)
+void* __libc_calloc (size_t n, size_t elem_size)
 {
   size_t bytes;
 
