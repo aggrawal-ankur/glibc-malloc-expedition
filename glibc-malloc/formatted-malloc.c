@@ -1257,7 +1257,11 @@ struct malloc_chunk {
 #define misaligned_mem(m)    ((uintptr_t)(m) & MALLOC_ALIGN_MASK)
 #define misaligned_chunk(p)  (misaligned_mem(chunk2mem(p)))
 
-/* pad request bytes into a usable size -- internal version */
+/* Align the request bytes to the allocator's size and 
+   alignment model. 
+   - Precondition: The input has already been validated.
+   - It only performs size normalization and reporting 
+     errors is out of its scope. */
 /* Note: This must be a macro that evaluates to a compile time 
    constant if passed a literal constant. */
 #define request2size(req)  (  \
@@ -1266,17 +1270,22 @@ struct malloc_chunk {
   : (req + SIZE_SZ + MALLOC_ALIGN_MASK) & ~MALLOC_ALIGN_MASK  \
 )
 
+/* Combines validation and size normalization together.
+   - If the validation fails, it returns SIZE_MAX as a 
+     means to report the error. The caller decides what 
+     to do with it.
+   - Otherwise, it returns request2size. */
 static __always_inline size_t
 checked_request2size(size_t req) __nonnull (1)
 {
+  /* A static assert checks a condition at compile-time 
+     and stops compiling if that condition is evaluated 
+     false. */
   _Static_assert(
-    PTRDIFF_MAX <= SIZE_MAX / 2,
+    PTRDIFF_MAX <= (SIZE_MAX / 2),
     "PTRDIFF_MAX is not more than half of SIZE_MAX"
   );
 
-  /* While _int_malloc() already checks this before and returns
-     NULL, we return SIZE_MAX instead of NULL for a more safer 
-     exit later, which is discussed later in the pathways. */
   if (__glibc_unlikely(req > PTRDIFF_MAX))
     return SIZE_MAX;
 
@@ -3637,6 +3646,7 @@ __libc_malloc2 (size_t bytes)
   mstate ar_ptr;
   void *victim;
 
+  /* [PATH 1]: The process is single threaded. */
   if (SINGLE_THREAD_P){
     victim = tag_new_usable (_int_malloc(&main_arena, bytes));
     assert(
@@ -3644,26 +3654,33 @@ __libc_malloc2 (size_t bytes)
       chunk_is_mmapped(mem2chunk(victim)) ||
       &main_arena == arena_for_chunk(mem2chunk(victim))
     );
+
     return victim;
   }
 
+  /* [PATH 2]: The process is multi-threaded. */
+
+  /* Acquire an arena and lock the corresponding mutex. */
   arena_get(ar_ptr, bytes);
+
+  /* Obtain memory. */
   victim = _int_malloc(ar_ptr, bytes);
 
-  /* Retry with another arena only if we were able to find 
-     a usable arena before. */
+  /* If _int_malloc failed but there are more arenas, try 
+     them out if any of them is usable. */
   if (!victim && ar_ptr != NULL){
-    LIBC_PROBE (memory_malloc_retry, 1, bytes);
-    ar_ptr = arena_get_retry (ar_ptr, bytes);
-    victim = _int_malloc (ar_ptr, bytes);
+    LIBC_PROBE(memory_malloc_retry, 1, bytes);
+
+    ar_ptr = arena_get_retry(ar_ptr, bytes);
+    victim = _int_malloc(ar_ptr, bytes);
   }
 
   if (ar_ptr != NULL)
-    __libc_lock_unlock (ar_ptr->mutex);
+    __libc_lock_unlock(ar_ptr->mutex);
 
-  victim = tag_new_usable (victim);
+  victim = tag_new_usable(victim);
 
-  assert (
+  assert(
     !victim || 
     chunk_is_mmapped(mem2chunk(victim)) ||
     ar_ptr == arena_for_chunk(mem2chunk(victim))
@@ -3674,26 +3691,34 @@ __libc_malloc2 (size_t bytes)
 
 void* __libc_malloc (size_t bytes)
 {
+  /* This part is complied only when the thread cache 
+     layer is active, which is, in most modern systems. 
+     We check if the tcache infra can service this 
+     request. Otherwise, we fall back to the core system. 
+
+     However, we have disabled this in our custom built 
+     to see bins in action. In this case, __libc_malloc2 
+     is called directly. */
 #if USE_TCACHE
   size_t nb = checked_request2size (bytes);
 
   if (nb < mp_.tcache_max_bytes){
-    size_t tc_idx = csize2tidx (nb);
+    size_t tc_idx = csize2tidx(nb);
 
-    if (__glibc_likely (tc_idx < TCACHE_SMALL_BINS)){
+    if (__glibc_likely(tc_idx < TCACHE_SMALL_BINS)){
       if (tcache->entries[tc_idx] != NULL)
-        return tag_new_usable (tcache_get (tc_idx));
+        return tag_new_usable (tcache_get(tc_idx));
     }
     else{
-      tc_idx = large_csize2tidx (nb);
-      void *victim = tcache_get_large (tc_idx, nb);
+      tc_idx = large_csize2tidx(nb);
+      void *victim = tcache_get_large(tc_idx, nb);
       if (victim != NULL)
-        return tag_new_usable (victim);
+        return tag_new_usable(victim);
     }
 	}
 #endif
 
-  return __libc_malloc2 (bytes);
+  return __libc_malloc2(bytes);
 }
 libc_hidden_def (__libc_malloc)
 
@@ -4187,13 +4212,90 @@ static void* _int_malloc(mstate av, size_t bytes)
   size_t tcache_unsorted_count;	    /* count of unsorted chunks processed */
 #endif
 
-  /* Convert the requested size to an internally usable form
-     (in accordance to the size and alignment model) using
-     request2size(sz). */
+  /* [STEP 1]: Align `bytes` to an internally usable form. */
+
+  /* _int_malloc is an orchestrator that has multiple 
+     options to fulfill a request. It receives the raw 
+     size and tries to service it using one of the ways. 
+     The size must be converted as per the allocator's 
+     size and alignment model to become usable. 
+
+     Before we do that, we check out the possibility of 
+     size being so enormous that the system might not be 
+     able to fulfill it. 
+
+     Because `bytes` is a size_t value, SIZE_MAX looks like 
+     the natural upper bound. However, we use PTRDIFF_MAX 
+     instead, and the reason is related to pointer arithmetic, 
+     more specifically, "subtraction of pointers within the 
+     same object".
+     - When we subtract two pointers, we get the distance 
+       (or, difference) between them. For two non-equal 
+       pointers, the difference is the same, but the sign 
+       depends on which pointer is subtracted from which.
+     - If (p2>p1), (p2-p1) is positive, while (p1-p2) is 
+       negative.
+     - Because the difference can be positive or negative, 
+       the result must be stored in a signed type. That's 
+       what the c-std says. "When two pointers within the 
+       same object are taken, their difference must be 
+       representable by ptrdiff_t". `ptrdiff_t` is a signed 
+       64-bit type on LP64 GNU/Linux.
+     - The maximum valid pointer difference within an object 
+       is equal to its size in bytes. If it exceeds what 
+       ptrdiff_t can safely represent, it is a UB.
+     - If bytes exceeds PTRDIFF_MAX, the resulting allocation 
+       could not be treated as a valid C object because pointer 
+       differences within it may no longer be representable 
+       by ptrdiff_t. Therefore, the request is rejected before 
+       any allocation logic begins. 
+       That's why we use PTRDIFF_MAX instead of SIZE_MAX.
+     - [CITATION]:
+       : https://www.open-std.org/jtc1/sc22/wg14/www/docs/n3854.pdf
+       : ISO/IEC 9899:202y — N3854 working draft
+       : Section 6.5.7 Additive operators
+       : Point 10.
+       : Page 88.
+
+     While checked_request2size has the same check as 
+     the first thing, what happens after it is proven 
+     is different.
+     - Some callers already validate the request before 
+       calling checked_request2size(), making the internal 
+       check redundant for those paths. Other callers rely 
+       on the helper to perform the validation.
+     - The paths that check it manually are often the ones 
+       that implement API behavior, so how they deal with 
+       this is also different from checked_request2size. 
+       They set errno and return NULL, while the one in 
+       checked_request2size returns SIZE_MAX as a sentinel 
+       value to indicate failure.
+     - Another difference between the dedicated check and 
+       the one inside checked_request2size is that the 
+       latter is wrapped inside glibc_unlikely. [I DO NOT 
+       ITS IMPORTANCE IT, SO BETTER LEAVE IT FOR FUTURE] 
+
+
+     By validating size against PTRDIFF_MAX, _int_malloc 
+     sets the fundamental precondition that every allocation 
+     path downstream relies on. After this point, the 
+     allocator assumes the request represents a valid C 
+     object and no longer revalidates that property.
+
+
+     One last thing to understand is that every path runs 
+     some internal alignment math on the "aligned value of 
+     bytes". As we will explore them, we will understand 
+     that it is not the thing we can optimize away. */
+
   if (bytes > PTRDIFF_MAX){
     __set_errno (ENOMEM);
     return NULL;
   }
+
+  /* Convert the requested size to an internally usable form
+     (in accordance to the size and alignment model) using
+     request2size(sz). */
   nb = checked_request2size(bytes);
 
   /* There are no usable arenas. Fall back to sysmalloc
