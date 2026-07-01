@@ -2368,65 +2368,16 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
   bool tried_mmap = false;
 
 
-  /* [OVERFLOW MECHANICS]
-
-  These are the generalized ranges for primitive types, 
-  where `n` is the number of bits the type can contain.
-  - Unsigned: [0, ((2^n) - 1)]
-  - Signed:   [-(2^(n-1)), ((2^(n-1)) - 1)]
-
-  For 64-bit types, the ranges are:
-
-  - Unsigned: [0, ((2^64) - 1)], 
-              i.e. [0, SIZE_MAX]
-
-  - Signed:   [-(2^63), ((2^63) - 1)], 
-              i.e. [PTRDIFF_MIN, PTRDIFF_MAX]
-
-  When the data overflows, it moves (or wraps) to the 
-  other side of the range. Here are some examples.
-
-   [1]: ((size_t)(0) - 1) => 18446744073709551615, 
-                             i.e. (2^64) - 1
-   [2]: ((size_t)(SIZE_MAX) + 1) => 0.
-
-   [3]: ((ssize_t)(PTRDIFF_MIN) - 1) => 9223372036854775807, 
-                                        i.e. (2^63) - 1
-   [4]: ((ssize_t)(PTRDIFF_MAX) + 1) => -9223372036854775808,
-                                        i.e. -(2^63)
-
-  : (0-1) became SIZE_MAX, while SIZE_MAX+1 became 0.
-  : (PTRDIFF_MIN-1) became PTRDIFF_MAX and (PTRDIFF_MAX+1) 
-    became PTRDIFF_MIN. */
-
-
-  /* [PATH 1]: Use sysmalloc_mmap directly, if:
-      [1]:  there are no usable arenas, or
+  /* [PATH 1]: Use sysmalloc_mmap if:
+      [1]:  there are no usable arenas (the rare case), or
       [2A]: the request size meets the mmap threshold, and
-      [2B]: the number of currently allocated mmapped 
-            regions is less than the total mmapped regions 
-            allowed. */
+      [2B]: the number of currently mmapped regions is less 
+            than the maximum mmapped regions allowed.
 
-  /* If there is a usable arena, these are the possibilities.
-     1. If (nb=SIZEMAX), the condition is satisfied, but the 
-        page alignment math will force `nb` to wrap around 0,
-        making it a small positive value that mmap is unlikely
-        to refuse. [How does this not happen?]
-     2. If nb is near (or equal to) PTRDIFF_MAX, the condition 
-        is satisfied again and everything similar to pt1.
-     3. If nb > mmap_threshold, the path will execute, but its 
-        success depends on the available resources.
-     4. If nb < mmap_threshold, the path is inaccessible.
+      Large requests are generally serviced via mmap to avoid 
+      consuming arena space and to allow the kernel to reclaim 
+      the mapping independently when freed. */
 
-     If there is no usable arena, this path is explored 
-     regardless of what is inside `nb`. As long as `nb` 
-     doesn't overflow, the chances for success are there. 
-     However, when it overflows, I don't know how it is 
-     handled. */
-
-
-  /* [TODO]: (av == NULL) doesn't look like a normal case,
-             so I want to know when it is actually possible. */
   if (
     av == NULL ||
     (
@@ -2442,13 +2393,13 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     if (mp_.hp_pagesize > 0 && nb >= mp_.hp_pagesize){
       mm = sysmalloc_mmap(nb, mp_.hp_pagesize, mp_.hp_flags);
       if (mm != MAP_FAILED)
-  	    return mm;
-	  }
+        return mm;
+    }
 
     /* [PATH 1B]: Use standard page size. */
     mm = sysmalloc_mmap(nb, pagesize, 0);
     if (mm != MAP_FAILED)
-    	return mm;
+      return mm;
 
     tried_mmap = true;
   }
@@ -2459,49 +2410,48 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     return NULL;
 
 
-  /* [Why we are here?]
+  /* Path-1 has been executed. Let's explore what could 
+     have happened.
 
-  [CASE 1] ~~
-    If there is no usable arena, mmap is explored by default. 
-    - SUCCESS, the memory is returned without a wait.
-    - FAILED, the fail-safe path above would return NULL.
+    [CASE 1] ~~ (av == NULL)
+    - Here, path-1 is explored mandatorily.
+    - If succeeded, the memory is returned without waiting.
+    - If failed, the fail-safe path above would return NULL.
+    - Regardless of the outcome, "return" is confirmed. If 
+      we are here, this was not the case.
 
-  Regardless of the outcome, "return" is confirmed. If we are 
-  here, this was not the case.
+    [CASE 2] ~~ (av != NULL), (nb >= mmap_threshold) and 
+                (cur(mmap) < max(mmap)
+    - `nb` belongs to [MMAP_THRESHOLD, PTRDIFF_MAX], which 
+      is a huge range.
+    - If path-1 succeeded, the memory is returned without 
+      waiting. If we are here, path-1 has failed and this 
+      can be the case.
 
-  [CASE 2] ~~
-    If there was an arena and `nb` crossed the mmap threshold, 
-    there can be two cases.
-    - If `nb` is SIZE_MAX or near PTRDIFF_MAX, the requested 
-      amount is too much and the system is certain to refuse.
-    - If `nb` is not anywhere near PTRDIFF_MAX, the request may, 
-      or may not succeed.
+    [CASE 3] ~~ (av != NULL), (nb < mmap_threshold)
+    - If there was an arena and `nb` didn't cross the mmap 
+      threshold, path-1 is inaccessible. So this can be 
+      the case.
 
-    If we are here, this can be the case. In either case, the 
-    request exceeded the available resources, and we can not 
-    be certain what caused it, until we write some extra 
-    branches, which will create unnecessary overhead.
+    We cannot reliably determine whether the kernel will 
+    accept a request entirely from user space. While modest 
+    requests often succeed in practice, it is still an 
+    observed behavior; the allocator doesn't make any 
+    assumption based on the request size.
 
-  [CASE 3] ~~
-    If there was an arena and `nb` didn't cross the mmap 
-    threshold, path-1 is inaccessible and `nb` is not in 
-    the shape to overflow.
+    The kernel's willingness to service a request depends on 
+    a variety of factors. Replicating that in user space 
+    requires knowledge of the kernel's policies and current 
+    state, which is either unavilable or become stale before 
+    it can be used.
 
+    The virtual memory subsystem in Linux is the actual place 
+    where these policies are written and enforced, making it 
+    the right place to study this.
 
-  It makes sense to catch PTRDIFF_MAX and SIZE_MAX early. The 
-  reason glibc doesn't do it is probably related to performance.
-  - We need to setup an extra branch with multiple conditions 
-    that will narrow down the cause.
-  - A PTRDIFF_MAX or SIZE_MAX call is rare. But the overhead of 
-    this extra branch is suffered by every malloc call.
-  - Among 100 calls, if 2 calls were such calls, are the gains 
-    really worth the overhead?
-  - On the contrary, if we don't make this a special case, such 
-    a call has to go through every existing path and bear the 
-    syscall overhead only to return NULL in the end. But it will 
-    exist for this specific call only. Normals calls would succeed 
-    early.
-  - Therefore, making it a "special case" has no added advantages. */
+    Therefore, malloc never tries to predict whether a request 
+    will succeed. It simply asks the kernel, which provides 
+    the only authoritative answer that is possible. */
 
 
   /* Record incoming configuration of top. */
