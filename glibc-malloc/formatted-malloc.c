@@ -1896,6 +1896,11 @@ static void malloc_init_state(mstate av)
 #endif
     set_noncontiguous(av);
 
+  /* Make the top chunk point to bin_at(M, 1), so 
+     that standard operations like chunksize(top) 
+     yield zero for the first malloc call. This 
+     ensures no special-casing is required to handle 
+     the first malloc request. */
   av->top = initial_top(av);
 }
 
@@ -2454,7 +2459,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     the only authoritative answer that is possible. */
 
 
-  /* Record incoming configuration of top. */
+  /* Record the current configuration of top. */
   old_top  = av->top;
   old_size = chunksize(old_top);
   old_end  = (char*) chunk_at_offset(old_top, old_size);
@@ -2463,35 +2468,91 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
   brk = snd_brk = (char*)(MORECORE_FAILURE);
 
   /* If it is the first time, the top chunk must point to 
-     initial_top(av). 
-     - Because main_arena goes on static storage, everything 
-       is zero, except the 3 members that are initialized 
-       manually while creating it. They are mutex (the first 
-       member), next (seventh member) and attached_threads 
-       (the ninth member).
-     - initial_top(av) is an alias to bin_at(M, 1), i.e. the 
-       first bin. To address the headers of this bin, i.e. 
-       bins[0] and bins[1], the fake chunk is at the address 
-       &bins[-2]. This is treated as the top chunk.
-     - The member `top` is at &bins[-2] and `last_remainder` 
-       at &bins[-1]. Both of these are size_t fields and are 
-       0, thanks to static storage.
-     - &bins[-1] will be the mchunk_size of this fake chunk, 
-       i.e. the initial top. This make the size of initial 
-       top guaranteed to be zero.
-     - If it is the first time and old_size is not zero, 
-       main_arena is corrupted; we will not move further.
-     - It holds for non-main arenas as well as the kernel 
-       zeroes the whole memory before giving it to the 
-       allocator.
+     initial_top(av), and its size must be 0.
+
+     Initial top size being zero on the first call makes 
+     sense, but why (av->top == initial_top(av)) ? 
+     - __ptmalloc_init() initializes the early allocator 
+       metadata setup. The top is not initialized as that 
+       requires acuiring memory from the kernel. Therefore, 
+       the allocator defers acquiring any memory until a 
+       malloc request is made.
+     - The main_arena goes on static storage, that means, 
+       normal variables are zeroed and pointer variables 
+       are NULL, i.e. (void*)(0). The only exception to 
+       this is manual initialization, which happens in 
+       two parts. 
+       1. Initializing parts of the struct using `.member` 
+          addressing, which initializes rest of the members 
+          to zero. mutex (the 1st member), next (the 7th 
+          member) and attached_threads (the 9th member) are 
+          initialized this way.
+       2. Initializing a member independently. More on this 
+          later.
+     - Because av->top is NULL, treating it like a valid 
+       address would dereference 0x0, leading to a fault.
+     - To solve this issue, we have to understand what is 
+       required in the solution.
+       - The most important thing is "no special casing".
+         The solution must work regardless of first time 
+         or nth time.
+       - For the first time, top size must be zero, so that 
+         chunk_at_offset yields the top pointer only. 
+     - To achieve this, we point av->top to bin_at(M, 1), 
+       i.e. the unsorted bin, using individual member 
+       initialzation inside malloc_init_state().
+
+     - How does this solve our problem?
+       - These are the starting members in malloc_state: 
+         mutex | flags | top | last_remainder | bins[] | ....
+       - Except mutex, the 3 members before bins[] are 0x0. 
+       - bin_at(M, 1) resolves to &bins[-2], which is same 
+         as &top "address-wise". We cast this address into 
+         an mchunkptr, dereference its mchunk_size and get 
+         zero.
+       - The bin_at usage reads like a clever trick, and 
+         it is. That is one of the reasons why reading a 
+         developed codebases that has received decades of 
+         improvements is hard. We are not reading a linear 
+         decision-thinking cycle. The programmer created 
+         something to solve a problem, and it created 
+         another one somewhere. After careful thinking, 
+         they came up with a small change at a place no one 
+         can expect and used it cleverly to solve the 
+         problem. The conclusion that sums it up is that 
+         "everything is carefully designed".
+       - It might sound foolish to ask why don't we use the 
+         top directly? After all, they are the same thing. 
+         They only look like the same things.
+         - av->top is supposed to contain the pointer to the 
+           first member in the top chunk. When we use av->top, 
+           we take the address inside it and dereference it. 
+           When we do (av->top)->mchunk_size, it is 
+           *(av->top + 8). Because av->top is 0x0, and the 
+           kernel never maps the first page, we are going to 
+           get a fault. 
+         - &(av->top) is the memory address where av->top, the 
+           variable itself, exist. It contains the address of 
+           av->top, not the value in av->top. When we cast this 
+           address into an mchunkptr, its prev_size will be 
+           *(&av->top + 0), i.e. 0x0 and mchunk_size will be 
+           *(&av->top + 8), i.e. *(&last_remainder), which is 0.
+         - In the first case, the value inside av->top is being 
+           dereferenced. In the second case, the address of 
+           av->top is getting dereferenced, bringing us 0x0.
+         - This also answers why the unsorted bin and not any 
+           other bin.
 
      If it is not the first time, 
       1. the size of the top chunk (old_size) must be at
          least MINSIZE bytes, 
       2. the PREV_INUSE bit must be set (1), and 
       3. the top chunk must end at a page aligned boundary. */
+
   assert(
+    // First malloc
     (old_top == initial_top(av) && old_size == 0) ||
+    // nth malloc
     (
       (unsigned long)(old_size) >= MINSIZE &&
       prev_inuse(old_top) &&
