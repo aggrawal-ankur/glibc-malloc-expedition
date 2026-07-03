@@ -2633,28 +2633,33 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     size_t old_heap_size;
 
     old_heap = heap_for_ptr(old_top);    // The base of the heap.
-    old_heap_size = old_heap->size;      // Save the existing heap size 
-                                         // before grow_heap() is called.
+    old_heap_size = old_heap->size;      // Save the existing heap size.. 
+                                         // ..before grow_heap() is called.
 
-    /* [PATH 2A]: Extend the current heap segment. */
 
-    /* `nb + MINSIZE` is the amount of new bytes required. 
-        `old_size` is the current size of the top chunk. 
-        - Subtracting old_size from the new bytes required, 
-          we get the number of bytes that the allocator 
-          doesn't have right now.
-        - We call grow_heap() with these many bytes.
-        
-      Possibilities:
-       1. If nb was SIZE_MAX, it will become negative after the 
-          alignment math. Since we are casting it to (long), 
-          which is a signed type, we will detect the overflow 
-          easily and fail.
-       2. If nb was near PTRDIFF_MAX, it will pass the first 
-          condition but mmap will safely return MAP_FAILED. 
-       3. If nb has not overflowed, but exceeds what the kernel 
-          has available, the path will fail.
-       4. Success. */
+    /* [PATH 2A]: If the top chunk doesn't have enough 
+        memory, extend it with grow_heap().
+
+      - (nb) is the amount of new bytes required. However, 
+        it is possible that the top chunk has enough bytes 
+        to satisfy the request but not enough to remain a 
+        valid top chunk afterward. To preserve the integrity 
+        of the top chunk, we check if (nb + MINSIZE) bytes 
+        are available in the top.
+      - (old_size) is the current size of the top chunk. 
+      - ((nb + MINSIZE) - old_size) is the number of bytes 
+        the top chunk doesn't have yet. We call grow_heap() 
+        with this size. 
+
+      There are three possibilities.
+      [1]. If the top chunk doesn't have enough size, 
+           the result is a positive value and grow_heap 
+           is called.
+      [2]. If the top chunk has enough memory, growth is 
+           not required.
+      [3]. If the final size exceeded the PTRDIFF_MAX, 
+           the value would be negative and the request 
+           is rejected. */
     if (
       (long)(MINSIZE + nb - old_size) > 0 && 
       grow_heap(old_heap, MINSIZE + nb - old_size) == 0
@@ -2668,52 +2673,61 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       );
     }
 
-    /* [PATH 2B]: Allocate a new heap segment. */
+    /* [PATH 2B]: If the current heap segment can't be 
+        used, allocate a new heap segment.
 
-    /* Possibilities:
-       1. If nb=SIZE_MAX, or nb is near PTRDIFF_MAX, it is already 
-          more than HEAP_MAX_SIZE, so alloc_new_heap() will return 
-          NULL. 
-       2. If the kernel does not have enough memory, it will fail.
-       3. Success. */
+      - (nb): The required bytes.
+      - (MINSIZE): Minimum size for the top chunk.
+      - (sizeof(*heap)): The metadata bytes for the heap_info 
+        struct.
+      - (mp_.top_pad): Padding bytes.
 
-    /* [CONDITION BLOCK EXPLAINER]: Request a new heap segment, store 
-       the return value in `heap` and check we have succeeded or not. */
+      The final request size: 
+        (nb + MINSIZE + sizeof(*heap) + top_pad)
+
+      If the final size exceeds HEAP_MAX_SIZE, the request 
+      is rejected immediately. Otherwise, it depends on the 
+      kernel. */
+
+    /* [CONDITION BLOCK EXPLAINER]: Request a new heap 
+       segment, assign the returned pointer in `heap` 
+       and enter the branch if the return is not NULL. */
     else if (
       (heap = new_heap(nb + (MINSIZE + sizeof(*heap)), mp_.top_pad))
     ){
       /* Attach this heap to the arena. */
       heap->ar_ptr = av;
 
-      /* Attach this heap to the previous heap in the linked list
-         of heaps managed by this arena. */
+      /* Attach this heap to the previous heap in the linked 
+         list of heaps managed by this arena. */
       heap->prev = old_heap;
 
       /* Update the memory footprint of the arena. */
       av->system_mem += heap->size;
 
-      /* Create the top chunk for the new heap segment and update
-         the top chunk for this arena, i.e. av->top. */
+      /* Create the top chunk for the new heap segment and 
+         update the top chunk for this arena, i.e. av->top. */
       top(av) = chunk_at_offset(heap, sizeof(*heap));
       set_head(
         top(av), 
         (heap->size - sizeof(*heap)) | PREV_INUSE
       );
 
-      /* Setup two fencepost chunks at the end of the old heap segment.
-         - Reduce the old top size by MINSIZE bytes to reserve space
-           for the fencepost chunks.
-         - Align the remaining old top size to a MALLOC_ALIG_MASK 
-           boundary. If the top size was corrupted for some reason 
-           (like, a bug/race condition), (old_size-MINSIZE) might 
-           not land on a clean MALLOC_ALIGN_MASK boundary. As the top
-           chunk is later regularized to be used by the process as a
-           normal chunk, the top chunk must have the right the size.
-         - In case the top size was corrupted, alignment would reduce 
-           the size further and there will be some bytes which do not 
-           belong to the top. They are carried by fencepost-1.
-         - An ALIGN_DOWN operation is favored as an ALIGN_UP operation 
-           would disturb the size calculation for fencepost chunks. */
+      /* Setup two fencepost chunks at the end of the old heap 
+         segment.
+         - Reduce the old top size by MINSIZE bytes to reserve 
+           space for the fencepost chunks.
+         - Align the updated old top size to a MALLOC_ALIGNMENT 
+           boundary. Under normal execution, the top chunk size 
+           is already aligned. So the alignment operation has no 
+           effect, but it guarantees that the resulting chunk 
+           satisfies the allocator's alignment invariant.
+         - If the top size was corrupted, alignment would reduce 
+           the size further and there will be some bytes that no 
+           longer belong to the top. They are carried by fencepost-1.
+         - An ALIGN_DOWN operation is favored as an ALIGN_UP 
+           operation would disturb the size calculation for 
+           fencepost chunks. */
 
 
       /* Subtract MINSIZE bytes for the fencepost chunks 
@@ -2732,7 +2746,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       if (old_size >= MINSIZE){
         /* Setup fencepost-1. */
         /* The top chunk is a special chunk and it is kept as an
-           in-use chunk. Until it is binned, we must keep the
+           in-use chunk. Until it is binned, we must keep its 
            PREV_INUSE bit set (1). */
         set_head(
           chunk_at_offset(old_top, old_size),
@@ -2770,16 +2784,17 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       }
     }
 
-    /* [PATH 2C]: If path-1 was not executed, mmap has not been
-       tried with a smaller size (page multiple). So we try that. */
+    /* [PATH 2C]: Use sysmalloc_mmap to get an mmaped chunk. 
+        - If path-1 was not executed, mmap has not been 
+          attempted.
+        - We attempt with standard page size only. If 
+          new_heap already failed, it is unlikely that 
+          another attempt involving huge pages would 
+          succeed. */
     else if (!tried_mmap){
-      // [WHAT DOES IT MEAN?]
-      /* We can at least try to use to mmap memory. If new_heap 
-      fails it is unlikely that trying to allocate huge pages will
-      succeed. */
       char *mm = sysmalloc_mmap (nb, pagesize, 0);
       if (mm != MAP_FAILED)
-        return mm;
+      return mm;
     }
   }
 
