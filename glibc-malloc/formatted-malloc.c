@@ -2543,11 +2543,66 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
          - This also answers why the unsorted bin and not any 
            other bin.
 
-     If it is not the first time, 
-      1. the size of the top chunk (old_size) must be at
-         least MINSIZE bytes, 
-      2. the PREV_INUSE bit must be set (1), and 
-      3. the top chunk must end at a page aligned boundary. */
+    If it is not the first time, 
+     1. the size of the top chunk (old_size) must be at
+        least MINSIZE bytes, 
+     2. the PREV_INUSE bit must be set (1), and 
+     3. the top chunk must end at a page aligned boundary. 
+
+    Why the top chunk must end at a page-aligned boundary?
+    - I have investigated a lot but every answer felt like 
+      a perceived advantage rather than the real motivation.
+    - I have gone all the way down to dlmalloc and this 
+      invariant is managed there as well. I have used this 
+      git repository to read every version and the changelog 
+          https://github.com/DenizThatMenace/dlmalloc
+      But there is nothing. 
+
+    These are the angles that I have explored. 
+    1. The non-main arena is backed by mmap. Both mmap and 
+       mprotect are page-granular syscalls, so if we keep 
+       the main arena logic (sbrk) page aligned as well, 
+       maybe that makes the code more consistent? But the 
+       counter argument is that once sysmalloc has got the 
+       memory, what difference does it make? Operations 
+       like allocate, coalesce, binning, all work normally.
+    2. Aligning the final size to a page boundary is helpful 
+       in reducing the frequency of sbrk calls. But we have 
+       top_pad exactly for that purpose.
+    3. Aligning sbrk to a page boundary ensures that we can 
+       benefit from optimizations like transparet huge pages 
+       (THP). But this exist in dlmalloc v2.6.x and v2.7.x 
+       as well, and they were written in the late 90s and 
+       early 2000s, way before the Linux kernel officially 
+       introduced THP.
+    4. Maybe we do this because the OS, the virtual memory 
+       abstraction, the hardware, the MMU, everything works 
+       on page boundaries? But that reads like a suggestion, 
+       not something that carries consequences.
+    5. The kernel allocates memory in page granularity. When 
+       that memory is accessed, the kernel backs the whole 
+       page with physical memory.
+       - If sbrk requests a page aligned size, we can be 
+         sure that both the allocator and the kernel's 
+         internal marker are consistent.
+       - If sbrk advanced by arbitrary size, the program 
+         break could reside within a partially exposed 
+         page. This creates a discrepancy between the 
+         allocator's logical heap end and the underlying 
+         VM accounting of the kernel. Whether this has 
+         measurable practical consequences is unclear.
+
+    Two things are possible.
+    1. An invariant that has lasted decades is not something 
+       ordinary. Maybe the answer was there but I failed to 
+       see it. 
+    2. The allocator simply doesn't answer this question. It 
+       is the virtual memory subsystem that might. But that 
+       is out of scope of this exploration.
+
+    So, as of writing this (July 03, 2026), based on the glibc 
+    source code, the historical dlmalloc source, the changelog 
+    and my understanding, I can not justify a definitive answer. */
 
   assert(
     // First malloc
