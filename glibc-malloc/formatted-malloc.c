@@ -2836,82 +2836,17 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     if (contiguous(av))
       size -= old_size;
 
-    /* Why align `size` up to a page boundary (standard, or huge) 
-       when sbrk operates on arbitrary sizes?
+    /* [NOTE]: It is the original glibc annotation about 
+        keeping the top (or better, morecore) aligned to 
+        a page boundary. As said, I don't understand it 
+        yet.
 
-       To understand this, we have to revise how sbrk works and 
-       memory is handled by the system.
+      If MORECORE is not contiguous, this ensures that we 
+      only call it with whole-page arguments.
 
-      ~~ [REASON #1] ~~
-
-       sbrk takes a size argument and changes the program break.
-       - When positive, the program break is incremented.
-       - When negative, the program break is decremented.
-
-       Historically, sbrk always requested exact amount of
-       bytes from the physical RAM due to memory constraints.
-       This was before MMU and paging were a thing. This
-       positioned sbrk as a syscall that can request arbitrary
-       sizes from the kernel.
-
-       Modern hardware operates on physical page frames. As a
-       result, the kernel also manages memory in virtual pages.
-       - When we request a size which is not page aligned, like
-         100 bytes, the kernel still allocates a whole virtual
-         page. When an address associated to this page is used,
-         the kernel backs the whole page with physical memory.
-       - This turns a request of 100 bytes into a request of a
-         page size. The internal bookkeeping of the kernel is 
-         moved by a page, but the program break is not remains 
-         at (current+100) bytes, leaving 3996 bytes unused.
-         - In future calls, the kernel utilizes this space. If 
-           the request can fit in the current page, no page is 
-           allocated further. Only an updated program break is 
-           returned.
-         - When sbrk is not called again, this is basically dead
-           space which causes fragmentation and increases memory 
-           pressure.
-       - Aligning the final request to a page size (standard, or 
-         huge) is a way to deal with this.
-
-      ~~ [REASON #2] ~~
-
-       Issuing a syscall is expensive. The "context switch"
-       involves many steps, like saving the register state and
-       TLB eviction, to a name a few, making this transition
-       expensive. When the price is huge, it is natural to pay
-       it judiciously.
-       - When the size is not aligned, the kernel just returns
-         an increased program break. Nothing much changes.
-       - The price-to-return ratio is simply not making sense.
-         That's why, the effective size is aligned to a page
-         boundary and padding bytes are added to it so that we
-         can request more than what is required and can reduce
-         the number of syscalls and the overhead associated
-         with them.
-
-       We have managed fragmentation and syscall overhead, but
-       aligning the size to a page boundary comes with added
-       advantages. For example:
-       - We can convert several standard 4 KiB pages into a
-         single huge page of size 2 MiB (or more) using THP
-         (transparent huge pages). This reduces the number of 
-         entries in the TLB cache as well.
-       - We can use the madvise syscalll (memory advice) to 
-         hint the kernel about our use of memory. Like, when we 
-         are done with a specific range of addresses, we can hint 
-         the kernel to reclaim the physical memory or do whatever 
-         you want with that memory (both are different), among 
-         other options. */
-
-    /* If MORECORE is not contiguous, this ensures that we 
-       only call it with whole-page arguments. [BUT WHAT IS
-       THE POINT OF USING MORECORE IF IT IS NOT CONTIGUOUS
-       ANYMORE?]
-       If MORECORE is contiguous and this is not first time
-       through, this preserves page-alignment of previous
-       calls.
-       [ARTICULATE IT BETTER] */
+      If MORECORE is contiguous and this is not first time 
+      through, this preserves page-alignment of previous 
+      calls. */
 
     /* Ensure thp_pagesize is initialized. */
     thp_init();
