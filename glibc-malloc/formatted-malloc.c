@@ -2816,23 +2816,33 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
        `size`: the amount we will request from sbrk. */
     size = nb + mp_.top_pad + MINSIZE;
 
-    /* While sbrk itself is contiguous, a foreign sbrk, which 
-       is identified as a manual sbrk call made by the process, 
-       can disturb the contiguity of sbrk. The kernel ensures 
-       that mmap never does this by various means.
+    /* While sbrk itself is contiguous, a foreign sbrk, 
+       which is identified as a manual sbrk call made 
+       by the process, can disturb the contiguity of 
+       sbrk.
 
-       When this happens, we can not increase the program break 
-       directly. Therefore, we check if sbrk is contiguous. The 
-       NONCONTIGUOUS_BIT in (m-flags) represents what was true 
-       the last time. When the foreign sbrk happened between the 
-       last call and the current call, the status bit won't be 
-       updated and we will only know sbrk is not contiguous 
-       anymore by calling it. 
+       A foreign mmap() does not disturb the contiguity 
+       of the program break because it allocates memory 
+       in a separate virtual-memory region. Only another 
+       sbrk() call can move the program break and break 
+       the contiguity.
 
-       - If not contiguous, we don't subtract old_size from size. [WHY]
-       - If contiguous, we do subtract, but we wait until sbrk 
-         actually return contiguous memory. If it doesn't do that, 
-         we reverse this step. */
+       When this happens, we can not increase the program 
+       break directly. Therefore, we check if sbrk is 
+       contiguous.
+       - The NONCONTIGUOUS_BIT in (m->flags) represents 
+         whether the last MORECORE growth was contigious.
+       - If sbrk has not been called in recent times and 
+         a foreign sbrk has happened, the status bit won't 
+         be updated and the only we can know it has 
+         happened is by calling it. 
+
+       If not contiguous already, we don't subtract 
+       old_size from size. [WHY]
+
+       If contiguous, we do subtract, but we wait until sbrk 
+       actually return contiguous memory. If it doesn't, we 
+       undo this step. */
     if (contiguous(av))
       size -= old_size;
 
@@ -2851,40 +2861,30 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     /* Ensure thp_pagesize is initialized. */
     thp_init();
 
-    /* If huge pages are enabled, `size` is aligned up to the
-       next multiple of the huge page size. */
+    /* If huge pages are enabled, `size` is aligned up to 
+       the next multiple of the huge page size. Otherwise, 
+       use standard page size. */
     if (__glibc_unlikely (mp_.thp_pagesize != 0)){
       /* sbrk(0) returns the current program break. */
       uintptr_t lastbrk = (uintptr_t) MORECORE(0);
       uintptr_t top = ALIGN_UP(lastbrk + size, mp_.thp_pagesize);
       size = (top - lastbrk);
     }
-    /* If not, align `size` up to the next standard page
-       boundary. */
     else{
       size = ALIGN_UP(size, GLRO(dl_pagesize));
     }
     /* [STEP 1] Completed. */
 
 
-    /* [PATH 3A]:  */
+    /* [PATH 3A]: Call sbrk. */
 
-    /* sbrk takes a signed argument (intptr_t, or, long int). 
-       A positive argument increases the program break, while 
+    /* sbrk takes a signed 64-bit argument (intptr_t, i.e. long). 
+       A positive argument increases the program break, and
        a negative argument decreases it.
 
-       Based on what is inside `size` 
-       after the alignment math, we have to adjust how we use 
-       it, as `size` is a size_t variable but sbrk expects a 
-       signed argument. These are the possibilities.
-       1. If nb=PTRDIFF_MAX or near PTRDIFF_MAX, the calculation 
-          has already overflowed and with implicit typecasting, 
-          sbrk will receive a negative size.
-       2. If size < PTRDIFF_MAX and far from PTRDIFF_MAX, it is 
-          a valid positive argument.
-
-       To detect if overflow has occurred, we have to cast size 
-       manually into ssize_t and check it against 0. */
+       Because `size` is an unsigned quantity, we interpret it 
+       as a signed quantity to ensure it represents a positive 
+       value. */
     if ((ssize_t)(size) > 0){
       brk = (char*) MORECORE((long)(size));
       if (brk != (char*)(MORECORE_FAILURE))
@@ -2905,7 +2905,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       size_t fallback_size = nb + mp_.top_pad + MINSIZE;
       char *mbrk = MAP_FAILED;
 
-      /* [PATH (3A, 1)]: Use huge pages if enabled. */
+      /* [PATH (3B, 1)]: Use huge pages if enabled. */
       if (mp_.hp_pagesize > 0)
         mbrk = sysmalloc_mmap_fallback(
           &size, fallback_size,
@@ -2913,7 +2913,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
           mp_.hp_pagesize, mp_.hp_flags
         );
 
-      /* [PATH (3A, 2)]: Use standard page size. */
+      /* [PATH (3B, 2)]: Use standard page size. */
       if (mbrk == MAP_FAILED)
         mbrk = sysmalloc_mmap_fallback(
           &size, fallback_size,
