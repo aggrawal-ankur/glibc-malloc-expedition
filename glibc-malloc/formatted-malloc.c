@@ -3756,8 +3756,8 @@ __libc_malloc2 (size_t bytes)
   /* Obtain memory. */
   victim = _int_malloc(ar_ptr, bytes);
 
-  /* If _int_malloc failed but there are more arenas, try 
-     them out if any of them is usable. */
+  /* If _int_malloc failed but there are more arenas, 
+     try them out if any of them is usable. */
   if (!victim && ar_ptr != NULL){
     LIBC_PROBE(memory_malloc_retry, 1, bytes);
 
@@ -4382,15 +4382,36 @@ static void* _int_malloc(mstate av, size_t bytes)
     __set_errno (ENOMEM);
     return NULL;
   }
-
-  /* Convert the requested size to an internally usable form
-     (in accordance to the size and alignment model) using
-     request2size(sz). */
   nb = checked_request2size(bytes);
 
-  /* There are no usable arenas. Fall back to sysmalloc
-     to get a chunk from mmap. */
-  /* If there is no usable arena, we should rather set it up? */
+  /* [PATH 1]: If there are no usable arenas, we have to use 
+     mmap as there is no other option to fulfill this request.
+
+    [PRECONDITION]: _int_malloc is designed to operate on a 
+      valid arena and the caller is supposed to ensure it.
+
+    [HOW THE PRECONDITION IS ENSURED?]
+
+    1. __ptmalloc_init() initializes the allocator's state 
+       during libc startup, before normal requests are made. 
+       This includes the initialization of main_arena. As a 
+       result, when the first malloc() call is made, the 
+       main_arena has already been established.
+
+    2. In a multithreaded environment, a thread locks the 
+       arena before using it, preventing corruption of the 
+       allocator's state through concurrent access. It is 
+       possible that all the existing arenas are blocked by 
+       some threads. The caller waits until an arena is 
+       available again. It acquires and locks it, and calls 
+       _int_malloc.
+
+    Therefore, normal malloc() requests are expected to reach 
+    _int_malloc() with a valid arena. Nevertheless, we 
+    explicitly guard against (av==NULL) as an exceptional 
+    case and fall back to sysmalloc(), which eventually uses 
+    mmap() to service the request safely. */
+
   if (__glibc_unlikely(av == NULL)){
     void *p = sysmalloc(nb, av);
     if (p != NULL)
