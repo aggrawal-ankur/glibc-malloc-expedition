@@ -2269,17 +2269,23 @@ static void do_check_malloc_state(mstate av)
 
 /* ----------- Routines dealing with system allocation -------------- */
 
-/* Allocate a mmap chunk - used for large block sizes or as a fallback.
+/* Returns an mmapped chunk; used for large block 
+   sizes or as a fallback when (av==NULL).
    - Round the size up to the nearest page.
-   - Add padding if MALLOC_ALIGNMENT is larger than CHUNK_HDR_SZ. (This is ideally not possible, but need confirmation)
-   - Add CHUNK_HDR_SZ at the end so that mmap chunks have the same 
-   layout as regular chunks. */
+   - Add padding if MALLOC_ALIGNMENT is larger than 
+     CHUNK_HDR_SZ. (This is ideally not possible. 
+     Need clarification)
+   - Add CHUNK_HDR_SZ at the end so that mmap chunks 
+     have the same layout as regular chunks. */
 static void* sysmalloc_mmap(
   INTERNAL_SIZE_T nb, 
   size_t pagesize, 
   int extra_flags
 ){
-  size_t padding = MALLOC_ALIGNMENT - CHUNK_HDR_SZ;    /* Effectively 0, as both the macros have the same values in all the three configurations. BUT NEEDS CONFIRMATION.*/
+  size_t padding = MALLOC_ALIGNMENT - CHUNK_HDR_SZ;
+  /* Effectively 0, as both the macros have the same 
+     values in all the three configurations. [GDB] */
+
   size_t size = ALIGN_UP(nb + padding + CHUNK_HDR_SZ, pagesize);
 
   char *mm = (char*) MMAP(
@@ -2291,6 +2297,7 @@ static void* sysmalloc_mmap(
 
   if (mm == MAP_FAILED)
     return mm;
+
   if (extra_flags == 0)
     madvise_thp(mm, size);    /* [TODO]: Memory advise related. */
 
@@ -2316,10 +2323,8 @@ static void* sysmalloc_mmap(
   return chunk2mem(p);
 }
 
-/* Allocate memory using mmap() based on S and NB requested size,
-   aligning to PAGESIZE if required. The EXTRA_FLAGS is used on 
-   mmap() call. If the call succeeds, S is updated with the allocated 
-   size. This is used as a fallback if MORECORE fails. */
+/* It returns an mmapped memory. It is used as a 
+   fallback when sbrk can not be used. */
 static void* sysmalloc_mmap_fallback(
   size_t *s, 
   size_t size, 
@@ -2329,22 +2334,25 @@ static void* sysmalloc_mmap_fallback(
 ){
   size = ALIGN_UP(size, pagesize);
 
-  /* If we are relying on mmap as backup, then use larger units */
+  /* If we are relying on mmap as backup,
+     then use larger units. */
   if (size < minsize)
     size = minsize;
 
-  char *mbrk = (char*)MMAP(
+  char *mbrk = (char*) MMAP(
     NULL, 
     size,
     mtag_mmap_flags | PROT_READ | PROT_WRITE,
     extra_flags
   );
+
   if (mbrk == MAP_FAILED)
     return MAP_FAILED;
-  if (extra_flags == 0)
-    madvise_thp (mbrk, size);
 
-  *s = size;
+  if (extra_flags == 0)
+    madvise_thp(mbrk, size);
+
+  *s = size;  // updates with the actual size mmapped.
   return mbrk;
 }
 
@@ -2816,40 +2824,51 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
        `size`: the amount we will request from sbrk. */
     size = nb + mp_.top_pad + MINSIZE;
 
-    /* While sbrk itself is contiguous, a foreign sbrk, 
-       which is identified as a manual sbrk call made 
-       by the process, can disturb the contiguity of 
-       sbrk.
+    /* The memory obtained through program break expansion 
+       (sbrk) forms a contiguous region. But there are two 
+       threats to this contiguity. First is, a foreign sbrk.
 
-       A foreign mmap() does not disturb the contiguity 
-       of the program break because it allocates memory 
-       in a separate virtual-memory region. Only another 
-       sbrk() call can move the program break and break 
-       the contiguity.
+      Normally, the allocator is the interface for dynamic 
+      memory. It calls sbrk/mmap internally and services 
+      all the dynamic memory requests. Calling sbrk outside 
+      of the allocator moves the program break and invalidates 
+      the allocator's assumptions about the current program 
+      break and the top chunk. This is what a foreign sbrk is 
+      and does.
 
-       When this happens, we can not increase the program 
-       break directly. Therefore, we check if sbrk is 
-       contiguous.
-       - The NONCONTIGUOUS_BIT in (m->flags) represents 
-         whether the last MORECORE growth was contigious.
-       - If sbrk has not been called in recent times and 
-         a foreign sbrk has happened, the status bit won't 
-         be updated and the only we can know it has 
-         happened is by calling it. 
+      A foreign sbrk doesn't imply that the allocator's call 
+      to sbrk would fail. The allocator will not get memory 
+      starting from the expected program break. Therefore, 
+      we must check if sbrk is contiguous.
 
-       If not contiguous already, we don't subtract 
-       old_size from size. [WHY]
+      When loss of contiguity is detected, the NONCONTIGUOUS_BIT 
+      in (m->flags) is updated so that future growth is handled 
+      using the non-contiguous strategy.
 
-       If contiguous, we do subtract, but we wait until sbrk 
-       actually return contiguous memory. If it doesn't, we 
-       undo this step. */
+      [AN OBSERVATION]:
+      - We know that sbrk(0) returns the current program break. 
+        We can use that to compare it with the current top end 
+        and establish clarity on contiguity. So far, there are 
+        no traces of that happening.
+      - One possible explanation is that querying the current
+        program break first provides little benefit. If another
+        MORECORE call is required immediately afterward, the
+        first query may simply add overhead without reducing the
+        amount of work. We'll revisit this after exploring how
+        glibc actually detects and manages foreign sbrk events.
+
+      If not contiguous already, we don't subtract old_size 
+      from size. [WHY]
+
+      If contiguous, we do subtract, but we wait until sbrk 
+      actually return contiguous memory. If it doesn't, we 
+      undo this step. */
     if (contiguous(av))
       size -= old_size;
 
-    /* [NOTE]: It is the original glibc annotation about 
-        keeping the top (or better, morecore) aligned to 
-        a page boundary. As said, I don't understand it 
-        yet.
+    /* [NOTE]: It is the original annotation about keeping 
+        the top (or better, morecore) aligned to a page 
+        boundary. As said, I don't understand it yet.
 
       If MORECORE is not contiguous, this ensures that we 
       only call it with whole-page arguments.
@@ -2878,13 +2897,13 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
     /* [PATH 3A]: Call sbrk. */
 
-    /* sbrk takes a signed 64-bit argument (intptr_t, i.e. long). 
-       A positive argument increases the program break, and
-       a negative argument decreases it.
+    /* sbrk takes a signed 64-bit argument (intptr_t, 
+       i.e. long). A positive argument increases the 
+       program break, and a negative argument decreases it.
 
-       Because `size` is an unsigned quantity, we interpret it 
-       as a signed quantity to ensure it represents a positive 
-       value. */
+       Because `size` is an unsigned quantity, we interpret 
+       it as a signed quantity to ensure it represents a 
+       positive value. */
     if ((ssize_t)(size) > 0){
       brk = (char*) MORECORE((long)(size));
       if (brk != (char*)(MORECORE_FAILURE))
@@ -2893,16 +2912,64 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       LIBC_PROBE (memory_sbrk_more, 2, brk, size);
     }
 
+    /* [PATH-3A Analysis]
+        A successful sbrk() call indicates only one thing.
+         "The program break has been moved successfully".
+        It doesn't tell us whether the returned region 
+        is contiguous with the allocator's existing 
+        sbrk-managed region.
+
+        Similarly, a failed sbrk() call doesn't tell us 
+        the reason it failed. Maybe the request exceeded 
+        RLIMIT_DATA (the upper limit for data segment), or 
+        or RLIMIT_AS (the upper limit for virtual address 
+        space), or there is a "hole" in the address space 
+        preventing contiguous growth. It simply concludes 
+        that "memory could not be obtained via sbrk for 
+        this request".
+
+        What is a "hole" in the address space? It is the 
+        second threat to sbrk's contiguity. Let's understand.
+        - Suppose our program break is at 0x10000 (65536).
+        - A new mapping arrived at 0x14000 (81920).
+        - The difference between the program break and 
+          this new mapping is 0x4000 bytes (16384), i.e. 
+          four 4-KiB pages.
+        - As long as the extension fits under these four 
+          pages, the mapping doesn't prevent sbrk from 
+          growing the program break contiguously. However, 
+          beyond this, the kernel will refuse as there is 
+          another mapping out there.
+        - A hole is an unmapped gap between two VMAs. Such 
+          gaps are a normal consequence of the kernel 
+          managing many different types of mappings within 
+          a process's virtual address space.
+        - A hole is not a problem in itself. But it becomes 
+          a limitation when the requested program break 
+          extension is larger than the contiguous unmapped 
+          space before the next VMA.
+
+
+        The example above is not fictional. If a foreign mmap 
+        creates a mapping above the current program break, 
+        the unmapped gap between them is exactly the "hole" 
+        described above. */
+
+
+    /* [PATH 3B]: Use sysmalloc_mmap_fallback if path-3a 
+        failed.
+
+       Because memory could not be obtained via sbrk for 
+       this request, we try to use mmap. We ignore the 
+       mmap_threshold and max mmapped regions count as it 
+       is not used as a standalone mmapped chunk. */
 
     if (brk == (char*)(MORECORE_FAILURE)){
-      /* If have mmap, try using it as a backup when MORECORE fails 
-         or cannot be used. This is worth doing on systems that have 
-         "holes" in address space, so sbrk cannot extend to give 
-         contiguous space, but space is available elsewhere. Note 
-         that we ignore mmap max count and threshold limits, since 
-         the space will not be used as a segregated mmap region. */
-
+      /* Size to request. The actual size (after alignment) 
+         is assigned into `size`. */
       size_t fallback_size = nb + mp_.top_pad + MINSIZE;
+
+      /* Probably "mmap returned break". */
       char *mbrk = MAP_FAILED;
 
       /* [PATH (3B, 1)]: Use huge pages if enabled. */
@@ -2913,7 +2980,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
           mp_.hp_pagesize, mp_.hp_flags
         );
 
-      /* [PATH (3B, 2)]: Use standard page size. */
+      /* [PATH (3B, 2)]: Use standard page size if huge 
+          pages were not enabled, or that path failed. */
       if (mbrk == MAP_FAILED)
         mbrk = sysmalloc_mmap_fallback(
           &size, fallback_size,
@@ -2925,13 +2993,19 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       if (mbrk != MAP_FAILED){
         __set_vma_name(mbrk, fallback_size, " glibc: malloc");
 
-        /* Record that we no longer have a contiguous sbrk region. 
-           After the first time mmap is used as backup, we do not 
-           ever rely on contiguous space since this could incorrectly 
-           bridge regions. */
+        /* [REVISIT] */
+        /* The allocator no longer assumes future sbrk 
+           growth will be contiguous. After the first 
+           time mmap is used as backup, we do not ever 
+           rely on contiguous space as this could 
+           incorrectly bridge the regions. */
+
+        /* Update the NONCONTIGUOUS_BIT. */
         set_noncontiguous(av);
 
-        /* We do not need, and cannot use, another sbrk call to find end. */
+        /* [NO IDEA YET] */
+        /* We do not need, and cannot use, another sbrk call 
+           to find the end. */
         brk = mbrk;
         snd_brk = brk + size;
       }
