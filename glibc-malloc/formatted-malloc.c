@@ -2730,9 +2730,10 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
            is already aligned. So the alignment operation has no 
            effect, but it guarantees that the resulting chunk 
            satisfies the allocator's alignment invariant.
-         - If the top size was corrupted, alignment would reduce 
-           the size further and there will be some bytes that no 
-           longer belong to the top. They are carried by fencepost-1.
+         - However, if the top size was corrupted, alignment 
+           would reduce the size further and there will be some 
+           bytes that no longer belong to the top. They are carried 
+           by fencepost-1.
          - An ALIGN_DOWN operation is favored as an ALIGN_UP 
            operation would disturb the size calculation for 
            fencepost chunks. */
@@ -2886,7 +2887,12 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     if (__glibc_unlikely (mp_.thp_pagesize != 0)){
       /* sbrk(0) returns the current program break. */
       uintptr_t lastbrk = (uintptr_t) MORECORE(0);
+
+      /* The new program break after aligning the size to 
+         huge pages. */
       uintptr_t top = ALIGN_UP(lastbrk + size, mp_.thp_pagesize);
+
+      /* The final size. */
       size = (top - lastbrk);
     }
     else{
@@ -2894,6 +2900,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     }
     /* [STEP 1] Completed. */
 
+
+    /* [STEP 2]: Get new memory. */
 
     /* [PATH 3A]: Call sbrk. */
 
@@ -2905,6 +2913,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
        it as a signed quantity to ensure it represents a 
        positive value. */
     if ((ssize_t)(size) > 0){
+      /* Note: Upon success, sbrk returns the old program 
+         break. */
       brk = (char*) MORECORE((long)(size));
       if (brk != (char*)(MORECORE_FAILURE))
         madvise_thp(brk, size);
@@ -2912,7 +2922,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       LIBC_PROBE (memory_sbrk_more, 2, brk, size);
     }
 
-    /* [PATH-3A Analysis]
+    /* [PATH 3A Analysis]
         A successful sbrk() call indicates only one thing.
          "The program break has been moved successfully".
         It doesn't tell us whether the returned region 
@@ -3011,20 +3021,55 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       }
     }
 
+    /* [PATH 3B ANALYSIS]
+
+      If this path has failed, we have exhausted all the 
+      avenues and this request can not be served. The rest 
+      of the code is essentially a no-op to fall through. 
+      In the end, errno is set and NULL is returned.
+
+      If this path has succeeded, we have an mmap-backed 
+      region. */
+
+    /* [STEP 2] Completed. All the avenues are checked. */
+
+
+    /* [STEP 3]: Assess which path has succeeded and operate 
+        accordingly. */
+
+    /* If any of the path succeeded, brk will contain a 
+       valid pointer. */
     if (brk != (char*)(MORECORE_FAILURE)){
+      /* If malloc is called for the first time, store 
+         the base program break. [WHY] */
       if (mp_.sbrk_base == NULL)
         mp_.sbrk_base = brk;
 
+      /* Update the total memory the arena is managing. */
       av->system_mem += size;
 
-      /* If MORECORE extends previous space, we can likewise 
-      extend top size. */
+      /* [PATH 3A] succeeded with no foreign sbrk.
+
+        If old_end and brk points to the same address, and 
+        snd_brk is still pointing to MORECORE_FAILURE, no 
+        foreign sbrk has occurred and the program break 
+        extension is aligned with the allocator's internal 
+        bookkeeping. We can safely extend the top chunk. */
       if (
         brk == old_end && 
         snd_brk == (char*)(MORECORE_FAILURE)
       )
         set_head(old_top, (size + old_size) | PREV_INUSE);
 
+      /* [PATH 3A] succeeded with negative foreign sbrk.
+
+        If program break extension is contiguous so far, 
+        old_size is not corrupted (the top chunk is safe), 
+        and the program break returned by sbrk is behind 
+        the current top end, a foreign sbrk has reduced 
+        the program break negatively. In this situation, 
+        we simply terminate the process.
+      */
       else if (
         contiguous(av) && 
         old_size && 
@@ -3032,6 +3077,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       )
         /* Oops!  Someone else killed our space..  Can't touch anything. */
         malloc_printerr ("break adjusted to free malloc space");
+
 
       /* Otherwise, make adjustments:
 
@@ -3054,117 +3100,189 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
         front_misalign = 0;
         end_misalign   = 0;
         correction  = 0;
-        aligned_brk = brk;
+        aligned_brk = brk;    /* Initialize with the previous 
+                                 program break (the end of the 
+                                 foreign sbrk region)
 
-        /* handle contiguous cases. */
-        if (contiguous (av)){
-          /* Count foreign sbrk as system_mem. */
+        /* If program break was contiguous so far and foreign 
+           sbrk is detected for the first time. */
+        if (contiguous(av)){
+          /* Because the foreign sbrk is made by the process 
+             only, the allocator counts it in the system memory 
+             as well. But the gap is not treated as usable 
+             allocator space.
+
+             The foreign sbrk would have advanced the program 
+             break. When the allocator would call sbrk again, 
+             a successful call would have returned the old 
+             program break, which is the end of the foreign 
+             sbrk memory. When we subtract it from the old_end, 
+             which is the program break before the foreign sbrk 
+             was made, we get the number of bytes the foreign 
+             sbrk was called with. */
           if (old_size)
-            av->system_mem += brk - old_end;
+            av->system_mem += (brk - old_end);
 
-          /* Guarantee alignment of first new chunk made from this space. */
+
+          /* While the first sbrk call has already requested 
+             enough space to service the request, the second 
+             sbrk call is about restoring the top chunk. So, 
+             calculate the new bytes and store them inside 
+             `correction` */
+
+          /* The size of the foreign sbrk might not be aligned 
+             at a MALLOC_ALIGNMENT boundary, which is necessary 
+             for maintaining chunk integrity.
+
+             To tackle this, we have to move brk to the next 
+             MALLOC_ALIGNMENT boundary.
+             - We calculate how many bytes brk is misaligned from 
+               the previous alignment boundary. This is called 
+               front_misalign.
+             - We subtract front_misalign from MALLOC_ALIGNMENT to 
+               obtain the number of bytes brk is misaligned from 
+               the next boundary. The result is called `correction` 
+               bytes.
+             - Add correction to brk, we get the aligned_brk. 
+               Remember, it is aligned to a MALLOC_ALIGNMENT boundary, 
+               not a page boundary. It is easy to confuse as page 
+               alignment is what we are dealing with in malloc.
+             - For example, on 64-bit, if brk is 100, the previous 
+               MALLOC_ALIGNMENT boundary is 96. So, brk is 4 bytes 
+               front_misaligned.
+
+            [NOTE]: I don't understand why a complicated method is 
+             used. (brk + 2*SIZE_SZ) will be as much misaligned as 
+             `brk` is. Take brk=100.
+              - `brk + (2*SIZE_SZ)`. is (100 + 16) on 64-bit. And 
+                (116 & 15) is 4.
+              - If we do `brk & MALLOC_ALIGN_MASK` directly, we get, 
+                (100 & 15), i.e. 4. Exactly same output. */
+
           front_misalign = (INTERNAL_SIZE_T) chunk2mem(brk) & MALLOC_ALIGN_MASK;
           if (front_misalign > 0){
-
-            /* Skip over some bytes to arrive at an aligned position.
-            We don't need to specially mark these wasted front bytes.
-            They will never be accessed anyway because
-            prev_inuse of av->top (and any chunk created from its start)
-            is always true after initialization. */
             correction = MALLOC_ALIGNMENT - front_misalign;
             aligned_brk += correction;
           }
 
-          /* If this isn't adjacent to existing space, then we will not
-          be able to merge with old_top space, so must add to 2nd request. */
+          /* The new top will have the same space as the 
+             existing one. */
           correction += old_size;
 
-          /* Extend the end address to hit a page boundary */
+          /* (brk) is the address marking the end of the foreign 
+              sbrk extension.
+             (brk + size) brings us to the current program break.
+             (brk + size + correction) is where we will end up 
+              after adding correction to the current program break. 
+              The result is stored in end_misalign. */
           end_misalign = (INTERNAL_SIZE_T) (brk + size + correction);
-          correction += (ALIGN_UP (end_misalign, pagesize)) - end_misalign;
 
+          /* Align end_misalign to a standard page boundary and 
+             subtract end_misalign from it, we get the number 
+             of bytes end_misalign is far from the next "page 
+             boundary". Add this to correction to obtain the 
+             actual page aligned bytes to call sbrk with. */
+          correction += (ALIGN_UP(end_misalign, pagesize)) - end_misalign;
           assert(correction >= 0);
-          snd_brk = (char*)MORECORE(correction);
 
-          /* If can't allocate correction, try to at least find out 
-          current brk. It might be enough to proceed without failing.
+          /* Call sbrk with the new size. */
+          /* correction = (
+               ALIGN_UP(
+                 ((MALLOC_ALIGNMENT - front_misalign) +
+                 old_size +
+                 foreign_sbrk_size),
+                 pagesize
+               ) - 
+               foreign_sbrk_size
+             ) */
+          snd_brk = (char*) MORECORE(correction);
 
-          Note that if second sbrk did NOT fail, we assume that space
-          is contiguous with first sbrk. This is a safe assumption unless
-          program is multithreaded but doesn't use locks and a foreign 
-          sbrk occurred between our first and second calls. */
+          /* If can't allocate correction, try to at least 
+             find out current brk. It might be enough to 
+             proceed without failing.
+
+             Note that if second sbrk did NOT fail, we assume 
+             that space is contiguous with first sbrk. This is 
+             a safe assumption unless program is multithreaded 
+             but doesn't use locks and a foreign sbrk occurred 
+             between our first and second calls. */
           if (snd_brk == (char*)(MORECORE_FAILURE)){
-            correction = 0;
+            correction = 0;    // Reset correction
             snd_brk = (char*) MORECORE(0);
           }
           else
             madvise_thp (snd_brk, correction);
         }
 
-        /* handle non-contiguous cases */
+        /* The arena has already been marked as non-contiguous 
+           by previous malloc calls. */
         else{
+          /* This is always true on on 32-bit, 64-bit and 
+             INTERNAL_SIZE_T=4. So, the else block is 
+             effectively dead code. */
           if (MALLOC_ALIGNMENT == CHUNK_HDR_SZ){
             /* MORECORE/mmap must correctly align */
-            assert (((unsigned long) chunk2mem (brk) & MALLOC_ALIGN_MASK) == 0);
+            assert (((unsigned long) chunk2mem(brk) & MALLOC_ALIGN_MASK) == 0);
           }
           else{
             front_misalign = (INTERNAL_SIZE_T) chunk2mem(brk) & MALLOC_ALIGN_MASK;
             if (front_misalign > 0){
-
-              /* Skip over some bytes to arrive at an aligned position.
-              We don't need to specially mark these wasted front bytes.
-              They will never be accessed anyway because prev_inuse of 
-              av->top (and any chunk created from its start) is always 
-              true after initialization. */
-              aligned_brk += MALLOC_ALIGNMENT - front_misalign;
+              /* Skip over some bytes to arrive at an aligned 
+                 position. We don't need to specially mark these 
+                 wasted front bytes. They will never be accessed 
+                 anyway because prev_inuse of av->top (and any 
+                 chunk created from its start) is always true 
+                 after initialization. */
+              aligned_brk += (MALLOC_ALIGNMENT - front_misalign);
             }
           }
 
-          /* Find out current end of memory. */
+          /* Find the current end of the memory. */
           if (snd_brk == (char*)(MORECORE_FAILURE)){
             snd_brk = (char*) MORECORE(0);
           }
         }
 
-        /* Adjust top based on results of second sbrk. */
+        /* Adjust the top chunk based on the second sbrk. */
         if (snd_brk != (char*) (MORECORE_FAILURE)){
-          av->top = (mchunkptr)aligned_brk;
+          /* Setup the new top chunk starting from aligned_brk. 
+             The new top chunk starts from aligned_brk and 
+             contains both the `size` memory and `correction` 
+             memory. */
+          av->top = (mchunkptr)(aligned_brk);
           set_head(
             av->top, 
             (snd_brk - aligned_brk + correction) | PREV_INUSE
           );
+
+          /* Update the arena's total memory with correction bytes. */
           av->system_mem += correction;
 
-          /* If not the first time through, we either have a
-          gap due to foreign sbrk or a non-contiguous region. 
-          Insert a double fencepost at old_top to prevent 
-          consolidation with space we don't own. These fenceposts 
-          are artificial chunks that are marked as inuse and are 
-          in any case too small to use. We need two to make sizes 
-          and alignments work out. */
-          if (old_size != 0){
+          /* Insert double fencepost. 
+             A valid top chunk already has at least MINSIZE 
+             bytes, which is enough for two fenceposts.
 
-            /* Shrink old_top to insert fenceposts, keeping size a
-            multiple of MALLOC_ALIGNMENT. We know there is at least
-            enough space in old_top to do this. */
+             [NOTE]: If top size was (MINSIZE + MALLOC_ALIGNMENT),
+              like, 48 bytes on 64-bit, the old_top is not really 
+              a valid chunk anymore. */
+          if (old_size != 0){
             old_size = (old_size - 2 * CHUNK_HDR_SZ) & ~MALLOC_ALIGN_MASK;
             set_head (old_top, old_size | PREV_INUSE);
 
-
-            /* Note that the following assignments completely 
-            overwrite old_top when old_size was previously MINSIZE. 
-            This is intentional. We need the fencepost, even if 
-            old_top otherwise gets lost. */
+            /* Fencepost-1 */
             set_head(
               chunk_at_offset(old_top, old_size),
               CHUNK_HDR_SZ | PREV_INUSE
             );
+
+            /* Fencepost-2 */
             set_head(
               chunk_at_offset(old_top, old_size + CHUNK_HDR_SZ),
               CHUNK_HDR_SZ | PREV_INUSE
             );
 
-            /* If possible, release the rest. */
+            /* Regularize the old top and bin it to be used as a 
+               normal chunk. */
             if (old_size >= MINSIZE){
               _int_free_chunk(av, old_top, chunksize(old_top), 1);
             }
@@ -3174,29 +3292,34 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     }
   }
 
+  /* Update max_system_mem if applicable. */
   if ((unsigned long)(av->system_mem) > (unsigned long)(av->max_system_mem))
     av->max_system_mem = av->system_mem;
 
   check_malloc_state(av);
 
-  /* finally, do the allocation. */
+  /* Gather the top configuration. */
   p = av->top;
   size = chunksize(p);
 
-  /* check that one of the above allocation paths succeeded */
+  /* Check one of the allocation paths succeeded. */
   if ((unsigned long)(size) >= (unsigned long)(nb + MINSIZE)){
+    /* Subtract nb from the top chunk and update av->top. */
     remainder_size = (size - nb);
     remainder = chunk_at_offset(p, nb);
     av->top = remainder;
 
+    /* Update the metadata of the chunk to be returned. */
     set_head(p, nb | PREV_INUSE | (av != &main_arena ? NON_MAIN_ARENA : 0));
+
+    /* Update the metadata of the chunk. */
     set_head(remainder, remainder_size | PREV_INUSE);
 
     check_malloced_chunk(av, p, nb);
     return chunk2mem(p);
   }
 
-  /* catch all failure paths. */
+  /* Catch all failure paths. */
   __set_errno(ENOMEM);
   return NULL;
 }
