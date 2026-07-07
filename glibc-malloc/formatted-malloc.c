@@ -1092,9 +1092,9 @@ static size_t musable(void *mem);
 /* --------------- Chunk representations --------------- */
 
 /* This struct declaration is misleading (but accurate and 
-  necessary). It declares a "view" into memory allowing 
-  access to necessary fields at known offsets from a 
-  given base. */
+   necessary). It declares a "view" into memory allowing 
+   access to necessary fields at known offsets from a given 
+   base. */
 struct malloc_chunk {
 
   INTERNAL_SIZE_T      mchunk_prev_size;  /* Size of previous chunk (if free).  */
@@ -4927,108 +4927,108 @@ static void* _int_malloc(mstate av, size_t bytes)
       }
     }
 
-      /* Search for a chunk by scanning bins, starting with 
-      next largest bin. This search is strictly by best-fit; 
-      i.e., the smallest (with ties going to approximately 
-      the least recently used) chunk that fits is selected.
+    /* Search for a chunk by scanning bins, starting with 
+       next largest bin. This search is strictly by best-fit; 
+       i.e., the smallest (with ties going to approximately 
+       the least recently used) chunk that fits is selected.
 
-      The bitmap avoids needing to check that most blocks are 
-      nonempty. The particular case of skipping all bins during 
-      warm-up phases when no chunks have been returned yet is 
-      faster than it might look. */
+       The bitmap avoids needing to check that most blocks 
+       are nonempty. The particular case of skipping all 
+       bins during warm-up phases when no chunks have been 
+       returned yet is faster than it might look. */
 
-      ++idx;
-      bin = bin_at(av, idx);
-      block = idx2block(idx);
-      map = av->binmap[block];
-      bit = idx2bit(idx);
+    ++idx;
+    bin = bin_at(av, idx);
+    block = idx2block(idx);
+    map = av->binmap[block];
+    bit = idx2bit(idx);
 
-      for (;;){
-        /* Skip rest of block if there are no more set bits in this block. */
-        if (bit > map || bit == 0){
-          do{
-            if (++block >= BINMAPSIZE) /* out of bins */
-              goto use_top;
-          } while((map = av->binmap[block]) == 0);
+    for (;;){
+      /* Skip rest of block if there are no more 
+         set bits in this block. */
+      if (bit > map || bit == 0){
+        do {
+          if (++block >= BINMAPSIZE) /* out of bins */
+            goto use_top;
+        } while((map = av->binmap[block]) == 0);
 
-          bin = bin_at(av, (block << BINMAPSHIFT));
-          bit = 1;
-        }
-
-        /* Advance to bin with set bit. There must be one. */
-        while ((bit & map) == 0){
-          bin = next_bin(bin);
-          bit <<= 1;
-          assert (bit != 0);
-        }
-
-        /* Inspect the bin. It is likely to be non-empty. */
-        victim = last(bin);
-
-        /* If a false alarm (empty bin), clear the bit. */
-        if (victim == bin){
-          av->binmap[block] = map &= ~bit;  /* Write through */
-          bin = next_bin(bin);
-          bit <<= 1;
-        }
-
-        else{
-          size = chunksize(victim);
-
-          /*  We know the first chunk in this bin is big enough to use. */
-          assert ((unsigned long)(size) >= (unsigned long)(nb));
-          remainder_size = (size - nb);
-
-          /* unlink */
-          unlink_chunk(av, victim);
-
-          /* Exhaust */
-          if (remainder_size < MINSIZE){
-            set_inuse_bit_at_offset(victim, size);
-            if (av != &main_arena)
-    		    set_non_main_arena (victim);
-          }
-
-          /* Split */
-          else{
-            remainder = chunk_at_offset(victim, nb);
-
-            /* We cannot assume the unsorted list is empty and 
-            therefore have to perform a complete insert here. */
-            bck = unsorted_chunks(av);
-            fwd = bck->fd;
-
-            if (__glibc_unlikely (fwd->bk != bck))
-      		    malloc_printerr ("malloc(): corrupted unsorted chunks 2");
-
-            remainder->bk = bck;
-            remainder->fd = fwd;
-            bck->fd = remainder;
-            fwd->bk = remainder;
-
-            /* advertise as last remainder */
-            if (in_smallbin_range(nb))
-              av->last_remainder = remainder;
-
-            if (!in_smallbin_range(remainder_size)){
-              remainder->fd_nextsize = NULL;
-              remainder->bk_nextsize = NULL;
-            }
-
-            set_head(
-              victim, 
-              nb | PREV_INUSE | (av != &main_arena ? NON_MAIN_ARENA : 0)
-            );
-            set_head(remainder, remainder_size | PREV_INUSE);
-            set_foot(remainder, remainder_size);
-          }
-
-            check_malloced_chunk(av, victim, nb);
-            void *p = chunk2mem(victim);
-            alloc_perturb(p, bytes);
-            return p;
-        }
+        bin = bin_at(av, (block << BINMAPSHIFT));
+        bit = 1;
       }
+
+      /* Advance to bin with set bit. There must be one. */
+      while ((bit & map) == 0){
+        bin = next_bin(bin);
+        bit <<= 1;
+        assert (bit != 0);
+      }
+
+      /* Inspect the bin. It is likely to be non-empty. */
+      victim = last(bin);
+
+      /* If a false alarm (empty bin), clear the bit. */
+      if (victim == bin){
+        av->binmap[block] = map &= ~bit;  /* Write through */
+        bin = next_bin(bin);
+        bit <<= 1;
+      }
+      else{
+        size = chunksize(victim);
+
+        /*  We know the first chunk in this bin is big enough to use. */
+        assert ((unsigned long)(size) >= (unsigned long)(nb));
+        remainder_size = (size - nb);
+
+        /* unlink */
+        unlink_chunk(av, victim);
+
+        /* Exhaust */
+        if (remainder_size < MINSIZE){
+          set_inuse_bit_at_offset(victim, size);
+          if (av != &main_arena)
+          set_non_main_arena (victim);
+        }
+        /* Split */
+        else{
+          remainder = chunk_at_offset(victim, nb);
+
+          /* We cannot assume the unsorted list is empty and 
+          therefore have to perform a complete insert here. */
+          bck = unsorted_chunks(av);
+          fwd = bck->fd;
+
+          if (__glibc_unlikely (fwd->bk != bck))
+            malloc_printerr ("malloc(): corrupted unsorted chunks 2");
+
+          remainder->bk = bck;
+          remainder->fd = fwd;
+          bck->fd = remainder;
+          fwd->bk = remainder;
+
+          /* advertise as last remainder */
+          if (in_smallbin_range(nb))
+            av->last_remainder = remainder;
+
+          if (!in_smallbin_range(remainder_size)){
+            remainder->fd_nextsize = NULL;
+            remainder->bk_nextsize = NULL;
+          }
+
+          set_head(
+            victim, 
+            nb | PREV_INUSE | (av != &main_arena ? NON_MAIN_ARENA : 0)
+          );
+
+          set_head(remainder, remainder_size | PREV_INUSE);
+          set_foot(remainder, remainder_size);
+        }
+
+        check_malloced_chunk(av, victim, nb);
+        void *p = chunk2mem(victim);
+        alloc_perturb(p, bytes);
+        return p;
+      }
+    }
 
     use_top:
       /* If large enough, split off the chunk bordering the end of memory
