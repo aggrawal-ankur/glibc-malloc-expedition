@@ -1257,13 +1257,14 @@ struct malloc_chunk {
 #define misaligned_mem(m)    ((uintptr_t)(m) & MALLOC_ALIGN_MASK)
 #define misaligned_chunk(p)  (misaligned_mem(chunk2mem(p)))
 
+
 /* Align the request bytes to the allocator's size and 
-   alignment model. 
-   - Precondition: The input has already been validated.
-   - It only performs size normalization and reporting 
-     errors is out of its scope. */
-/* Note: This must be a macro that evaluates to a compile time 
-   constant if passed a literal constant. */
+   alignment model.
+   Precondition: The input has already been validated. It 
+   only performs size normalization and reporting errors 
+   is out of its scope. */
+/* [Org annotation] Note: This must be a macro that evaluates 
+   to a compile time constant if passed a literal constant. */
 #define request2size(req)  (  \
   (req + SIZE_SZ + MALLOC_ALIGN_MASK < MINSIZE)  \
   ? MINSIZE  \
@@ -1327,9 +1328,10 @@ checked_request2size(size_t req) __nonnull (1)
 #define chunk_is_mmapped(p)  ((p)->mchunk_size & IS_MMAPPED)
 
 
-/* size field is or'ed with NON_MAIN_ARENA if the chunk was 
-   obtained from a non-main arena. This is only set immediately
-   before handing the chunk to the user, if necessary. */
+/* size field is or'ed with NON_MAIN_ARENA if the chunk 
+   was obtained from a non-main arena. This is only set 
+   immediately before handing the chunk to the user, if 
+   necessary. */
 #define  NON_MAIN_ARENA  0x4
 
 /* Check for chunk from main arena. */
@@ -4403,9 +4405,10 @@ void* __libc_calloc (size_t n, size_t elem_size)
 
 static void* _int_malloc(mstate av, size_t bytes)
 {
-  INTERNAL_SIZE_T nb;               /* normalized request size */
-  unsigned int idx;                 /* associated bin index */
-  mbinptr bin;                      /* associated bin */
+  INTERNAL_SIZE_T nb;               /* Normalized request size. */
+  unsigned int idx;                 /* Bin number associated with nb. */
+  mbinptr bin;                      /* A pointer to fake chunk whose 
+                                       fd/bk align with the bin headers. */
 
   mchunkptr victim;                 /* inspected/selected chunk */
   INTERNAL_SIZE_T size;             /* victim's size */
@@ -4543,15 +4546,17 @@ static void* _int_malloc(mstate av, size_t bytes)
     return p;
   }
 
-  /* If a small request, check the right smallbin. This is
-     an exact fit path. */
+  /* [PATH 2]: If a small request, check the right 
+      smallbin. This is an exact fit path. */
   if (in_smallbin_range(nb)){
+    /* Obtain the bin number corresponding to the size. */
     idx = smallbin_index(nb);
+
+    /* Obtain the fake chunk pointer whose fd/bk align 
+       with the bin headers. */
     bin = bin_at(av, idx);
 
-    /* [CONDITION BLOCK EXPLAINER]: Take the chunk at bin->bk,
-       put it into victim and check if it is equal to bin. It
-       is about checking whether the bin is empty. */
+    /* Ensure the bin is non-empty. */
     if ((victim = last(bin)) != bin){
       bck = victim->bk;
 
@@ -4559,10 +4564,11 @@ static void* _int_malloc(mstate av, size_t bytes)
   	  if (__glibc_unlikely(bck->fd != victim))
         malloc_printerr ("malloc(): smallbin double linked list corrupted");
 
-      /* Update the PREV_INUSE bit of the next chunk after the
-         victim in the bin and update the links. */
-      /* [WHAT HAPPENS WHEN THE BIN HAS ONLY ONE CHUNK?] */
+      /* Update the PREV_INUSE bit of the chunk next to victim 
+         in memory. */
       set_inuse_bit_at_offset(victim, nb);
+
+      /* Update the bin links. */
       bin->bk = bck;
       bck->fd = bin;
 
@@ -4605,29 +4611,32 @@ static void* _int_malloc(mstate av, size_t bytes)
         }
 	    }
 #endif
+      /* Pointer to the payload memory. */
       void *p = chunk2mem(victim);
+
+      /* A debugging helper. */
       alloc_perturb(p, bytes);
+
+      /* Return the payload memory to the process. */
       return p;
     }
   }
 
+  /* [PATH 2] Analysis. 
+
+      If the request size was small, the corresponding 
+      smallbin is checked. If non-empty, a chunk is 
+      already returned.
+
+      If we are here, the possibilities are:
+      1. The smallbin was empty.
+      2. `nb` is not a small size, in which case, the 
+         else block is executed. */
+
+  /* If a large request, obtain the large bin index. */
   else{
     idx = largebin_index(nb);
   }
-
-  /* Process recently freed or remaindered chunks, taking one 
-  only if it is exact fit, or, if this a small request, the 
-  chunk is remainder from the most recent non-exact fit. 
-
-  Place other traversed chunks in bins. Note that this step 
-  is the only place in any routine where chunks are placed 
-  in bins.
-
-  The outer loop here is needed because we might not realize 
-  until near the end of malloc that we should have consolidated, 
-  so must do so and retry. This happens at most once, and only 
-  when we would otherwise need to expand memory to service a 
-  "small" request. */
 
 #if USE_TCACHE
   INTERNAL_SIZE_T tcache_nb = 0;
@@ -4640,48 +4649,88 @@ static void* _int_malloc(mstate av, size_t bytes)
   tcache_unsorted_count = 0;
 #endif
 
+  /*  */
   for (;;){
+    /* Iteration count. */
     int iters = 0;
+
+    /* [PATH 3]: Use the unsorted bin.
+
+      When a chunk is not fit to serve the request, 
+      it is binned. This is the only fn where chunks 
+      are binned. */
+
+
+    /* Start with the first chunk. */
     victim = unsorted_chunks(av)->bk;
 
+    /* Travel the unsorted bin start to end. */
     while(victim != unsorted_chunks(av)){
+      /* The chunk before the victim chunk in the 
+         unsorted bin. */
       bck = victim->bk;
+
+      /* Size of the victim chunk. */
       size = chunksize(victim);
+
+      /* The chunk after the victim chunk in memory. */
       mchunkptr next = chunk_at_offset(victim, size);
 
+      /* Consistency checks. */
+
+      /* [TEST 1]: The size of the victim chunk must be >= 
+         MINSIZE and less than the total memory managed by 
+         the arena. */
       if (
         __glibc_unlikely(size <= CHUNK_HDR_SZ) || 
         __glibc_unlikely(size > av->system_mem)
       )
         malloc_printerr("malloc(): invalid size (unsorted)");
 
+      /* [TEST 2]: The size of the chunk next to the victim 
+         chunk in memory must be >= MINSIZE and less than the 
+         total memory managed by the arena. */
       if (
         __glibc_unlikely(chunksize_nomask(next) < CHUNK_HDR_SZ) || 
         __glibc_unlikely(chunksize_nomask(next) > av->system_mem)
       )
         malloc_printerr("malloc(): invalid next size (unsorted)");
 
+      /* [TEST 3]: The prev_size of the next chunk must be equal 
+         to the size of the victim. */
       if (__glibc_unlikely(
         (prev_size(next) & ~(SIZE_BITS)) != size
       ))
         malloc_printerr("malloc(): mismatching next->prev_size (unsorted)");
 
+      /* [TEST 4]: The pointers in the unsorted bin must not be 
+         corrupted. */
       if (
         __glibc_unlikely(bck->fd != victim) || 
         __glibc_unlikely(victim->fd != unsorted_chunks(av))
       )
         malloc_printerr("malloc(): unsorted double linked list corrupted");
 
+      /* [TEST 5]: The PREV_INUSE bit of the next chunk must be set. */
       if (__glibc_unlikely(prev_inuse(next)))
         malloc_printerr("malloc(): invalid next->prev_inuse (unsorted)");
 
-      /* If a small request, try to use the last remainder 
-      if it is the only chunk in the unsorted bin. This 
-      helps promote locality for runs of consecutive small 
-      requests.
 
-      This is the only exception to best-fit, and applies 
-      only when there is no exact fit for a small chunk. */
+      /* [PATH 3A]: Use (av->last_remainder) if
+          1. nb is a small size,
+          2. the unsorted bin has only one chunk, 
+             which is also the last_remainder, and
+          3. the chunk has enough size to exist after 
+             splitting.
+
+        - Why small size only?
+        - What is the case with "last_remainder must be 
+          the only chunk in the unsorted bin"?
+
+        It is a best-fit path.
+
+        This helps promote locality for runs of consecutive 
+        small requests. */
 
       if (
         in_smallbin_range(nb) &&
@@ -4689,29 +4738,39 @@ static void* _int_malloc(mstate av, size_t bytes)
         victim == av->last_remainder &&
         (unsigned long)(size) > (unsigned long)(nb + MINSIZE)
       ){
-        /* split and reattach remainder */
+        /* Split the remainder. */
         remainder_size = (size - nb);
         remainder = chunk_at_offset(victim, nb);
+
+        /* Update the unsorted bin links and av->last_remainder. */
         unsorted_chunks(av)->bk = unsorted_chunks(av)->fd = remainder;
         av->last_remainder = remainder;
         remainder->bk = remainder->fd = unsorted_chunks(av);
 
+        /* If the resulting remainder is not a small chunk, 
+           set the skip list pointers NULL. */
         if (!in_smallbin_range(remainder_size)){
           remainder->fd_nextsize = NULL;
           remainder->bk_nextsize = NULL;
         }
 
+        /* Update the metadata of the victim chunk. */
         set_head(
           victim, 
           nb | PREV_INUSE | (av != &main_arena ? NON_MAIN_ARENA : 0)
         );
 
+        /* Update the metadata of the resulting remainder chunk. */
         set_head(
           remainder, 
           remainder_size | PREV_INUSE
         );
 
+        /* Update the prev_size of the chunk after the remainder 
+           chunk in memory. */
         set_foot(remainder, remainder_size);
+
+        /* A no-op unless debugging is enabled. */
         check_malloced_chunk(av, victim, nb);
 
         void *p = chunk2mem(victim);
@@ -4720,13 +4779,14 @@ static void* _int_malloc(mstate av, size_t bytes)
         return p;
       }
 
-      /* remove from unsorted list */
+      /* Remove the victim from the unsorted bin. */
       unsorted_chunks(av)->bk = bck;
       bck->fd = unsorted_chunks(av);
 
-      /* Take now instead of binning if exact fit */
+      /* [PATH 3B]: Take the victim if exact fit. */
       if (size == nb){
         set_inuse_bit_at_offset(victim, size);
+
         if (av != &main_arena)
       		set_non_main_arena(victim);
 
@@ -4748,6 +4808,7 @@ static void* _int_malloc(mstate av, size_t bytes)
 #endif
           check_malloced_chunk(av, victim, nb);
           void *p = chunk2mem(victim);
+
           alloc_perturb(p, bytes);
           return p;
 #if USE_TCACHE
@@ -4755,8 +4816,10 @@ static void* _int_malloc(mstate av, size_t bytes)
 #endif
       }
 
-      /* Place chunk in bin. Only splitting can put
-      small chunks into the unsorted bin. */
+      /* Because victim is unable to fulfill the request, 
+         bin it appropriately.
+
+         Why the smallbin path is wrapped in glibc_unlikely? */
       if (__glibc_unlikely(in_smallbin_range(size))){
         victim_index = smallbin_index(size);
         bck = bin_at(av, victim_index);
@@ -4767,33 +4830,40 @@ static void* _int_malloc(mstate av, size_t bytes)
         bck = bin_at(av, victim_index);
         fwd = bck->fd;
 
-        /* maintain large bins in sorted order */
+        /* A large bin contains chunks of multiple sizes, 
+           ordered by size, and we must maintain that. */
+
+        /* If the large bin has more than one chunk. */
         if (fwd != bck){
-          /* Or with inuse bit to speed comparisons */
+          /* Or with inuse bit to speed comparisons. */
           size |= PREV_INUSE;
 
-          /* if smaller than smallest, bypass loop below */
           assert(chunk_main_arena(bck->bk));
+
+          /* If the size of the victim is the smallest that 
+             this large bin manages, bypass the loop. */
           if ((unsigned long)(size) < (unsigned long)chunksize_nomask(bck->bk)){
             fwd = bck;
             bck = bck->bk;
 
+            /* Ensure the skip list pointers are not corrupted. */
             if (__glibc_unlikely(fwd->fd->bk_nextsize->fd_nextsize != fwd->fd))
               malloc_printerr ("malloc(): largebin double linked list corrupted (nextsize)");
 
+            /* Update the skip list pointers. */
             victim->fd_nextsize  = fwd->fd;
             victim->bk_nextsize  = fwd->fd->bk_nextsize;
             fwd->fd->bk_nextsize = victim->bk_nextsize->fd_nextsize = victim;
           }
           else{
-            assert (chunk_main_arena (fwd));
-            while ((unsigned long)size < chunksize_nomask(fwd)){
+            assert(chunk_main_arena(fwd));
+            while ((unsigned long)(size) < chunksize_nomask(fwd)){
               fwd = fwd->fd_nextsize;
       			  assert(chunk_main_arena(fwd));
             }
 
             /* Always insert in the second position. */
-            if ((unsigned long)size == (unsigned long)chunksize_nomask(fwd))
+            if ((unsigned long)(size) == (unsigned long)chunksize_nomask(fwd))
               fwd = fwd->fd;
 
             else{
@@ -4849,48 +4919,56 @@ static void* _int_malloc(mstate av, size_t bytes)
     }
 #endif
 
-    /* If a large request, scan through the chunks of the 
-    current bin in sorted order to find smallest that 
-    fits. Use the skip list for this. */
+    /* If a large request, scan through the chunks of 
+       the current bin in sorted order to find the 
+       smallest that fits. Use the skip list for this. */
 
-    if (!in_smallbin_range (nb)){
+    if (!in_smallbin_range(nb)){
       bin = bin_at(av, idx);
 
-
-      /* skip scan if empty or largest chunk is too small */
+      /* Ensure the bin is non-empty and the selected chunk 
+         has enough size. */
       if (
-        (victim = first (bin)) != bin && 
+        (victim = first(bin)) != bin && 
         (unsigned long)chunksize_nomask(victim) >= (unsigned long)(nb)
       ){
         victim = victim->bk_nextsize;
         while(
-          ((unsigned long)(size = chunksize (victim)) < (unsigned long)(nb))
+          ((unsigned long)(size = chunksize(victim)) < (unsigned long)(nb))
         )
           victim = victim->bk_nextsize;
 
-        /* Avoid removing the first entry for a size so that 
-        the skip list does not have to be rerouted. */
+        /* If there are multiple chunks of victim' size, 
+           use one them instead. This way, the skip list 
+           pointers are not required o be updated. */
         if (
           victim != last(bin) && 
           chunksize_nomask(victim) == chunksize_nomask(victim->fd)
         )
           victim = victim->fd;
 
+        /* Unlink the chunk. */
         remainder_size = (size - nb);
         unlink_chunk(av, victim);
 
-        /* Exhaust */
+        /* If the remainder < MINSIZE, the chunk can not 
+           exist after splitting, so we don't split and 
+           allocate completely. */
         if (remainder_size < MINSIZE){
-          set_inuse_bit_at_offset (victim, size);
+          set_inuse_bit_at_offset(victim, size);
+
           if (av != &main_arena){
-            set_non_main_arena (victim);
+            set_non_main_arena(victim);
           }
         }
-        /* Split */
+
+        /* If remainder > MINSIZE, we split the chunk. */
         else{
-          remainder = chunk_at_offset (victim, nb);
-          /* We cannot assume the unsorted list is empty and 
-          therefore have to perform a complete insert here. */
+          remainder = chunk_at_offset(victim, nb);
+
+          /* We cannot assume the unsorted list is empty 
+             and therefore have to perform a complete 
+             insert here. */
           bck = unsorted_chunks(av);
           fwd = bck->fd;
 
@@ -4902,6 +4980,8 @@ static void* _int_malloc(mstate av, size_t bytes)
           bck->fd = remainder;
           fwd->bk = remainder;
 
+          /* If the remainder size is large, set 
+             the skip list pointers. */
           if (!in_smallbin_range(remainder_size)){
             remainder->fd_nextsize = NULL;
             remainder->bk_nextsize = NULL;
@@ -5031,28 +5111,25 @@ static void* _int_malloc(mstate av, size_t bytes)
     }
 
     use_top:
-      /* If large enough, split off the chunk bordering the end of memory
-      (held in av->top). Note that this is in accord with the best-fit
-      search rule.  In effect, av->top is treated as larger (and thus
-      less well fitting) than any other available chunk since it can
-      be extended to be as large as necessary (up to system
-      limitations).
-
-      We require that av->top always exists (i.e., has size >=
-      MINSIZE) after initialization, so if it would otherwise be
-      exhausted by current request, it is replenished. (The main
-      reason for ensuring it exists is that we may need MINSIZE space
-      to put in fenceposts in sysmalloc.) */
+      /* If the top chunk in the arena has enough memory, split it. 
+         - This is in accord with the best-fit search rule.
+         - The top chunk is treated as larger (and thus less well 
+           fitting) than any other available chunk since it can be 
+           extended to be as large as necessary (up to the system's 
+           limitations). */
 
       victim = av->top;
       size = chunksize(victim);
 
+      /* Ensure the top chunk is not corrupted. */
       if (__glibc_unlikely (size > av->system_mem))
         malloc_printerr("malloc(): corrupted top size");
 
+      /* If the top_size >= (nb + MINSIZE), the top chunk can 
+         exist after servicing the request. */
       if ((unsigned long)(size) >= (unsigned long)(nb + MINSIZE)){
         remainder_size = (size - nb);
-        remainder = chunk_at_offset (victim, nb);
+        remainder = chunk_at_offset(victim, nb);
         av->top = remainder;
 
         set_head(
@@ -5067,7 +5144,8 @@ static void* _int_malloc(mstate av, size_t bytes)
         return p;
       }
 
-      /* Otherwise, relay to handle system-dependent cases. */
+      /* If top_size < (nb + MINSIZE), call sysmalloc to extend 
+         the top chunk. */
       else{
         void *p = sysmalloc(nb, av);
         if (p != NULL)
