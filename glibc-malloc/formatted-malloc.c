@@ -5194,14 +5194,10 @@ static void* _int_malloc(mstate av, size_t bytes)
       }
     }
 
-    use_top:
-      /* If the top chunk in the arena has enough memory, split it. 
-         - This is in accord with the best-fit search rule.
-         - The top chunk is treated as larger (and thus less well 
-           fitting) than any other available chunk since it can be 
-           extended to be as large as necessary (up to the system's 
-           limitations). */
 
+    /* [PATH]: Use the top chunk. */
+
+    use_top:
       victim = av->top;
       size = chunksize(victim);
 
@@ -5209,8 +5205,15 @@ static void* _int_malloc(mstate av, size_t bytes)
       if (__glibc_unlikely (size > av->system_mem))
         malloc_printerr("malloc(): corrupted top size");
 
-      /* If the top_size >= (nb + MINSIZE), the top chunk can 
-         exist after servicing the request. */
+      /* [PATH nA]: If the top chunk has enough memory to 
+          exist independently, split it.
+          - The top chunk is treated as larger (and thus less 
+            well fitting) than any other available chunk since 
+            it can be extended to be as large as necessary (up 
+            to the system's limitations).
+          - Therefore, it is in accord with the best-fit search 
+            rule. */
+
       if ((unsigned long)(size) >= (unsigned long)(nb + MINSIZE)){
         remainder_size = (size - nb);
         remainder = chunk_at_offset(victim, nb);
@@ -5228,8 +5231,8 @@ static void* _int_malloc(mstate av, size_t bytes)
         return p;
       }
 
-      /* If top_size < (nb + MINSIZE), call sysmalloc to extend 
-         the top chunk. */
+      /* [PATH nB]: Call sysmalloc and extent the top chunk if 
+         the top chunk doesn't have enough memory.  */
       else{
         void *p = sysmalloc(nb, av);
         if (p != NULL)
