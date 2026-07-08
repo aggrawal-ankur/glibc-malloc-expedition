@@ -4654,18 +4654,15 @@ static void* _int_malloc(mstate av, size_t bytes)
     /* Iteration count. */
     int iters = 0;
 
-    /* [PATH 3]: Use the unsorted bin.
-
-      When a chunk is not fit to serve the request, 
-      it is binned. This is the only fn where chunks 
-      are binned. */
+    /* [PATH 3]: Use the unsorted bin. */
 
 
-    /* Start with the first chunk. */
-    victim = unsorted_chunks(av)->bk;
-
-    /* Travel the unsorted bin start to end. */
-    while(victim != unsorted_chunks(av)){
+    /* Start with the first chunk in the unsorted bin and 
+       traverse the whole bin. */
+    while(
+      (victim = unsorted_chunks(av)->bk) 
+      != unsorted_chunks(av)
+    ){
       /* The chunk before the victim chunk in the 
          unsorted bin. */
       bck = victim->bk;
@@ -4715,22 +4712,59 @@ static void* _int_malloc(mstate av, size_t bytes)
       if (__glibc_unlikely(prev_inuse(next)))
         malloc_printerr("malloc(): invalid next->prev_inuse (unsorted)");
 
+      /* Notes about the consistency checks. 
+
+         Apart from the victim, the checks are performed on 
+         the chunk previous to the victim "in the bin" and 
+         the chunk next to the victim "in memory". The choice 
+         of words is careful.
+         - We start with the first chunk in the unsorted bin. 
+           Therefore, there is no chunk next to the victim in 
+           the first case. As we traverse, every chunk next 
+           to the victim is already analyzed. But we do need 
+           the next chunk "in memory" to ensure the prev_size 
+           metadata is correct.
+         - If the victim is not fit to service the request, it 
+           is binned appropriately. This requires accessing the 
+           chunk before the victim "in the bin". */
+
 
       /* [PATH 3A]: Use (av->last_remainder) if
           1. nb is a small size,
-          2. the unsorted bin has only one chunk, 
-             which is also the last_remainder, and
+          2. the unsorted bin has only one chunk, which is 
+             last_remainder, and
           3. the chunk has enough size to exist after 
              splitting.
 
-        - Why small size only?
-        - What is the case with "last_remainder must be 
-          the only chunk in the unsorted bin"?
+        The condition is very precise. The request must be 
+        small, the unsorted bin must contain exactly one 
+        chunk and that chunk must be `last_remainder`, and 
+        it must be large enough to remain valid after it 
+        undergoes splitting.
+        - The highlight of this path is the requirement that 
+          the unsorted bin must be singleton with 
+          last_remainder as its only chunk.
+        - Based on my reading of the source, I have not been 
+          able to justify this requirement. I have explored 
+          multiple lines of reasoning, but none of them led 
+          to a convincing explanation.
+        - Before concluding that a question can not be resolved, 
+          I always revisit dlmalloc in hope that it can provide 
+          some useful context. So far, that has not been the 
+          case. The corresponding code in dlmalloc@2.7.0 is 
+          effectively the same. See:
+            https://github.com/DenizThatMenace/dlmalloc
+        - When a piece of code survives decades of evolution,
+          it is reasonable to assume that it may have been
+          introduced with a sound rationale. However, that
+          rationale is not necessarily recoverable from the
+          current implementation alone. It is entirely possible
+          that the explanation exists and I simply have not
+          found it yet.
 
-        It is a best-fit path.
-
-        This helps promote locality for runs of consecutive 
-        small requests. */
+        So, as of July 08, 2026, I have exhausted the approaches 
+        I know to investigate this question and I don't have a 
+        definitive answer. */
 
       if (
         in_smallbin_range(nb) &&
@@ -4742,7 +4776,8 @@ static void* _int_malloc(mstate av, size_t bytes)
         remainder_size = (size - nb);
         remainder = chunk_at_offset(victim, nb);
 
-        /* Update the unsorted bin links and av->last_remainder. */
+        /* Update the unsorted bin links and av->last_remainder to 
+           point to the new remainder. */
         unsorted_chunks(av)->bk = unsorted_chunks(av)->fd = remainder;
         av->last_remainder = remainder;
         remainder->bk = remainder->fd = unsorted_chunks(av);
@@ -4806,6 +4841,7 @@ static void* _int_malloc(mstate av, size_t bytes)
         }
 	      else{
 #endif
+
           check_malloced_chunk(av, victim, nb);
           void *p = chunk2mem(victim);
 
@@ -4816,10 +4852,31 @@ static void* _int_malloc(mstate av, size_t bytes)
 #endif
       }
 
-      /* Because victim is unable to fulfill the request, 
-         bin it appropriately.
+      /* Because the victim is neither an exact fit nor the 
+         last_remainder, classify it into its appropriate bin.
 
-         Why the smallbin path is wrapped in glibc_unlikely? */
+        [OBSERVATION]
+        It is reasonable to think that every chunk in the 
+        unsorted bin must be given a chance to satisfy the 
+        current request. But the implementation seems to 
+        have a different policy.
+
+        Either the unsorted bin is singleton with its only 
+        chunk as the last_remainder, or the victim is an 
+        exact fit. Otherwise, the victim is classified and 
+        binned, even if it is large enough to satisfy the 
+        request.
+
+        Right now, victims are binned and later rediscovered 
+        through regular bin search, and I have no explanation 
+        regarding why it is better than directly using the 
+        victim while it is in the unsorted bin.
+
+        For me, this is one of those questions that have no 
+        visible starting point, making them much harder to 
+        reason about. */
+
+      /* Why the smallbin path is wrapped in glibc_unlikely? */
       if (__glibc_unlikely(in_smallbin_range(size))){
         victim_index = smallbin_index(size);
         bck = bin_at(av, victim_index);
