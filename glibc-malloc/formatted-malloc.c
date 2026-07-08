@@ -4876,7 +4876,34 @@ static void* _int_malloc(mstate av, size_t bytes)
         visible starting point, making them much harder to 
         reason about. */
 
-      /* Why the smallbin path is wrapped in glibc_unlikely? */
+      /* Why the smallbin path is wrapped in glibc_unlikely?
+         This is a relatively recent change. Here is the link: 
+          https://sourceware.org/git/?p=glibc.git;a=commit;h=e2436d6f5aa47ce8da80c2ba0f59dfb9ffde08f3
+
+        Before this, both small and large chunks went to the 
+        unsorted bin. As per the commit message, "there is no 
+        added-advantage to putting small chunks int the 
+        unsorted bin".
+
+        Later on, when the fastbins infrastructure was removed, 
+        malloc_consolidate() was removed too. This is also done 
+        recently. Here is the link: 
+          https://sourceware.org/git/?p=glibc.git;a=commit;h=e3062b06c5767f672baf9574c4d7cbebf7d0ee6e
+
+        Looking purely on the code, we can notice that the 
+         - freeing mechanism is designed to put small chunks 
+           directly in the corresponding small bin, while 
+           large chunks are placed in the unsorted and given 
+           a second chance on the next malloc request before 
+           binning.
+         - only way small chunks enter the unsorted bin is 
+           when a large chunk is split.
+
+        Therefore, the chances of the victim chunk being a 
+        small chunk are relatively low, so the allocator 
+        communicates this expectation to the compiler using 
+        __glibc_unlikely(). */
+
       if (__glibc_unlikely(in_smallbin_range(size))){
         victim_index = smallbin_index(size);
         bck = bin_at(av, victim_index);
