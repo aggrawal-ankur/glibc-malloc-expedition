@@ -5314,19 +5314,19 @@ static void _int_free_merge_chunk(
 
   /* Lightweight tests */
 
-  // [TEST 1]: Check whether the block is already the top block. */
+  /* [TEST 1]: Check whether the block is already the top block. */
   if (__glibc_unlikely(p == av->top))
     malloc_printerr("double free or corruption (top)");
 
-  // [TEST 2]: Check whether the next chunk is beyond the boundaries
-  // of the arena. */
+  /* [TEST 2]: Check whether the next chunk is beyond the 
+     boundaries of the arena. */
   if (__glibc_unlikely(
     contiguous(av) && 
     (char*)(nextchunk) >= ((char*)(av->top) + chunksize(av->top))
   ))
     malloc_printerr("double free or corruption (out)");
 
-  // [TEST 3]: Check whether the block is actually not marked used. */
+  /* [TEST 3]: Check whether the block is actually not marked used. */
   if (__glibc_unlikely(!prev_inuse(nextchunk)))
     malloc_printerr("double free or corruption (!prev)");
 
@@ -5383,10 +5383,11 @@ static void _int_free_merge_chunk(
   if (!prev_inuse(p)){
     INTERNAL_SIZE_T prevsize = prev_size(p);
 
-    // Add the size of `(p-1)` chunk in the size variable for chunk `p`.
+    /* Add the size of `(p-1)` and `p` chunks in the size 
+       variable of chunk `p`. */
     size += prevsize;
 
-    // Update `p` with the pointer to the `(p-1)` chunk.
+    /* Update `p` with the pointer to the `(p-1)` chunk. */
     p = chunk_at_offset(p, -((long)(prevsize)));
 
     if (__glibc_unlikely(chunksize(p) != prevsize))
@@ -5418,8 +5419,8 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
   /* [PATH 1]: The nextchunk isn't the top chunk. */
   if (nextchunk != av->top){
     /* get and clear inuse bit */
-    /* For forward consolidation, we need to identify if the `(p+1)` 
-       chunk is free or not. For this, we need to obtain the 
+    /* For forward consolidation, we need to identify if the 
+       `(p+1)` chunk is free. For this, we need to obtain the 
        PREV_INUSE bit of the `(p+2)` chunk. */
     /* [The description of this macro is confusing.] */
     bool nextinuse = inuse_bit_at_offset (nextchunk, nextsize);
@@ -5497,8 +5498,9 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
     check_free_chunk(av, p);
   }
 
-  /* [PATH 2]: If the nextchunk is the top chunk, consolidate it 
-     with the top chunk and update av->top to point to `p`. */
+  /* [PATH 2]: If the nextchunk is the top chunk, 
+     consolidate it with the top chunk and update 
+     av->top to point to `p`. */
   else{
     size += nextsize;
     set_head(p, size | PREV_INUSE);
