@@ -4904,10 +4904,17 @@ static void* _int_malloc(mstate av, size_t bytes)
         communicates this expectation to the compiler using 
         __glibc_unlikely(). */
 
+      /* [OBSERVATION]: We can notice "do no repeat yourself" 
+          or the DRY principle, in action. Both the branches 
+          effectively populate right values in fwd and bck 
+          variables and only the large bin updates the skip 
+          list pointers. The generic fd/bk pointers, which are 
+          common to both the paths are shared. */
       if (__glibc_unlikely(in_smallbin_range(size))){
         victim_index = smallbin_index(size);
         bck = bin_at(av, victim_index);
         fwd = bck->fd;
+        /* New chunks are always added in the front. */
       }
       else{
         victim_index = largebin_index(size);
@@ -4915,48 +4922,161 @@ static void* _int_malloc(mstate av, size_t bytes)
         fwd = bck->fd;
 
         /* A large bin contains chunks of multiple sizes, 
-           ordered by size, and we must maintain that. */
+           ordered by size. Therefore, insertion must 
+           maintain that. */
 
-        /* If the large bin has more than one chunk. */
+        /* If the bin is empty, we only have to update the 
+           skip list pointers as the generic pointers are 
+           shared. Therefore, the if-block ensures that the 
+           bin has at least one chunk. */
         if (fwd != bck){
           /* Or with inuse bit to speed comparisons. */
           size |= PREV_INUSE;
 
+          /* Chunks in the unsorted bin do not have the 
+             NON_MAIN_ARENA bit set. This compile-time 
+             assertion checks that. However, the macro's 
+             name and definition doesn't indicate what 
+             it is really doing. */
           assert(chunk_main_arena(bck->bk));
 
-          /* If the size of the victim is the smallest that 
-             this large bin manages, bypass the loop. */
-          if ((unsigned long)(size) < (unsigned long)chunksize_nomask(bck->bk)){
-            fwd = bck;
-            bck = bck->bk;
+          /* If the size of the victim is smaller than the 
+             the smallest chunk the large bin is currently 
+             having, bypass the loop. 
 
-            /* Ensure the skip list pointers are not corrupted. */
+             Remember, large bins are ordered in descending 
+             fashion. So the back pointer is where the 
+             smallest chunk is. If we take the first large 
+             bin in category #1, that is how it will look 
+             like: [1072, 1056, 1040, 1024]
+                   ^ fwd              bck ^ */
+
+          if ((unsigned long)(size) < (unsigned long)chunksize_nomask(bck->bk)){
+            /* [PERSONAL OPINION]: 
+               bck = bin_at(av, idx) is not very great cognitively. 
+               - The ouput of bin_at is a fake chunk whose fd/bk 
+                 overlap with the two ends of a bin. So, it is 
+                 better to represent it as a bin_handler.
+               - Variable names represent an author's personal 
+                 choice. So, it is not good to fight over that. We 
+                 will continue using the best solution we have, 
+                 i.e. comments. */
+
+            fwd = bck;          /* bin_handler */
+            bck = bck->bk;      /* bin_handler->bk,  i.e. the back end */
+
+            /* The error statement already proves that this check 
+               is about the correctness of the skip list pointers. 
+               If you are one of those people who is having a hard 
+               time comprehending it, let me join you.
+
+              Take this pyramid as an example.
+                fwd >         bin_handler
+                                   /\
+                                  /  \
+                                 /    \
+                                /      \
+                               /        \
+                              /          \
+                             /            \
+                            /              \
+                           /                \
+                          /                  \
+                         /                    \
+                         C1 <-> C2 <-> C3 <-> C4
+                         ^                     ^
+                      fwd->fd                   bck 
+
+              It shows what fwd, bck and fwd->fd imply after the 
+              above two assignments are done. To understand this 
+              check, we must understand how skip list pointers are 
+              managed. This has already been discussed in this lab 
+              [INSERT LINK]. If you are feeling rusty, visit it 
+              again.
+
+              To make it easier, we will restrict ourselves to the 
+              category #1 largebin on 64-bit that manages 4 chunks 
+              of sizes falling in the range [base+1, base+64], where 
+              base is the last size class managed by the previous 
+              bin. For the first bin in this cateogry, base will be 
+              1008 bytes.
+
+              Now start visualizing.
+              - If there are 4 chunks, all unique, 
+                - what will be the bk_nextsize of the first chunk? It will 
+                  be the chunk on the other end. Suppose it is X.
+                - what will be the fd_nextsize of X? It will be the chunk 
+                  on the other end, i.e. the first chunk.
+              - If there are 4 chunks of same size, let's say, 1040 bytes,
+                - what will be the first chunk's bk_nextsize? Suppose it is X.
+                - what will be the fd_nextsize of X? Both will be the first 
+                  chunk.
+              - what will fwd->fd represent? The first chunk. */
             if (__glibc_unlikely(fwd->fd->bk_nextsize->fd_nextsize != fwd->fd))
               malloc_printerr ("malloc(): largebin double linked list corrupted (nextsize)");
 
-            /* Update the skip list pointers. */
+            /* Because the incoming size is smaller than the 
+               smallest size available in this large bin, the 
+               large bin has no chunk of victim's 
+               size, so victim is uniquely sized, making its 
+               skip list pointers non-null. */
             victim->fd_nextsize  = fwd->fd;
             victim->bk_nextsize  = fwd->fd->bk_nextsize;
+
             fwd->fd->bk_nextsize = victim->bk_nextsize->fd_nextsize = victim;
           }
+
+          /* The comparison in the previous path can fail in 
+             two scenarios.
+             1. If the victim is not smaller than the smallest.
+             2. If the victim is a duplicate of the smallest 
+                size. */
+
+
+          /* We traverse the large bin in forward direction. 
+             - If a chunk of victim's size is not available 
+               already, we insert it at the position the loop 
+               is stopped.
+             - If a chunk of victim's size is already present, 
+               we are currently pointing to it after the loop 
+               is stopped. We insert the victim after this 
+               chunk. This is in accord with the allocator's 
+               policy of FIFO for duplicates. Basically, the 
+               first duplicate is the allocators choice to 
+               satisfy a request. If there are no duplicates, 
+               we use the unique chunk directly. */
           else{
             assert(chunk_main_arena(fwd));
+
             while ((unsigned long)(size) < chunksize_nomask(fwd)){
               fwd = fwd->fd_nextsize;
       			  assert(chunk_main_arena(fwd));
             }
 
-            /* Always insert in the second position. */
-            if ((unsigned long)(size) == (unsigned long)chunksize_nomask(fwd))
+            /* If it is a duplicate, skip setting the skip list 
+               pointers as they are already set NULL before they 
+               are pushed to the unsorted bin. The shared logic 
+               will insert this chunk after its unique counterpart, 
+               as discussed. */
+            if ((unsigned long)(size) == (unsigned long) chunksize_nomask(fwd))
               fwd = fwd->fd;
 
+            /* Because the victim is unique, we have to set the 
+               skip list pointers. */
             else{
+              /* The chunk previous to victim may or may not be 
+                 unique. But the chunk in fwd is is definitely a 
+                 unique one, so we use that to find the correct 
+                 skip list chunks for victim. */
               victim->fd_nextsize = fwd;
               victim->bk_nextsize = fwd->bk_nextsize;
 
+              /* Consistency check. We have already explored this 
+                 earlier. */
               if (__glibc_unlikely(fwd->bk_nextsize->fd_nextsize != fwd))
                 malloc_printerr ("malloc(): largebin double linked list corrupted (nextsize)");
 
+              /* Update the existing skip list pointers. */
               fwd->bk_nextsize = victim;
               victim->bk_nextsize->fd_nextsize = victim;
             }
@@ -4971,6 +5091,7 @@ static void* _int_malloc(mstate av, size_t bytes)
         }
       }
 
+      /* This is already simple. */
       mark_bin(av, victim_index);
       victim->bk = bck;
       victim->fd = fwd;
