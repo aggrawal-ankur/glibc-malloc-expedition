@@ -5124,28 +5124,96 @@ static void* _int_malloc(mstate av, size_t bytes)
     }
 #endif
 
-    /* If a large request, scan through the chunks of 
-       the current bin in sorted order to find the 
-       smallest that fits. Use the skip list for this. */
+    /* [PATH 4]: If a large request, scan through the 
+       chunks of the associated large bin.
+
+      Chunks are scanned from smallest to biggest size. 
+      The goal is to find the smallest chunk that can 
+      satisfy this request. The smallest size that can 
+      satisfy the request is the size itself. If not this, 
+      then the next greater size available in the bin.
+
+      Since every unique chunk is a part of the skip list, 
+      we utilize these pointers to find our smallest fit, 
+      instead of traversing chunk-by-chunk. If there are 
+      multiple chunks of that size, we use one of them 
+      instead of the unique one to prevent rerouting the 
+      skip list.
+
+      The annotations for "bins" under the "Internal data 
+      structures" section mentions that chunks of same size 
+      in a large bin follow FIFO ordering. So, new chunks 
+      are added in front and chunks are taken from back 
+      (the oldest chunk after the unique one) to satisfy 
+      the request. 
+      - Take this large bin as an example: 
+          [1072, 1056_u, 1056_d2, 1056_d1, 1040, 1024_u, 1024_d1]
+      - We have requested a 1056 bytes chunk. The chunk 
+        that will satisfy this request will be 1056_d1.
+
+      We will start from the forward end as it is always 
+      confirmed to contain a unique chunk and use its 
+      bk_nextsize pointer to go to the smallest chunk the 
+      bin has. We will loop over until the victim becomes 
+      >= (nb).
+      - The loop has stopped on a unique chunk. Now we have 
+        to find the oldest duplicate corresponding to the 
+        victim's size.
+      - That chunk is (victim->fd_nextsize)->bk. See? No 
+        searching is required. And the best part, if there 
+        was no duplicate, it will point to the unique 
+        chunk itself and with a simple branch, we can check 
+        if there are no duplicates. This is mandatory as we 
+        have to reroute the skip list in this case.
+
+
+      However, the current malloc doesn't do it. It takes 
+      the duplicate just after the unique chunk. And I have 
+      no answer to the "why". You can check out this lab to 
+      see it in action: [INSERT LINK].
+      - dlmalloc@2.7.0 uses a chunk-by-chunk traversal to 
+        land on the oldest duplicate. Read the line #3412 
+        here: 
+          https://github.com/DenizThatMenace/dlmalloc/blob/main/malloc-2.7.0.c
+      - Upon seeing the git blame for the line (victim = victim->fd), 
+        I have found that it was last changed 13 years ago 
+        when the source was "formatted to gnu style". The 
+        next was 19 years ago and then 25 years ago. The 25 
+        years ago version does exactly what we have discussed. 
+      - The 25 years ago version closely resembles what 
+        dlmalloc@2.7.0 did.
+      - These are the links to the git blames. Note that I 
+        have used the bminor/glibc mirror on GitHub as the 
+        sourceware interface is kinda hard to use. But that 
+        doesn't change the point,
+
+          Mirror Link: https://github.com/bminor/glibc
+          #13y ago: https://github.com/bminor/glibc/blame/master/malloc/malloc.c#L4159C16-L4159C16 (line #4159)
+          #19y ago: https://github.com/bminor/glibc/blame/9a3c6a6ff602c88d7155139a7d7d0000b7b7e946/malloc/malloc.c (line #3491)
+          #25y ago: https://github.com/bminor/glibc/blame/e53f0f51a62061e0c654d4b2f82d4c71b4d71932/malloc/malloc.c (line #4242)
+    */
 
     if (!in_smallbin_range(nb)){
+      /* We have already obtained the index of the 
+         corresponding large bin, so we can directly 
+         obtain the bin handler. */
       bin = bin_at(av, idx);
 
-      /* Ensure the bin is non-empty and the selected chunk 
-         has enough size. */
       if (
         (victim = first(bin)) != bin && 
         (unsigned long)chunksize_nomask(victim) >= (unsigned long)(nb)
       ){
+        /* Start with the smallest available chunk. */
         victim = victim->bk_nextsize;
+
+        /* Stop when the victim becomes >= the required size. */
         while(
           ((unsigned long)(size = chunksize(victim)) < (unsigned long)(nb))
         )
           victim = victim->bk_nextsize;
 
-        /* If there are multiple chunks of victim' size, 
-           use one them instead. This way, the skip list 
-           pointers are not required o be updated. */
+        /* Take the chunk next to victim if a duplicate 
+           is available. */
         if (
           victim != last(bin) && 
           chunksize_nomask(victim) == chunksize_nomask(victim->fd)
@@ -5156,9 +5224,7 @@ static void* _int_malloc(mstate av, size_t bytes)
         remainder_size = (size - nb);
         unlink_chunk(av, victim);
 
-        /* If the remainder < MINSIZE, the chunk can not 
-           exist after splitting, so we don't split and 
-           allocate completely. */
+        /* Exhaust. */
         if (remainder_size < MINSIZE){
           set_inuse_bit_at_offset(victim, size);
 
@@ -5166,11 +5232,11 @@ static void* _int_malloc(mstate av, size_t bytes)
             set_non_main_arena(victim);
           }
         }
-
-        /* If remainder > MINSIZE, we split the chunk. */
+        /* Or, split. */
         else{
           remainder = chunk_at_offset(victim, nb);
 
+          /* [?] */
           /* We cannot assume the unsorted list is empty 
              and therefore have to perform a complete 
              insert here. */
@@ -5185,8 +5251,8 @@ static void* _int_malloc(mstate av, size_t bytes)
           bck->fd = remainder;
           fwd->bk = remainder;
 
-          /* If the remainder size is large, set 
-             the skip list pointers. */
+          /* If the remainder is large, set the skip list 
+             pointers NULL. */
           if (!in_smallbin_range(remainder_size)){
             remainder->fd_nextsize = NULL;
             remainder->bk_nextsize = NULL;
