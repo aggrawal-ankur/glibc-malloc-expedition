@@ -34,15 +34,20 @@
 # endif
 #endif
 
-/* HEAP_MIN_SIZE and HEAP_MAX_SIZE limit the size of mmap()ed heaps
-   that are dynamically created for multi-threaded programs.  The
-   maximum size must be a power of two, for fast determination of
-   which heap belongs to a chunk.  It should be much larger than the
-   mmap threshold, so that requests with a size just below that
-   threshold can be fulfilled without creating too many heaps.  */
+/* HEAP_MIN_SIZE and HEAP_MAX_SIZE limits the size 
+   of mmapped heaps that are dynamically created 
+   for multi-threaded programs.
+   - The maximum size must be a power of two, for 
+     fast determination of which heap belongs to a 
+     chunk.
+   - It should be much larger than the mmap threshold, 
+     so that requests with a size just below that
+     threshold can be fulfilled without creating too 
+     many heaps. 
 
-/* HEAP_MAX_SIZE should be larger than the huge page size, otherwise heaps will
-   use not huge pages.  It is a constant so arena_for_chunk() is efficient.  */
+   HEAP_MAX_SIZE should be larger than the huge page 
+   size, otherwise heaps will use not huge pages. It 
+   is a constant so arena_for_chunk() is efficient. */
 
 static __always_inline size_t
 heap_min_size (void)
@@ -63,13 +68,13 @@ heap_max_size (void)
   return HEAP_MAX_SIZE;
 }
 
-/***************************************************************************/
 
 #define top(ar_ptr) ((ar_ptr)->top)
 
-/* A heap is a single contiguous memory region holding (coalesceable)
-   malloc_chunks. It is allocated with mmap() and always starts at an
-   address aligned to HEAP_MAX_SIZE. */
+/* A heap is a single contiguous memory region 
+   holding (coalesceable) malloc_chunks. It is 
+   allocated with mmap() and always starts at 
+   an address aligned to HEAP_MAX_SIZE. */
 typedef struct _heap_info
 {
   mstate ar_ptr;              /* Arena for this heap. */
@@ -77,29 +82,34 @@ typedef struct _heap_info
   size_t size;                /* The total memory the process is actively using. This is shrinkable. */
   size_t mprotect_size;       /* The memory that has been mprotected with read/write permissions 
                                  (PROT_READ | PROT_WRITE). This is non-shrinkable. */
+
   /* [RELATIONSHIP]: size <= mprotect_size */
 
   size_t pagesize;            /* Page size used when allocating the arena. */
 
-  /* Make sure the following data is properly aligned, particularly that 
-     sizeof(heap_info) + 2 * SIZE_SZ is a multiple of MALLOC_ALIGNMENT. */
+  /* Make sure the following data is properly aligned, 
+     particularly that (sizeof(heap_info) + 2 * SIZE_SZ) 
+     is a multiple of MALLOC_ALIGNMENT. */
   char pad[-3 * SIZE_SZ & MALLOC_ALIGN_MASK];
 } heap_info;
 
-/* Get a compile-time error if the heap_info padding is not 
-   correct to make alignment work as expected in sYSMALLOc. */
+/* Get a compile-time error if the heap_info padding 
+   is not correct to make alignment work as expected 
+   in sYSMALLOc. */
 extern int sanity_check_heap_info_alignment[
   (sizeof(heap_info) + 2 * SIZE_SZ) % MALLOC_ALIGNMENT ? -1 : 1
 ];
 
-/* Thread specific data.  */
+/* Thread specific data. */
 
 static __thread mstate thread_arena attribute_tls_model_ie;
 
-/* Arena free list.  free_list_lock synchronizes access to the
-   free_list variable below, and the next_free and attached_threads
-   members of struct malloc_state objects.  No other locks must be
-   acquired after free_list_lock has been acquired.  */
+/* Arena free list.
+   - free_list_lock synchronizes access to the free_list 
+     variable below, and the next_free and attached_threads
+     members of struct malloc_state objects.
+   - No other locks must be acquired after free_list_lock 
+     is acquired. */
 
 __libc_lock_define_initialized (static, free_list_lock);
 #if IS_IN (libc)
@@ -107,31 +117,30 @@ static size_t narenas = 1;
 #endif
 static mstate free_list;
 
-/* list_lock prevents concurrent writes to the next member of struct
-   malloc_state objects.
+/* list_lock prevents concurrent writes to the next member 
+   of struct malloc_state objects.
 
-   Read access to the next member is supposed to synchronize with the
-   atomic_write_barrier and the write to the next member in
-   _int_new_arena.  This suffers from data races; see the FIXME
-   comments in _int_new_arena and reused_arena.
+   Read access to the next member is supposed to synchronize 
+   with the atomic_write_barrier and the write to the next 
+   member in _int_new_arena. This suffers from data races; 
+   see the FIXME comments in _int_new_arena and reused_arena.
 
-   list_lock also prevents concurrent forks.  At the time list_lock is
-   acquired, no arena lock must have been acquired, but it is
-   permitted to acquire arena locks subsequently, while list_lock is
-   acquired.  */
+   list_lock also prevents concurrent forks. At the time 
+   list_lock is acquired, no arena lock must have been 
+   acquired, but it is permitted to acquire arena locks 
+   subsequently, while list_lock is acquired. */
 __libc_lock_define_initialized (static, list_lock);
 
-/**************************************************************************/
 
-
-/* arena_get() acquires an arena and locks the corresponding mutex.
-   First, try the one last locked successfully by this thread.  (This
-   is the common case and handled with a macro for speed.)  Then, loop
-   once over the circularly linked list of arenas.  If no arena is
-   readily available, create a new one.  In this latter case, `size'
-   is just a hint as to how much memory will be required immediately
-   in the new arena. */
-
+/* arena_get() acquires an arena and locks the corresponding 
+   mutex.
+   - First, try the one last locked successfully by this 
+     thread. This is the common case and handled with a 
+     macro for speed. Then, loop once over the circularly 
+     linked list of arenas.
+   - If no arena is readily available, create a new one. In 
+     this latter case, `size` is just a hint as to how much 
+     memory will be required immediately in the new arena. */
 #define arena_get(ptr, size)    do {  \
     ptr = thread_arena;               \
     arena_lock (ptr, size);           \
@@ -144,7 +153,7 @@ __libc_lock_define_initialized (static, list_lock);
       ptr = arena_get2 ((size), NULL);    \
   } while (0)
 
-/* find the heap and corresponding arena for a given ptr. */
+/* Find the heap and corresponding arena for a given ptr. */
 static __always_inline heap_info*
 heap_for_ptr (void *ptr)
 {
@@ -162,20 +171,22 @@ arena_for_chunk (mchunkptr ptr)
 }
 
 
-/**************************************************************************/
+
 
 /* atfork support.  */
 
-/* The following three functions are called around fork from a
-   multi-threaded process.  We do not use the general fork handler
-   mechanism to make sure that our handlers are the last ones being
-   called, so that other fork handlers can use the malloc
-   subsystem.  */
+/* The following three functions are called around 
+   fork from a multi-threaded process. We do not use 
+   the general fork handler mechanism to make sure 
+   that our handlers are the last ones being called, 
+   so that other fork handlers can use the malloc 
+   subsystem. */
 
 void __malloc_fork_lock_parent(void)
 {
-  /* We do not acquire free_list_lock here because we completely
-     reconstruct free_list in __malloc_fork_unlock_child.  */
+  /* We do not acquire free_list_lock here because 
+     we completely reconstruct free_list in 
+     __malloc_fork_unlock_child. */
   __libc_lock_lock (list_lock);
 
   for (mstate ar_ptr = &main_arena; ; )
@@ -258,7 +269,7 @@ static void tcache_key_initialize (void);
 void __ptmalloc_init(void){
 
 #if USE_TCACHE
-  tcache_key_initialize ();
+  tcache_key_initialize();
 #endif
 
 #ifdef USE_MTAG
@@ -361,8 +372,9 @@ static void dump_heap(heap_info *heap)
    multiple threads, but only one will succeed.  */
 static char *aligned_heap_area;
 
-/* Create a new heap. `size` is automatically rounded up 
-   to a multiple of the page size. */
+/* Create a new heap segment. `size` is 
+   automatically rounded up to a multiple 
+   of the page size. */
 static heap_info* alloc_new_heap(
   size_t size, size_t top_pad, 
   size_t pagesize, int mmap_flags
@@ -390,7 +402,7 @@ static heap_info* alloc_new_heap(
   else
     size = max_size;
 
-  size = ALIGN_UP (size, pagesize);
+  size = ALIGN_UP(size, pagesize);
 
   /* ....[STEP 1].... */
 
@@ -641,22 +653,28 @@ static int shrink_heap(heap_info *h, long diff)
 {
   long new_size;
 
-  new_size = (long) h->size - diff;
-  if (new_size < (long) sizeof (*h))
+  new_size = (long)h->size - diff;
+  if (new_size < (long) sizeof(*h))
     return -1;
 
   /* Try to re-map the extra heap space freshly to save memory, and make it
      inaccessible.  See malloc-sysdep.h to know when this is true.  */
-  if (__glibc_unlikely (check_may_shrink_heap ()))
-    {
-      if ((char *) MMAP ((char *) h + new_size, diff, PROT_NONE,
-                         MAP_FIXED) == (char *) MAP_FAILED)
-        return -2;
+  if (__glibc_unlikely(check_may_shrink_heap()))
+  {
+    if ((char*) MMAP(
+      (char*)h + new_size,
+      diff,
+      PROT_NONE,
+      MAP_FIXED
+    ) == (char*) MAP_FAILED)
+      return -2;
 
-      h->mprotect_size = new_size;
-    }
+    h->mprotect_size = new_size;
+  }
+
   else
-    __madvise ((char *) h + new_size, diff, MADV_DONTNEED);
+    __madvise ((char*)(h) + new_size, diff, MADV_DONTNEED);
+
   /*fprintf(stderr, "shrink %p %08lx\n", h, new_size);*/
 
   h->size = new_size;
@@ -668,18 +686,21 @@ static int shrink_heap(heap_info *h, long diff)
 static int heap_trim(heap_info *heap, size_t pad)
 {
   mstate ar_ptr = heap->ar_ptr;
-  mchunkptr top_chunk = top (ar_ptr), p;
+  mchunkptr top_chunk = top(ar_ptr), p;
+
   heap_info *prev_heap;
   long new_size, top_size, top_area, extra, prev_size, misalign;
+
   size_t max_size = heap_max_size ();
 
   /* Can this heap go away completely? */
-  while (top_chunk == chunk_at_offset (heap, sizeof (*heap)))
-    {
-      prev_heap = heap->prev;
-      prev_size = prev_heap->size - (MINSIZE - 2 * SIZE_SZ);
-      p = chunk_at_offset (prev_heap, prev_size);
-      /* fencepost must be properly aligned.  */
+  while (top_chunk == chunk_at_offset(heap, sizeof(*heap)))
+  {
+    prev_heap = heap->prev;
+    prev_size = prev_heap->size - (MINSIZE - 2 * SIZE_SZ);
+    p = chunk_at_offset (prev_heap, prev_size);
+
+    /* fencepost must be properly aligned.  */
       misalign = ((long) p) & MALLOC_ALIGN_MASK;
       p = chunk_at_offset (prev_heap, prev_size - misalign);
       assert (chunksize_nomask (p) == (0 | PREV_INUSE)); /* must be fencepost */
@@ -759,8 +780,7 @@ detach_arena (mstate replaced_arena)
     }
 }
 
-static mstate
-_int_new_arena (size_t size)
+static mstate _int_new_arena (size_t size)
 {
   mstate a;
   heap_info *h;
@@ -885,8 +905,7 @@ remove_from_free_list (mstate arena)
 /* Lock and return an arena that can be reused for memory allocation.
    Avoid AVOID_ARENA as we have already failed to allocate memory in
    it and it is currently locked.  */
-static mstate
-reused_arena (mstate avoid_arena)
+static mstate reused_arena (mstate avoid_arena)
 {
   mstate result;
   /* FIXME: Access to next_to_use suffers from data races.  */
@@ -950,99 +969,101 @@ static mstate
 arena_get2 (size_t size, mstate avoid_arena)
 {
   mstate a;
-
   static size_t narenas_limit;
 
-  a = get_free_list ();
-  if (a == NULL)
-    {
-      /* Nothing immediately available, so generate a new arena.  */
-      if (narenas_limit == 0)
-        {
-          if (mp_.arena_max != 0)
-            narenas_limit = mp_.arena_max;
-          else if (narenas > mp_.arena_test)
-            {
-              int n = __get_nprocs ();
+  a = get_free_list();
+  if (a == NULL){
+    /* Nothing immediately available, so generate a new arena.  */
+    if (narenas_limit == 0){
+      if (mp_.arena_max != 0)
+        narenas_limit = mp_.arena_max;
 
-              if (n >= 1)
-                narenas_limit = NARENAS_FROM_NCORES (n);
-              else
-                /* We have no information about the system.  Assume two
-                   cores.  */
-                narenas_limit = NARENAS_FROM_NCORES (2);
-            }
+      else if (narenas > mp_.arena_test){
+        int n = __get_nprocs ();
+
+        if (n >= 1)
+          narenas_limit = NARENAS_FROM_NCORES (n);
+        else{
+          /* We have no information about the system.  Assume two
+          cores.  */
+          narenas_limit = NARENAS_FROM_NCORES (2);
         }
-    repeat:;
-      size_t n = narenas;
-      /* NB: the following depends on the fact that (size_t)0 - 1 is a
-         very large number and that the underflow is OK.  If arena_max
-         is set the value of arena_test is irrelevant.  If arena_test
-         is set but narenas is not yet larger or equal to arena_test
-         narenas_limit is 0.  There is no possibility for narenas to
-         be too big for the test to always fail since there is not
-         enough address space to create that many arenas.  */
-      if (__glibc_unlikely (n <= narenas_limit - 1))
-        {
-          if (atomic_compare_and_exchange_bool_acq (&narenas, n + 1, n))
-            goto repeat;
-          a = _int_new_arena (size);
-	  if (__glibc_unlikely (a == NULL))
-            atomic_fetch_add_relaxed (&narenas, -1);
-        }
-      else
-        a = reused_arena (avoid_arena);
+      }
     }
+
+    repeat:;
+
+    size_t n = narenas;
+
+    /* NB: the following depends on the fact that (size_t)0 - 1 is a
+       very large number and that the underflow is OK.  If arena_max
+       is set the value of arena_test is irrelevant.  If arena_test
+       is set but narenas is not yet larger or equal to arena_test
+       narenas_limit is 0.  There is no possibility for narenas to
+       be too big for the test to always fail since there is not
+       enough address space to create that many arenas.  */
+
+    if (__glibc_unlikely(n <= narenas_limit - 1)){
+      if (atomic_compare_and_exchange_bool_acq(&narenas, n + 1, n))
+        goto repeat;
+
+      a = _int_new_arena(size);
+      if (__glibc_unlikely(a == NULL))
+        atomic_fetch_add_relaxed(&narenas, -1);
+    }
+
+    else
+      a = reused_arena(avoid_arena);
+  }
+
   return a;
 }
 
-/* If we don't have the main arena, then maybe the failure is due to running
-   out of mmapped areas, so we can try allocating on the main arena.
-   Otherwise, it is likely that sbrk() has failed and there is still a chance
-   to mmap(), so try one of the other arenas.  */
+/* If we don't have the main arena, then maybe the failure is due to 
+   running out of mmapped areas, so we can try allocating on the main 
+   arena. Otherwise, it is likely that sbrk() has failed and there is 
+   still a chance to mmap(), so try one of the other arenas.  */
 static mstate
 arena_get_retry (mstate ar_ptr, size_t bytes)
 {
   LIBC_PROBE (memory_arena_retry, 2, bytes, ar_ptr);
   __libc_lock_unlock (ar_ptr->mutex);
-  if (ar_ptr != &main_arena)
-    {
-      ar_ptr = &main_arena;
-      __libc_lock_lock (ar_ptr->mutex);
-    }
-  else
-    {
-      ar_ptr = arena_get2 (bytes, ar_ptr);
-    }
+
+  if (ar_ptr != &main_arena){
+    ar_ptr = &main_arena;
+    __libc_lock_lock(ar_ptr->mutex);
+  }
+  else{
+    ar_ptr = arena_get2(bytes, ar_ptr);
+  }
 
   return ar_ptr;
 }
 #endif
 
-void
-__malloc_arena_thread_freeres (void)
+void __malloc_arena_thread_freeres(void)
 {
   /* Shut down the thread cache first.  This could deallocate data for
      the thread arena, so do this before we put the arena on the free
      list.  */
-  tcache_thread_shutdown ();
+  tcache_thread_shutdown();
 
   mstate a = thread_arena;
   thread_arena = NULL;
 
-  if (a != NULL)
-    {
-      __libc_lock_lock (free_list_lock);
-      /* If this was the last attached thread for this arena, put the
-	 arena on the free list.  */
-      assert (a->attached_threads > 0);
-      if (--a->attached_threads == 0)
-	{
-	  a->next_free = free_list;
-	  free_list = a;
-	}
-      __libc_lock_unlock (free_list_lock);
+  if (a != NULL){
+    __libc_lock_lock (free_list_lock);
+
+    /* If this was the last attached thread for this arena, put the
+    arena on the free list.  */
+    assert (a->attached_threads > 0);
+    if (--a->attached_threads == 0){
+      a->next_free = free_list;
+      free_list = a;
     }
+
+    __libc_lock_unlock (free_list_lock);
+  }
 }
 
 /*

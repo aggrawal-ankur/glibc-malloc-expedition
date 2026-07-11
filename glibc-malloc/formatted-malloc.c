@@ -290,28 +290,37 @@
   Setting MALLOC_DEBUG does NOT provide an automated mechanism for
   checking that all accesses to malloced memory stay within their
   bounds. However, there are several add-ons and adaptations of this
-  or other mallocs available that do this.
-*/
+  or other mallocs available that do this. */
 
 #ifndef MALLOC_DEBUG
 #define MALLOC_DEBUG 0
 #endif
 
 #if USE_TCACHE
-/* We want 64 entries. This is an arbitrary
-limit, which tunables can reduce. */
-#define  TCACHE_SMALL_BINS  64
-#define  TCACHE_LARGE_BINS  12 /* Up to 4M chunks */
-#define  TCACHE_MAX_BINS	  (TCACHE_SMALL_BINS + TCACHE_LARGE_BINS)
-#define  MAX_TCACHE_SMALL_SIZE  tidx2csize(TCACHE_SMALL_BINS-1)
 
-#define  tidx2csize(idx)	(((size_t)idx) * MALLOC_ALIGNMENT + MINSIZE)
-#define  tidx2usize(idx)	(((size_t)idx) * MALLOC_ALIGNMENT + MINSIZE - SIZE_SZ)
+/* TCACHE_SMALL_BINS is a tunable parameter. */
+#define  TCACHE_SMALL_BINS  64
+
+/* TCACHE_LARGE_BINS is fixed. */
+#define  TCACHE_LARGE_BINS  12  /* Up to 4M chunks */
+
+/* Total count of tcache bins.*/
+#define  TCACHE_MAX_BINS	  (TCACHE_SMALL_BINS + TCACHE_LARGE_BINS)
+
+/* The upper ceiling for a size to be small. */
+#define  MAX_TCACHE_SMALL_SIZE    tidx2csize(TCACHE_SMALL_BINS-1)
+
+/* Thread index to chunk size. */
+#define  tidx2csize(idx)	(((size_t)(idx)) * MALLOC_ALIGNMENT + MINSIZE)
+
+/* Thread index to usable size. */
+#define  tidx2usize(idx)	(((size_t)(idx)) * MALLOC_ALIGNMENT + MINSIZE - SIZE_SZ)
 
 /* When "x" is from chunksize(). */
+/* Chunk size to thread index.*/
 #define  csize2tidx(x)  ((x - MINSIZE) / MALLOC_ALIGNMENT)
 
-/* When "x" is a user-provided size. */
+/* User requested size to thread index. */
 #define  usize2tidx(x)  csize2tidx(checked_request2size(x))
 
 /* With rounding and alignment, the bins are...
@@ -320,13 +329,14 @@ limit, which tunables can reduce. */
    idx 2 -> bytes 41..56 or 21..28
    etc. */
 
-/* This is another arbitrary limit, which tunables can change.
-   Each tcache bin will hold at most this number of chunks. */
+/* Each tcache bin will hold at most this number 
+   of chunks. It is a tunable parameter. */
 #define  TCACHE_FILL_COUNT 16
 
-/* Maximum chunks in tcache bins for tunables. This value 
-   must fit the range of tcache->num_slots[] entries, 
-   else they may overflow. */
+/* This is the upper ceiling for TCACHE_FILL_COUNT 
+   for tuning it. This value must fit the range of 
+   tcache->num_slots[] entries, else they may 
+   overflow. */
 #define  MAX_TCACHE_COUNT  UINT16_MAX
 #endif
 
@@ -1242,7 +1252,7 @@ struct malloc_chunk {
 #define chunk2mem(p)  ((void*) ((char*)(p) + CHUNK_HDR_SZ))
 
 /* Convert a chunk address to a user mem pointer and extract the right tag. */
-#define chunk2mem_tag(p)  ((void*)tag_at ((char*)(p) + CHUNK_HDR_SZ))
+#define chunk2mem_tag(p)  ((void*) tag_at((char*)(p) + CHUNK_HDR_SZ))
 
 /* Convert a user mem pointer to a chunk address and extract the right tag. */
 #define mem2chunk(mem)  ((mchunkptr)tag_at (((char*)(mem) - CHUNK_HDR_SZ)))
@@ -1335,10 +1345,10 @@ checked_request2size(size_t req) __nonnull (1)
 #define  NON_MAIN_ARENA  0x4
 
 /* Check for chunk from main arena. */
-#define chunk_main_arena(p)  (((p)->mchunk_size & NON_MAIN_ARENA) == 0)
+#define  chunk_main_arena(p)  (((p)->mchunk_size & NON_MAIN_ARENA) == 0)
 
 /* Mark a chunk as not being on the main arena. */
-#define set_non_main_arena(p)  ((p)->mchunk_size |= NON_MAIN_ARENA)
+#define  set_non_main_arena(p)  ((p)->mchunk_size |= NON_MAIN_ARENA)
 
 
 /* Bits to mask off when extracting size.
@@ -1715,14 +1725,14 @@ static void unlink_chunk (mstate av, mchunkptr p)
    during traversals.
 
   It help compensating for the large number of bins,
-   enabling bin-by-bin searching.
+  enabling bin-by-bin searching.
 
   The bits are NOT always cleared as soon as bins are 
   empty, but instead only when they are noticed to be 
-  empty during traversal in malloc.
-*/
+  empty during traversal in malloc. */
 
-/* Conservatively use 32 bits per map word, even if on 64-bit system */
+/* Conservatively use 32 bits per map word, even if on
+   64-bit system */
 #define BINMAPSHIFT    5
 #define BITSPERMAP     (1U << BINMAPSHIFT)
 #define BINMAPSIZE     (NBINS / BITSPERMAP)
@@ -1814,7 +1824,7 @@ struct malloc_par
   INTERNAL_SIZE_T hp_pagesize;
   int hp_flags;
 
-  /* Memory map support */
+  /* Memory map support. */
   int n_mmaps;
   int n_mmaps_max;
   int max_n_mmaps;
@@ -1827,17 +1837,21 @@ struct malloc_par
   INTERNAL_SIZE_T mmapped_mem;
   INTERNAL_SIZE_T max_mmapped_mem;
 
-  /* First address handed out by MORECORE/sbrk.  */
+  /* First address handed out by MORECORE/sbrk. */
   char *sbrk_base;
 
 #if USE_TCACHE
-  /* Maximum number of small buckets to use.  */
+  /* Maximum number of small buckets to use. */
   size_t tcache_small_bins;
+
   size_t tcache_max_bytes;
-  /* Maximum number of chunks in each bucket.  */
+
+  /* Maximum number of chunks in each bucket. */
   size_t tcache_count;
-  /* Maximum number of chunks to remove from the unsorted list, which
-     aren't used to prefill the cache.  */
+
+  /* Maximum number of chunks to remove from the 
+     unsorted list, which aren't used to prefill 
+     the cache. */
   size_t tcache_unsorted_limit;
 #endif
 };
@@ -1880,8 +1894,8 @@ static struct malloc_par mp_ =
 };
 
 /* Initialize a malloc_state struct. It is called 
-from __ptmalloc_init() or from _int_new_arena() 
-when creating a new arena. */
+   from __ptmalloc_init() or from _int_new_arena() 
+   when creating a new arena. */
 static void malloc_init_state(mstate av)
 {
   int i;
@@ -1898,11 +1912,11 @@ static void malloc_init_state(mstate av)
 #endif
     set_noncontiguous(av);
 
-  /* Make the top chunk point to bin_at(M, 1), so 
+  /* Make the top chunk point to bin_at(M, 1) so 
      that standard operations like chunksize(top) 
      yield zero for the first malloc call. This 
-     ensures no special-casing is required to handle 
-     the first malloc request. */
+     eliminates the special-casing that is required 
+     to handle the first malloc request. */
   av->top = initial_top(av);
 }
 
@@ -1915,7 +1929,7 @@ static int   systrim(size_t, mstate);
 /* ---------- Early definitions for debugging hooks ---------- */
 
 /* This function is called from the arena shutdown 
-   hook, to free the thread cache (if it exists). */
+   hook to free the thread cache (if it exists). */
 static void tcache_thread_shutdown(void);
 
 /* ------------------ Testing support ------------------ */
@@ -3337,12 +3351,12 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
    - It returns 1 if it actually released any memory, else 0. */
 static int systrim(size_t pad, mstate av)
 {
-  long top_size;         /* Amount of top-most memory */
-  long extra;            /* Amount to release */
-  long released;         /* Amount actually released */
-  char *current_brk;     /* address returned by pre-check sbrk call */
-  char *new_brk;         /* address returned by post-check sbrk call */
-  long top_area;
+  long  top_size;        /* Amount of top-most memory */
+  long  extra;           /* Amount to release */
+  long  released;        /* Amount actually released */
+  char* current_brk;     /* address returned by pre-check sbrk call */
+  char* new_brk;         /* address returned by post-check sbrk call */
+  long  top_area;
 
   top_size = chunksize(av->top);
   top_area = (top_size - MINSIZE - 1);
@@ -3361,7 +3375,7 @@ static int systrim(size_t pad, mstate av)
 
   /* Only proceed if end of memory is where we last set it.
      This avoids problems if there were foreign sbrk calls. */
-  current_brk = (char*)MORECORE(0);
+  current_brk = (char*) MORECORE(0);
   if (current_brk == (char*)(av->top) + top_size){
 
     /* Attempt to release memory. We ignore MORECORE return value,
@@ -3406,8 +3420,10 @@ static void munmap_chunk(mchunkptr p)
      compliance with the page size.  But gcc does not recognize 
      the optimization possibility (in the moment at least) so we 
      combine the two values into one before the bit test. */
-  if (__glibc_unlikely ((block | total_size) & (pagesize - 1)) != 0
-      || __glibc_unlikely (!powerof2 (mem & (pagesize - 1))))
+  if (
+    __glibc_unlikely((block | total_size) & (pagesize - 1)) != 0 ||
+    __glibc_unlikely(!powerof2(mem & (pagesize - 1)))
+  )
     malloc_printerr ("munmap_chunk(): invalid pointer");
 
   atomic_fetch_add_relaxed (&mp_.n_mmaps, -1);
@@ -3470,21 +3486,25 @@ static mchunkptr mremap_chunk (mchunkptr p, size_t new_size)
 
 #if USE_TCACHE
 
-/* We overlay this structure on the user-data portion of a chunk when
-   the chunk is stored in the per-thread cache.  */
+/* We overlay this structure on the user-data portion 
+   of a chunk when the chunk is stored in the per-thread 
+   cache. */
 typedef struct tcache_entry
 {
   struct tcache_entry *next;
-  /* This field exists to detect double frees.  */
+
+  /* This field exists to detect double frees. */
   uintptr_t key;
 } tcache_entry;
 
-/* There is one of these for each thread, which contains the
-   per-thread cache (hence "tcache_perthread_struct").  Keeping
-   overall size low is mildly important.  The 'entries' field is linked list of
-   free blocks, while 'num_slots' contains the number of free blocks that can
-   be added.  Each bin may allow a different maximum number of free blocks,
-   and can be disabled by initializing 'num_slots' to zero.  */
+/* There is one of these for each thread, which contains 
+   the per-thread cache (hence "tcache_perthread_struct").
+   - Keeping overall size low is mildly important.
+   - The 'entries' field is a linked list of free blocks, 
+     while 'num_slots' contains the number of free blocks 
+     that can be added. Each bin may allow a different 
+     maximum number of free blocks, and can be disabled by 
+     initializing 'num_slots' to zero. */
 typedef struct tcache_perthread_struct
 {
   uint16_t num_slots[TCACHE_MAX_BINS];
@@ -3501,58 +3521,66 @@ static const union
   };
 } __tcache_dummy;
 
-/* TCACHE is never NULL; it's either "live" or points to one of the
-   above dummy entries.  The dummy entries are all zero so act like an
-   empty/unusable tcache.  */
+/* TCACHE is never NULL; it's either "live" or points 
+   to one of the above dummy entries. The dummy 
+   entries are all zero so act like an empty/unusable 
+   tcache. */
 static __thread tcache_perthread_struct *tcache =
   (tcache_perthread_struct *) &__tcache_dummy.inactive;
 
-/* This is the default, and means "check to see if a real tcache
-   should be allocated."  */
+/* This is the default, and means "check to see if a 
+   real tcache should be allocated."  */
 static __always_inline bool
 tcache_inactive (void)
 {
   return (tcache == &__tcache_dummy.inactive);
 }
 
-/* This means "the user has disabled the tcache but we have to point
-   to something."  */
+/* This means "the user has disabled the tcache but we 
+   have to point to something."  */
 static __always_inline bool
 tcache_disabled (void)
 {
   return (tcache == &__tcache_dummy.disabled);
 }
 
-/* This means the tcache is active.  */
+/* This means the tcache is active. */
 static __always_inline bool
 tcache_enabled (void)
 {
-  return (! tcache_inactive () && ! tcache_disabled ());
+  return (!tcache_inactive() && !tcache_disabled());
 }
 
-/* Sets the tcache to DISABLED state.  */
+/* Sets the tcache to DISABLED state. */
 static __always_inline void
 tcache_set_disabled (void)
 {
-  tcache = (tcache_perthread_struct *) &__tcache_dummy.disabled;
+  tcache = (tcache_perthread_struct*)(&__tcache_dummy.disabled);
 }
 
-/* Process-wide key to try and catch a double-free in the same thread.  */
+/* Process-wide key to try and catch a double-free 
+   in the same thread. */
 static uintptr_t tcache_key;
 
-/* The value of tcache_key does not really have to be a cryptographically
-   secure random number.  It only needs to be arbitrary enough so that it does
-   not collide with values present in applications.  If a collision does happen
-   consistently enough, it could cause a degradation in performance since the
-   entire list is checked to check if the block indeed has been freed the
-   second time.  The odds of this happening are exceedingly low though, about 1
-   in 2^wordsize.  There is probably a higher chance of the performance
-   degradation being due to a double free where the first free happened in a
-   different thread; that's a case this check does not cover.  */
+/* The value of tcache_key does not really have to 
+   be a cryptographically secure random number. It 
+   only needs to be arbitrary enough so that it does
+   not collide with values present in applications.
+   - If a collision does happen consistently enough, 
+     it could cause a degradation in performance since 
+     the entire list is checked to check if the block 
+     indeed has been freed the second time.
+   - The odds of this happening are exceedingly low 
+     though, about 1 in 2^wordsize. There is probably 
+     a higher chance of the performance degradation 
+     being due to a double free where the first free 
+     happened in a different thread; that's a case 
+     this check does not cover. */
 static void tcache_key_initialize (void)
 {
-  /* We need to use the _nostatus version here, see BZ 29624.  */
-  if (__getrandom_nocancel_nostatus_direct (
+  /* We need to use the _nostatus version here, 
+  see BZ 29624.  */
+  if (__getrandom_nocancel_nostatus_direct(
       &tcache_key, 
       sizeof(tcache_key),
       GRND_NONBLOCK
@@ -3560,23 +3588,25 @@ static void tcache_key_initialize (void)
   )
     tcache_key = 0;
 
-  /* We need tcache_key to be non-zero (otherwise tcache_double_free_verify's
-     clearing of e->key would go unnoticed and it would loop getting called
-     through __libc_free), and we want tcache_key not to be a
-     commonly-occurring value in memory, so ensure a minimum amount of one and
-     zero bits.  */
+  /* We need tcache_key to be non-zero (otherwise 
+     tcache_double_free_verify's clearing of e->key 
+     would go unnoticed and it would loop getting 
+     called through __libc_free), and we want 
+     tcache_key not to be a commonly-occurring value 
+     in memory, so ensure a minimum amount of one and
+     zero bits. */
   int minimum_bits = __WORDSIZE / 4;
   int maximum_bits = __WORDSIZE - minimum_bits;
 
   while (
     tcache_key <= 0x1000000 || 
-    tcache_key >= ((uintptr_t) ULONG_MAX) - 0x1000000 || 
-    stdc_count_ones (tcache_key) < minimum_bits || 
-    stdc_count_ones (tcache_key) > maximum_bits
+    tcache_key >= ((uintptr_t)(ULONG_MAX)) - 0x1000000 || 
+    stdc_count_ones(tcache_key) < minimum_bits || 
+    stdc_count_ones(tcache_key) > maximum_bits
   ){
-    tcache_key = random_bits ();
+    tcache_key = random_bits();
 #if __WORDSIZE == 64
-    tcache_key = (tcache_key << 32) | random_bits ();
+    tcache_key = (tcache_key << 32) | random_bits();
 #endif
   }
 }
@@ -3585,50 +3615,57 @@ static __always_inline size_t
 large_csize2tidx(size_t nb)
 {
   size_t idx = TCACHE_SMALL_BINS
-	       + __builtin_clz (MAX_TCACHE_SMALL_SIZE)
-	       - __builtin_clz (nb);
+      	       + __builtin_clz(MAX_TCACHE_SMALL_SIZE)
+      	       - __builtin_clz(nb);
   return idx;
 }
 
-/* Caller must ensure that we know tc_idx is valid and there's room
-   for more chunks.  */
+/* Caller must ensure that we know tc_idx is valid 
+   and there's room for more chunks. */
 static __always_inline void
-tcache_put_n (mchunkptr chunk, size_t tc_idx, tcache_entry **ep, bool mangled)
-{
-  tcache_entry *e = (tcache_entry *) chunk2mem (chunk);
+tcache_put_n(
+  mchunkptr chunk, 
+  size_t tc_idx, 
+  tcache_entry **ep, 
+  bool mangled
+){
+  tcache_entry *e = (tcache_entry*) chunk2mem(chunk);
 
-  /* Mark this chunk as "in the tcache" so the test in __libc_free will
-     detect a double free.  */
+  /* Mark this chunk as "in the tcache" so the test 
+     in __libc_free will detect a double free. */
   e->key = tcache_key;
 
   if (!mangled){
-    e->next = PROTECT_PTR (&e->next, *ep);
+    e->next = PROTECT_PTR(&e->next, *ep);
     *ep = e;
   }
   else{
-    e->next = PROTECT_PTR (&e->next, REVEAL_PTR (*ep));
-    *ep = PROTECT_PTR (ep, e);
+    e->next = PROTECT_PTR(&e->next, REVEAL_PTR(*ep));
+    *ep = PROTECT_PTR(ep, e);
   }
   --(tcache->num_slots[tc_idx]);
 }
 
-/* Caller must ensure that we know tc_idx is valid and there's
-   available chunks to remove. Removes chunk from the middle of 
-   the list. */
+/* Caller must ensure that we know tc_idx is valid and 
+   there's available chunks to remove. Removes chunk 
+   from the middle of the list. */
 static __always_inline void*
 tcache_get_n (size_t tc_idx, tcache_entry **ep, bool mangled)
 {
   tcache_entry *e;
+
   if (!mangled)
     e = *ep;
+
   else
     e = REVEAL_PTR(*ep);
 
-  if (__glibc_unlikely (misaligned_mem(e)))
+  if (__glibc_unlikely(misaligned_mem(e)))
     malloc_printerr ("malloc(): unaligned tcache chunk detected");
 
   if (!mangled)
     *ep = REVEAL_PTR(e->next);
+
   else
     *ep = PROTECT_PTR(ep, REVEAL_PTR(e->next));
 
@@ -3644,14 +3681,14 @@ tcache_put (mchunkptr chunk, size_t tc_idx)
   tcache_put_n (chunk, tc_idx, &tcache->entries[tc_idx], false);
 }
 
-/* Like the above, but removes from the head of the list.  */
-static __always_inline void *
+/* Like the above, but removes from the head of the list. */
+static __always_inline void*
 tcache_get (size_t tc_idx)
 {
   return tcache_get_n (tc_idx, &tcache->entries[tc_idx], false);
 }
 
-static __always_inline tcache_entry **
+static __always_inline tcache_entry**
 tcache_location_large(
   size_t nb, size_t tc_idx,
   bool *mangled, 
@@ -3709,7 +3746,7 @@ tcache_get_align (size_t nb, size_t alignment)
 {
   if (nb < mp_.tcache_max_bytes){
     size_t tc_idx = csize2tidx (nb);
-    if (__glibc_unlikely (tc_idx >= TCACHE_SMALL_BINS))
+    if (__glibc_unlikely(tc_idx >= TCACHE_SMALL_BINS))
       tc_idx = large_csize2tidx (nb);
 
     /* The tcache itself isn't encoded, but the chain is. */
@@ -3734,10 +3771,11 @@ tcache_get_align (size_t nb, size_t alignment)
     }
 
     /* GCC compiling for -Os warns on some architectures that 
-    csize may be uninitialized. However, if 'te' is not NULL, 
-    csize is always initialized in the loop above. */
+       csize may be uninitialized. However, if 'te' is not NULL, 
+       csize is always initialized in the loop above. */
     DIAG_PUSH_NEEDS_COMMENT;
     DIAG_IGNORE_Os_NEEDS_COMMENT (12, "-Wmaybe-uninitialized");
+
     if (
       te != NULL && 
       csize == nb && 
@@ -3772,17 +3810,19 @@ tcache_double_free_verify (tcache_entry *e)
     ){
       if (cnt >= mp_.tcache_count)
         malloc_printerr ("free(): too many chunks detected in tcache");
+
       if (__glibc_unlikely (misaligned_mem (tmp)))
         malloc_printerr ("free(): unaligned chunk detected in tcache 2");
+
       if (tmp == e)
         malloc_printerr ("free(): double free detected in tcache 2");
     }
   }
 
   /* No double free detected - it might be in a tcache of 
-  another thread, or user data that happens to match the 
-  key. Since we are not sure, clear the key and retry 
-  freeing it. */
+     another thread, or user data that happens to match the 
+     key. Since we are not sure, clear the key and retry 
+     freeing it. */
   e->key = 0;
   __libc_free(e);
 }
@@ -3796,31 +3836,32 @@ static void tcache_thread_shutdown (void)
 
   /* Disable the tcache and prevent it from being reinitialized. */
   tcache_set_disabled();
-  if (! need_free)
+  if (!need_free)
     return;
 
-  /* Free all of the entries and the tcache itself back to the arena
-     heap for coalescing. */
+  /* Free all of the entries and the tcache itself back to the 
+     arena heap for coalescing. */
   for (i = 0; i < TCACHE_MAX_BINS; ++i){
     while (tcache_tmp->entries[i]){
       tcache_entry *e = tcache_tmp->entries[i];
-      if (__glibc_unlikely (misaligned_mem (e)))
+
+      if (__glibc_unlikely(misaligned_mem(e)))
         malloc_printerr ("tcache_thread_shutdown(): unaligned tcache chunk detected");
 
-  	  tcache_tmp->entries[i] = REVEAL_PTR (e->next);
+  	  tcache_tmp->entries[i] = REVEAL_PTR(e->next);
 	    e->key = 0;
-	    p = mem2chunk (e);
-  	  _int_free_chunk (arena_for_chunk(p), p, chunksize(p), 0);
+	    p = mem2chunk(e);
+  	  _int_free_chunk(arena_for_chunk(p), p, chunksize(p), 0);
     }
   }
 
-  p = mem2chunk (tcache_tmp);
-  _int_free_chunk (arena_for_chunk(p), p, chunksize(p), 0);
+  p = mem2chunk(tcache_tmp);
+  _int_free_chunk(arena_for_chunk(p), p, chunksize(p), 0);
 }
 
 /* Initialize tcache. In the rare case there isn't any 
-memory available, later calls will retry initialization. */
-static void tcache_init (mstate av)
+   memory available, later calls will retry initialization. */
+static void tcache_init(mstate av)
 {
   /* Set this unconditionally to avoid infinite loops. */
   tcache_set_disabled();
@@ -3838,7 +3879,7 @@ static void tcache_init (mstate av)
     tcache_set_disabled ();
   }
   else{
-    memset (tcache, 0, bytes);
+    memset(tcache, 0, bytes);
     for (int i = 0; i < TCACHE_MAX_BINS; i++)
       tcache->num_slots[i] = mp_.tcache_count;
   }
@@ -3946,9 +3987,11 @@ tcache_free_init (void *mem)
 
 void __libc_free(void *mem)
 {
-  mchunkptr p;        /* chunk corresponding to mem */
+  /* Chunk corresponding to mem. */
+  mchunkptr p;
 
-  if (mem == NULL)    /* free(0) has no effect */
+  /* free(0) has no effect. */
+  if (mem == NULL)
     return;
 
   /* Quickly check that the freed pointer matches the tag for 
@@ -5099,8 +5142,9 @@ static void* _int_malloc(mstate av, size_t bytes)
       bck->fd = victim;
 
 #if USE_TCACHE
-      /* If we've processed as many chunks as we're allowed 
-      while filling the cache, return one of the cached ones. */
+      /* If we've processed as many chunks as we're 
+         allowed while filling the cache, return one 
+         of the cached ones. */
       ++tcache_unsorted_count;
       if (
         return_cached && 
@@ -5118,7 +5162,7 @@ static void* _int_malloc(mstate av, size_t bytes)
 
 #if USE_TCACHE
     /* If all the small chunks we found ended 
-    up cached, return one now. */
+       up cached, return one now. */
     if (return_cached){
 	    return tcache_get (tc_idx);
     }
@@ -5931,7 +5975,6 @@ static void* _int_memalign(mstate av, size_t alignment, size_t bytes)
     __set_errno (ENOMEM);
     return NULL;
   }
-
   size_t nb = checked_request2size(bytes);
 
   /* Call malloc with worst case padding to hit alignment.
