@@ -5236,10 +5236,12 @@ static void* _int_malloc(mstate av, size_t bytes)
         else{
           remainder = chunk_at_offset(victim, nb);
 
-          /* [?] */
           /* We cannot assume the unsorted list is empty 
              and therefore have to perform a complete 
              insert here. */
+          /* What does this even imply? Regardless of it 
+             being empty or not, the insertion remains 
+             the same. I don't know what it is pointing at. */
           bck = unsorted_chunks(av);
           fwd = bck->fd;
 
@@ -5278,51 +5280,111 @@ static void* _int_malloc(mstate av, size_t bytes)
       }
     }
 
-    /* Search for a chunk by scanning bins, starting with 
-       next largest bin. This search is strictly by best-fit; 
-       i.e., the smallest (with ties going to approximately 
-       the least recently used) chunk that fits is selected.
+    /* [PATH 5]: Search a chunk in other large bins if 
+        the large bin associated with nb is not able 
+        to satisfy the request. 
 
-       The bitmap avoids needing to check that most blocks 
-       are nonempty. The particular case of skipping all 
-       bins during warm-up phases when no chunks have been 
-       returned yet is faster than it might look. */
+      We use binmap to quickly check which large bins 
+      are empty, starting from the next largest bin. 
+      This search is strictly by best-fit; i.e., the 
+      smallest (with ties going to approximately the 
+      least recently used) chunk that fits is selected.
+      [UPDATE THIS LRU CLAIM] */
 
+    /* The next large bin. */
     ++idx;
+
+    /* The bin handler for this large bin. */
     bin = bin_at(av, idx);
+
+    /* The binmap number this large bin belongs to. 
+       Bin# [64, 95]  belongs to binmap 2.
+       Bin# [96, 127] belongs to binmap 3. */
     block = idx2block(idx);
+
+    /* The actual binmap. */
     map = av->binmap[block];
+
+    /* (idx & 31) is the actual bit corresponding to 
+       a bin number. But we can not use it directly. 
+       So, we obtain the bit mask associated with this 
+       bit. In simple words, it is the weight that 
+       the bit carries. Later, we take a bitwise AND 
+       with the actual binmap to find the status of 
+       this bin. */
     bit = idx2bit(idx);
 
     for (;;){
-      /* Skip rest of block if there are no more 
-         set bits in this block. */
+      /* If the weight of the associated bit is greater 
+         than the binmap itself, this large bin and the 
+         large bins after it are all empty. So, skip all 
+         the large bins in this block.
+         [WHAT ABOUT bit==0 ?] */
       if (bit > map || bit == 0){
         do {
-          if (++block >= BINMAPSIZE) /* out of bins */
+          /* We have 4 binmaps, only 2 of which are 
+             for large bins, i.e. 2 and 3. If the 
+             binmap number exceeds the max count, all 
+             the large bins are empty, so use the top 
+             chunk. */
+          if (++block >= BINMAPSIZE)
             goto use_top;
+
+          /* Move to the next binmap and break only if 
+             it is non-empty. */
         } while((map = av->binmap[block]) == 0);
 
+        /* If none of the large bins were usable, we 
+           would have already jumped to the use_top 
+           label. If we are here, a bin map had a 
+           usable bin. */
+
+        /* Left shift the binmap with BINMAPSHIFT to 
+           obtain the index of the first large bin in 
+           that binmap. */
         bin = bin_at(av, (block << BINMAPSHIFT));
+
+        /* The first bin corresponds to the first bit, 
+           i.e. 0. It's bit mask is 1 (i.e. 1 << 0). */
         bit = 1;
       }
 
+      /* If we are here, there is a non-empty large bin 
+         and the next goal is to find it. */
       /* Advance to bin with set bit. There must be one. */
       while ((bit & map) == 0){
+        /* Advance to the next large bin's handler. */
         bin = next_bin(bin);
+
+        /* Advance to the next bit. */
         bit <<= 1;
+
+        /* Ensure we have not gone past the 31st bit, as 
+           the result will wrap around. */
         assert (bit != 0);
       }
 
-      /* Inspect the bin. It is likely to be non-empty. */
+      /* Take the chunk at back. */
       victim = last(bin);
+
+      /* When a large bin becomes empty, the allocator 
+         doesn't clear its bit immediately. It defers 
+         until that bin is explored via _int_malloc and 
+         is found empty.
+
+         A possible explanation is that most bins contain 
+         multiple chunks and an extra branch would be 
+         required every single time to check if the current 
+         large bin has been emptied. */
 
       /* If a false alarm (empty bin), clear the bit. */
       if (victim == bin){
-        av->binmap[block] = map &= ~bit;  /* Write through */
+        av->binmap[block] = (map &= ~bit);
         bin = next_bin(bin);
         bit <<= 1;
       }
+      /* If a usable bin is found, do what we have done 
+         multiple times so far. */
       else{
         size = chunksize(victim);
 
@@ -5336,15 +5398,18 @@ static void* _int_malloc(mstate av, size_t bytes)
         /* Exhaust */
         if (remainder_size < MINSIZE){
           set_inuse_bit_at_offset(victim, size);
+
           if (av != &main_arena)
-          set_non_main_arena (victim);
+            set_non_main_arena (victim);
         }
         /* Split */
         else{
           remainder = chunk_at_offset(victim, nb);
 
-          /* We cannot assume the unsorted list is empty and 
-          therefore have to perform a complete insert here. */
+          /* [AGAIN, NO IDEA]
+             We cannot assume the unsorted list is empty 
+             and therefore have to perform a complete 
+             insert here. */
           bck = unsorted_chunks(av);
           fwd = bck->fd;
 
@@ -5360,6 +5425,8 @@ static void* _int_malloc(mstate av, size_t bytes)
           if (in_smallbin_range(nb))
             av->last_remainder = remainder;
 
+          /* Update the skip the list pointers if the 
+             remainder is large. */
           if (!in_smallbin_range(remainder_size)){
             remainder->fd_nextsize = NULL;
             remainder->bk_nextsize = NULL;
@@ -5369,7 +5436,6 @@ static void* _int_malloc(mstate av, size_t bytes)
             victim, 
             nb | PREV_INUSE | (av != &main_arena ? NON_MAIN_ARENA : 0)
           );
-
           set_head(remainder, remainder_size | PREV_INUSE);
           set_foot(remainder, remainder_size);
         }
