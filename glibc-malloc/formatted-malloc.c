@@ -4245,121 +4245,152 @@ void* __libc_realloc (void *oldmem, size_t bytes)
   mstate ar_ptr;
   INTERNAL_SIZE_T nb;         /* padded request size */
 
-  void *newp;             /* chunk to return */
+  void *newp;                 /* chunk to return */
 
-  /* realloc of null is supposed to be same as malloc */
+  /* realloc(NULL, bytes) is supposed to be the same 
+     as malloc(bytes). */
   if (oldmem == NULL)
-    return __libc_malloc (bytes);
+    return __libc_malloc(bytes);
+
+  /* realloc(mem, 0) is the same as __libc_free(mem). */
 
 #if REALLOC_ZERO_BYTES_FREES
   if (bytes == 0)
     {
-      __libc_free (oldmem); return NULL;
+      __libc_free(oldmem); return NULL;
     }
 #endif
 
-  /* Perform a quick check to ensure that the pointer's tag matches the
-     memory's tag.  */
+  /* Perform a quick check to ensure that the pointer's tag 
+     matches the memory's tag.  */
   if (__glibc_unlikely (mtag_enabled))
-    *(volatile char*) oldmem;
+    *(volatile char*)(oldmem);
 
-  /* chunk corresponding to oldmem */
-  const mchunkptr oldp = mem2chunk (oldmem);
+  /* The chunk corresponding to oldmem. */
+  const mchunkptr oldp = mem2chunk(oldmem);
 
-  /* Return the chunk as is if the request grows within usable bytes, typically
-     into the alignment padding.  We want to avoid reusing the block for
-     shrinkages because it ends up unnecessarily fragmenting the address space.
-     This is also why the heuristic misses alignment padding for THP for
-     now.  */
-  size_t usable = musable (oldmem);
-  if (bytes <= usable)
-    {
-      size_t difference = usable - bytes;
-      if ((unsigned long) difference < 2 * sizeof (INTERNAL_SIZE_T))
-	return oldmem;
+  /* Return the chunk as is if the request grows within 
+     usable bytes, typically into the alignment padding.
+
+    We want to avoid reusing the block for shrinkages 
+    because it ends up unnecessarily fragmenting the 
+    address space. This is also why the heuristic misses 
+    alignment padding for THP for now. */
+
+  size_t usable = musable(oldmem);
+  if (bytes <= usable){
+    size_t difference = usable - bytes;
+
+    /* If the difference is small, don't shrink. */
+    /* If the fragment was significant enough, do not 
+       return. */
+    if ((unsigned long)(difference) < (2 * sizeof(INTERNAL_SIZE_T)))
+      return oldmem;
     }
 
-  /* its size */
-  const INTERNAL_SIZE_T oldsize = chunksize (oldp);
+  /* Size of the old chunk. */
+  const INTERNAL_SIZE_T oldsize = chunksize(oldp);
 
-  /* Little security check which won't hurt performance: the allocator
-     never wraps around at the end of the address space.  Therefore
-     we can exclude some size values which might appear here by
-     accident or by "design" from some intruder.  */
-  if (__glibc_unlikely ((uintptr_t) oldp > (uintptr_t) -oldsize
-                        || misaligned_chunk (oldp)))
-      malloc_printerr ("realloc(): invalid pointer");
+  /* Little security check which won't hurt performance: 
+     the allocator never wraps around at the end of the 
+     address space. Therefore we can exclude some size 
+     values which might appear here by accident or by 
+     "design" from some intruder.  */
 
-  if (bytes > PTRDIFF_MAX)
-    {
-      __set_errno (ENOMEM);
-      return NULL;
-    }
-  nb = checked_request2size (bytes);
+  if (__glibc_unlikely (
+    (uintptr_t)(oldp) > (uintptr_t)(-oldsize) || 
+    misaligned_chunk(oldp)
+  ))
+    malloc_printerr ("realloc(): invalid pointer");
 
-  if (chunk_is_mmapped (oldp))
-    {
-      void *newmem;
+  if (bytes > PTRDIFF_MAX){
+    __set_errno (ENOMEM);
+    return NULL;
+  }
+  nb = checked_request2size(bytes);
+
+  /* Use the "memory remap" syscall if the chunk is mmapped. */
+  if (chunk_is_mmapped(oldp)){
+    void *newmem;
 
 #if HAVE_MREMAP
-      newp = mremap_chunk (oldp, nb);
-      if (newp)
-	{
-	  void *newmem = chunk2mem_tag (newp);
-	  /* Give the new block a different tag.  This helps to ensure
-	     that stale handles to the previous mapping are not
-	     reused.  There's a performance hit for both us and the
-	     caller for doing this, so we might want to
-	     reconsider.  */
-	  return tag_new_usable (newmem);
-	}
+    newp = mremap_chunk(oldp, nb);
+    if (newp){
+  	  void *newmem = chunk2mem_tag(newp);
+
+	    /* Give the new block a different tag. This helps 
+         to ensure that stale handles to the previous 
+         mapping are not reused. There's a performance 
+         hit for both us and the caller for doing this, 
+         so we might want to reconsider. */
+	    return tag_new_usable(newmem);
+    }
 #endif
-      /* Return if shrinking and mremap was unsuccessful.  */
-      if (bytes <= usable)
-	return oldmem;
 
-      /* Must alloc, copy, free. */
-      newmem = __libc_malloc (bytes);
-      if (newmem == NULL)
-        return NULL;              /* propagate failure */
+    /* Return the original pointer if mremap was 
+       unsuccessful as shrinking is not possible 
+       for an mmapped chunk and the old pointer 
+       already has enough memory (regardless of 
+       the fragment being small or large). */
+    if (bytes <= usable)
+    	return oldmem;
 
-      memcpy (newmem, oldmem, oldsize - CHUNK_HDR_SZ);
-      munmap_chunk (oldp);
-      return newmem;
-    }
+    /* Must alloc, copy, free. */
+    newmem = __libc_malloc(bytes);
+    if (newmem == NULL)
+      return NULL;
 
-  ar_ptr = arena_for_chunk (oldp);
+    /* Copy the old contents at the new memory. */
+    memcpy(newmem, oldmem, oldsize - CHUNK_HDR_SZ);
 
-  if (SINGLE_THREAD_P)
-    {
-      newp = _int_realloc (ar_ptr, oldp, oldsize, nb);
-      assert (!newp || chunk_is_mmapped (mem2chunk (newp)) ||
-	      ar_ptr == arena_for_chunk (mem2chunk (newp)));
+    /* Unmap the old chunk. */
+    munmap_chunk(oldp);
+    return newmem;
+  }
 
-      return newp;
-    }
+  /* Obtain the arena for this chunk. */
+  ar_ptr = arena_for_chunk(oldp);
 
-  __libc_lock_lock (ar_ptr->mutex);
+  if (SINGLE_THREAD_P){
+    newp = _int_realloc(ar_ptr, oldp, oldsize, nb);
+
+    assert(
+      !newp || 
+      chunk_is_mmapped(mem2chunk(newp)) ||
+      ar_ptr == arena_for_chunk(mem2chunk(newp))
+    );
+
+    return newp;
+  }
+
+  /* If multithreaded, lock the arena. */
+  __libc_lock_lock(ar_ptr->mutex);
 
   newp = _int_realloc (ar_ptr, oldp, oldsize, nb);
 
   __libc_lock_unlock (ar_ptr->mutex);
-  assert (!newp || chunk_is_mmapped (mem2chunk (newp)) ||
-          ar_ptr == arena_for_chunk (mem2chunk (newp)));
 
-  if (newp == NULL)
-    {
-      /* Try harder to allocate memory in other arenas.  */
-      LIBC_PROBE (memory_realloc_retry, 2, bytes, oldmem);
-      newp = __libc_malloc (bytes);
-      if (newp != NULL)
-        {
-	  size_t sz = memsize (oldp);
-	  memcpy (newp, oldmem, sz);
-	  (void) tag_region (chunk2mem (oldp), sz);
-          _int_free_chunk (ar_ptr, oldp, chunksize (oldp), 0);
-        }
+  assert(
+    !newp || 
+    chunk_is_mmapped(mem2chunk(newp)) ||
+    ar_ptr == arena_for_chunk(mem2chunk(newp))
+  );
+
+  /* If the current arena didn't satisfied the 
+     request, try with others. */
+  if (newp == NULL){
+    LIBC_PROBE (memory_realloc_retry, 2, bytes, oldmem);
+
+    /* __libc_malloc will acquire new arenas. */
+    newp = __libc_malloc(bytes);
+    if (newp != NULL){
+  	  size_t sz = memsize(oldp);
+	    memcpy(newp, oldmem, sz);
+
+	    (void) tag_region(chunk2mem(oldp), sz);
+      _int_free_chunk(ar_ptr, oldp, chunksize (oldp), 0);
     }
+  }
 
   return newp;
 }
@@ -4375,42 +4406,46 @@ libc_hidden_def (__libc_memalign)
 void* weak_function
 aligned_alloc (size_t alignment, size_t bytes)
 {
-/* Similar to memalign, but starting with ISO C17 the standard
-   requires an error for alignments that are not supported by the
-   implementation.  Valid alignments for the current implementation
-   are non-negative powers of two.  */
-  if (!powerof2 (alignment) || alignment == 0)
-    {
-      __set_errno (EINVAL);
-      return NULL;
-    }
+/* Similar to memalign, but starting with ISO C17 
+   the standard requires an error for alignments 
+   that are not supported by the implementation. 
+   Valid alignments for the current implementation 
+   are non-negative powers of two. */
 
-  return _mid_memalign (alignment, bytes);
+  if (!powerof2(alignment) || alignment == 0){
+    __set_errno(EINVAL);
+    return NULL;
+  }
+
+  return _mid_memalign(alignment, bytes);
 }
 
-/* For ISO C23.  */
+/* For ISO C23. */
 void weak_function
 free_sized (void *ptr, __attribute_maybe_unused__ size_t size)
 {
-  /* We do not perform validation that size is the same as the original
-     requested size at this time. We leave that to the sanitizers.  We
-     simply forward to `free`.  This allows existing malloc replacements
-     to continue to work.  */
+  /* We do not perform validation that size is the same 
+     as the original requested size at this time. We 
+     leave that to the sanitizers. We simply forward to 
+     `free`. This allows existing malloc replacements
+     to continue to work. */
 
+    /* Try harder to allocate memory in other arenas.  */
   free (ptr);
 }
 
-/* For ISO C23.  */
+/* For ISO C23. */
 void weak_function
 free_aligned_sized (
   void *ptr, 
   __attribute_maybe_unused__ size_t alignment,
   __attribute_maybe_unused__ size_t size
 ){
-  /* We do not perform validation that size and alignment is the same as
-     the original requested size and alignment at this time.  We leave that
-     to the sanitizers.  We simply forward to `free`.  This allows existing
-     malloc replacements to continue to work.  */
+  /* We do not perform validation that size and alignment is 
+     the same as the original requested size and alignment 
+     at this time. We leave that to the sanitizers. We simply 
+     forward to `free`. This allows existing malloc replacements 
+     to continue to work. */
 
   free (ptr);
 }
@@ -4420,62 +4455,75 @@ static void* _mid_memalign(size_t alignment, size_t bytes)
   mstate ar_ptr;
   void *p;
 
-  /* If we need less alignment than we give anyway, just relay to malloc.  */
+  /* If the required alignment is less than the minimum 
+     alignment that malloc gives, just relay to malloc. */
   if (alignment <= MALLOC_ALIGNMENT)
-    return __libc_malloc (bytes);
+    return __libc_malloc(bytes);
 
-  /* Otherwise, ensure that it is at least a minimum chunk size */
+  /* Otherwise, ensure that it is at least a minimum chunk 
+     size. */
   if (alignment < MINSIZE)
     alignment = MINSIZE;
 
-  /* If the alignment is greater than SIZE_MAX / 2 + 1 it cannot be a
-     power of 2 and will cause overflow in the check below.  */
-  if (alignment > SIZE_MAX / 2 + 1)
-    {
-      __set_errno (EINVAL);
-      return NULL;
-    }
+  /* If the alignment is greater than ((SIZE_MAX / 2) + 1), 
+     it cannot be a power of 2 and will cause overflow in 
+     the check below. */
+  if (alignment > ((SIZE_MAX / 2) + 1)){
+    __set_errno (EINVAL);
+    return NULL;
+  }
 
+  /* Make sure alignment is power-of-2 value. */
+  if (!powerof2(alignment)){
+    size_t a = (MALLOC_ALIGNMENT * 2);
 
-  /* Make sure alignment is power of 2.  */
-  if (!powerof2 (alignment))
-    {
-      size_t a = MALLOC_ALIGNMENT * 2;
-      while (a < alignment)
-        a <<= 1;
-      alignment = a;
-    }
+    while (a < alignment)
+      a <<= 1;
+
+    alignment = a;
+  }
+
+  /* [PATH 1]: Use the tcache bins if available. */
 
 #if USE_TCACHE
-  void *victim = tcache_get_align (checked_request2size (bytes), alignment);
+  void *victim = tcache_get_align (checked_request2size(bytes), alignment);
   if (victim != NULL)
-    return tag_new_usable (victim);
+    return tag_new_usable(victim);
 #endif
 
-  if (SINGLE_THREAD_P)
-    {
-      p = _int_memalign (&main_arena, alignment, bytes);
-      assert (!p || chunk_is_mmapped (mem2chunk (p)) ||
-	      &main_arena == arena_for_chunk (mem2chunk (p)));
-      return tag_new_usable (p);
-    }
+  if (SINGLE_THREAD_P){
+    p = _int_memalign(&main_arena, alignment, bytes);
 
-  arena_get (ar_ptr, bytes + alignment + MINSIZE);
+    assert(
+      !p || 
+      chunk_is_mmapped(mem2chunk(p)) ||
+      &main_arena == arena_for_chunk(mem2chunk(p))
+    );
 
-  p = _int_memalign (ar_ptr, alignment, bytes);
-  if (!p && ar_ptr != NULL)
-    {
-      LIBC_PROBE (memory_memalign_retry, 2, bytes, alignment);
-      ar_ptr = arena_get_retry (ar_ptr, bytes);
-      p = _int_memalign (ar_ptr, alignment, bytes);
-    }
+    return tag_new_usable(p);
+  }
+
+  /* If multithreaded, acquire an arena. */
+  arena_get(ar_ptr, bytes + alignment + MINSIZE);
+
+  p = _int_memalign(ar_ptr, alignment, bytes);
+  if (!p && (ar_ptr != NULL)){
+    LIBC_PROBE (memory_memalign_retry, 2, bytes, alignment);
+
+    ar_ptr = arena_get_retry (ar_ptr, bytes);
+    p = _int_memalign(ar_ptr, alignment, bytes);
+  }
 
   if (ar_ptr != NULL)
     __libc_lock_unlock (ar_ptr->mutex);
 
-  assert (!p || chunk_is_mmapped (mem2chunk (p)) ||
-          ar_ptr == arena_for_chunk (mem2chunk (p)));
-  return tag_new_usable (p);
+  assert(
+    !p || 
+    chunk_is_mmapped(mem2chunk(p)) ||
+    ar_ptr == arena_for_chunk(mem2chunk(p))
+  );
+
+  return tag_new_usable(p);
 }
 
 void* __libc_valloc (size_t bytes)
@@ -4487,17 +4535,18 @@ void* __libc_pvalloc (size_t bytes)
 {
   size_t pagesize = GLRO(dl_pagesize);
   size_t rounded_bytes;
-  /* ALIGN_UP with overflow check.  */
+
+  /* ALIGN_UP with overflow check. */
   if (__glibc_unlikely(__builtin_add_overflow(
     bytes,
     pagesize - 1,
     &rounded_bytes))
   ){
-    __set_errno (ENOMEM);
+    __set_errno(ENOMEM);
     return NULL;
   }
 
-  return _mid_memalign (pagesize, rounded_bytes & -pagesize);
+  return _mid_memalign(pagesize, rounded_bytes & -pagesize);
 }
 
 static void* __attribute_noinline__
@@ -4512,131 +4561,147 @@ __libc_calloc2 (size_t sz)
   if (SINGLE_THREAD_P)
     av = &main_arena;
   else
-    arena_get (av, sz);
+    arena_get(av, sz);
 
-  if (av)
-    {
-      /* Check if we hand out the top chunk, in which case there may be no
-	 need to clear. */
+  if (av){
+    /* Check if we hand out the top chunk, in which 
+       case there may be no need to clear. */
+
 #if MORECORE_CLEARS
-      oldtop = top (av);
-      oldtopsize = chunksize (top (av));
-# if MORECORE_CLEARS < 2
-      /* Only newly allocated memory is guaranteed to be cleared.  */
-      if (av == &main_arena &&
-	  oldtopsize < mp_.sbrk_base + av->max_system_mem - (char *) oldtop)
-	oldtopsize = (mp_.sbrk_base + av->max_system_mem - (char *) oldtop);
-# endif
-      if (av != &main_arena)
-	{
-	  heap_info *heap = heap_for_ptr (oldtop);
-	  if (oldtopsize < (char *) heap + heap->mprotect_size - (char *) oldtop)
-	    oldtopsize = (char *) heap + heap->mprotect_size - (char *) oldtop;
-	}
+    oldtop = top(av);
+    oldtopsize = chunksize(top(av));
+
+#if MORECORE_CLEARS < 2
+    /* Only newly allocated memory is guaranteed to be cleared. */
+    if (
+      av == &main_arena &&
+	    oldtopsize < (mp_.sbrk_base + av->max_system_mem - (char*)(oldtop))
+    )
+    	oldtopsize = (mp_.sbrk_base + av->max_system_mem - (char*)(oldtop));
 #endif
+
+    if (av != &main_arena){
+      heap_info *heap = heap_for_ptr(oldtop);
+
+  	  if (oldtopsize < ((char*)(heap) + heap->mprotect_size - (char*)(oldtop)))
+	      oldtopsize = (char*)(heap) + heap->mprotect_size - (char*)(oldtop);
     }
-  else
-    {
-      /* No usable arenas.  */
-      oldtop = NULL;
-      oldtopsize = 0;
+#endif
+  }
+  else{
+    /* No usable arenas.  */
+    oldtop = NULL;
+    oldtopsize = 0;
+  }
+  mem = _int_malloc(av, sz);
+
+  assert (
+    !mem || 
+    chunk_is_mmapped(mem2chunk(mem)) ||
+    av == arena_for_chunk(mem2chunk(mem))
+  );
+
+  if (!SINGLE_THREAD_P){
+    if (mem == NULL && av != NULL){
+      LIBC_PROBE (memory_calloc_retry, 1, sz);
+
+      av = arena_get_retry(av, sz);
+      mem = _int_malloc(av, sz);
     }
-  mem = _int_malloc (av, sz);
 
-  assert (!mem || chunk_is_mmapped (mem2chunk (mem)) ||
-          av == arena_for_chunk (mem2chunk (mem)));
+    if (av != NULL)
+      __libc_lock_unlock(av->mutex);
+  }
 
-  if (!SINGLE_THREAD_P)
-    {
-      if (mem == NULL && av != NULL)
-	{
-	  LIBC_PROBE (memory_calloc_retry, 1, sz);
-	  av = arena_get_retry (av, sz);
-	  mem = _int_malloc (av, sz);
-	}
-
-      if (av != NULL)
-	__libc_lock_unlock (av->mutex);
-    }
-
-  /* Allocation failed even after a retry.  */
+  /* Allocation failed even after a retry. */
   if (mem == NULL)
     return NULL;
 
-  p = mem2chunk (mem);
+  p = mem2chunk(mem);
 
-  /* If we are using memory tagging, then we need to set the tags
-     regardless of MORECORE_CLEARS, so we zero the whole block while
-     doing so.  */
-  if (__glibc_unlikely (mtag_enabled))
-    return tag_new_zero_region (mem, memsize (p));
+  /* If we are using memory tagging, then we need to 
+     set the tags regardless of MORECORE_CLEARS, so 
+     we zero the whole block while doing so. */
+  if (__glibc_unlikely(mtag_enabled))
+    return tag_new_zero_region(mem, memsize(p));
 
-  csz = chunksize (p);
+  csz = chunksize(p);
 
-  /* Two optional cases in which clearing not necessary */
-  if (chunk_is_mmapped (p))
-    {
-      if (__glibc_unlikely (perturb_byte))
-        return memset (mem, 0, sz);
+  /* Two optional cases in which clearing not necessary. */
+  if (chunk_is_mmapped(p)){
+    if (__glibc_unlikely(perturb_byte))
+      return memset(mem, 0, sz);
 
-      return mem;
-    }
+    return mem;
+  }
 
 #if MORECORE_CLEARS
-  if (perturb_byte == 0 && (p == oldtop && csz > oldtopsize))
-    {
-      /* clear only the bytes from non-freshly-sbrked memory */
-      csz = oldtopsize;
-    }
+  if (
+    (perturb_byte == 0) && 
+    ((p == oldtop) && (csz > oldtopsize))
+  ){
+    /* Clear only the bytes from non-freshly-sbrked memory. */
+    csz = oldtopsize;
+  }
 #endif
 
-  clearsize = csz - SIZE_SZ;
-  return clear_memory ((INTERNAL_SIZE_T *) mem, clearsize);
+  clearsize = (csz - SIZE_SZ);
+  return clear_memory((INTERNAL_SIZE_T*)(mem), clearsize);
 }
 
+/* calloc(size_t n)
+
+  Returns a contiguous zero-initialized region capable of 
+  storing n objects of size elemsize.
+
+  It ensures that (nmemb * elem_size) doesn't overflow. */
 void* __libc_calloc (size_t n, size_t elem_size)
 {
   size_t bytes;
 
-  if (__glibc_unlikely (__builtin_mul_overflow (n, elem_size, &bytes)))
-    {
-       __set_errno (ENOMEM);
-       return NULL;
-    }
+  if (__glibc_unlikely(
+    __builtin_mul_overflow(n, elem_size, &bytes)
+  )){
+    __set_errno(ENOMEM);
+    return NULL;
+  }
 
 #if USE_TCACHE
-  size_t nb = checked_request2size (bytes);
+  size_t nb = checked_request2size(bytes);
 
-  if (nb < mp_.tcache_max_bytes)
-    {
-      size_t tc_idx = csize2tidx (nb);
+  if (nb < mp_.tcache_max_bytes){
+    size_t tc_idx = csize2tidx(nb);
 
-      if (__glibc_unlikely (tc_idx < TCACHE_SMALL_BINS))
-        {
-	  if (tcache->entries[tc_idx] != NULL)
-	    {
+    if (__glibc_unlikely(tc_idx < TCACHE_SMALL_BINS)){
+      if (tcache->entries[tc_idx] != NULL){
 	      void *mem = tcache_get (tc_idx);
-	      if (__glibc_unlikely (mtag_enabled))
-		return tag_new_zero_region (mem, memsize (mem2chunk (mem)));
 
-	      return clear_memory ((INTERNAL_SIZE_T *) mem, tidx2usize (tc_idx));
-	    }
-	}
-      else
-        {
-	  tc_idx = large_csize2tidx (nb);
-	  void *mem = tcache_get_large (tc_idx, nb);
-	  if (mem != NULL)
-	    {
-	      if (__glibc_unlikely (mtag_enabled))
-	        return tag_new_zero_region (mem, memsize (mem2chunk (mem)));
+	      if (__glibc_unlikely(mtag_enabled))
+      		return tag_new_zero_region(mem, memsize(mem2chunk(mem)));
 
-	      return memset (mem, 0, memsize (mem2chunk (mem)));
+        /* Zero the payload memory. */
+	      return clear_memory(
+          (INTERNAL_SIZE_T*)(mem), 
+          tidx2usize(tc_idx)
+        );
 	    }
-	}
     }
+    else{
+      tc_idx = large_csize2tidx(nb);
+      void *mem = tcache_get_large(tc_idx, nb);
+
+      if (mem != NULL){
+	      if (__glibc_unlikely(mtag_enabled))
+	        return tag_new_zero_region(mem, memsize(mem2chunk(mem)));
+
+        /* Zero the payload memory. */
+	      return memset(mem, 0, memsize(mem2chunk(mem)));
+	    }
+    }
+  }
 #endif
-  return __libc_calloc2 (bytes);
+
+  return __libc_calloc2(bytes);
 }
 #endif /* IS_IN (libc) */
 
