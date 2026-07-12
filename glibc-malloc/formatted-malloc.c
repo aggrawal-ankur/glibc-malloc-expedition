@@ -4060,15 +4060,22 @@ void* __libc_malloc (size_t bytes)
      to see bins in action. In this case, __libc_malloc2 
      is called directly. */
 #if USE_TCACHE
-  size_t nb = checked_request2size (bytes);
+  size_t nb = checked_request2size(bytes);
 
+  /* The normalized size must be less than the 
+     maximum size that the tcache bins manage. */
   if (nb < mp_.tcache_max_bytes){
+    /* The tcache bin index. */
     size_t tc_idx = csize2tidx(nb);
 
+    /* If nb is small. */
     if (__glibc_likely(tc_idx < TCACHE_SMALL_BINS)){
       if (tcache->entries[tc_idx] != NULL)
-        return tag_new_usable (tcache_get(tc_idx));
+      return tag_new_usable (tcache_get(tc_idx));
     }
+
+    /* Since nb is large, large_csize2tidx is required 
+       to obtain the correct index. */
     else{
       tc_idx = large_csize2tidx(nb);
       void *victim = tcache_get_large(tc_idx, nb);
@@ -4113,16 +4120,27 @@ void __libc_free(void *mem)
   if (__glibc_unlikely(misaligned_chunk(p)))
     return malloc_printerr_tail("free(): invalid pointer");
 
+  /* If USE_TCACHE is enabled, the chunk is intercepted 
+     by the tcache layer. If the chunk has a valid 
+     size and the corresponding tcache bin has space 
+     to accommodate it, the chunk is kept by the tcache 
+     bins. Otherwise, it is passed to the arena. */
+
 #if USE_TCACHE
+  /* Chunk size must be less than the max size 
+     managed by the tcache bins. */
   if (__glibc_likely(size < mp_.tcache_max_bytes))
   {
-    /* Check to see if it's already in the tcache. */
+    /* Check if the chunk is already in the tcache. */
     tcache_entry *e = (tcache_entry*) chunk2mem(p);
 
     /* Check for double free - verify if the key matches. */
     if (__glibc_unlikely(e->key == tcache_key))
-      return tcache_double_free_verify (e);
+      return tcache_double_free_verify(e);
 
+    /* Obtain the tcache bin index corresponding to 
+       the size and call the right handler to place 
+       the chunk in the tcache bin. */
     size_t tc_idx = csize2tidx(size);
     if (__glibc_likely(tc_idx < TCACHE_SMALL_BINS))
     {
@@ -4135,13 +4153,19 @@ void __libc_free(void *mem)
   	    return tcache_put_large (p, tc_idx);
 	  }
 
+    /* Probably requires the understanding of 
+       concurrency, which I don't have, at this 
+       moment. */
     if (__glibc_unlikely(tcache_inactive()))
     	return tcache_free_init (mem);
   }
 #endif
 
-  /* Check (size >= MINSIZE) and (p + size) does not overflow. */
-  if (__glibc_unlikely(INT_ADD_OVERFLOW ((uintptr_t)(p), size-MINSIZE)))
+  /* Check (size >= MINSIZE) and (p + size) does 
+     not overflow. */
+  if (__glibc_unlikely(
+    INT_ADD_OVERFLOW((uintptr_t)(p), size-MINSIZE)
+  ))
     return malloc_printerr_tail ("free(): invalid size");
 
   _int_free_chunk(arena_for_chunk(p), p, size, 0);
@@ -4557,22 +4581,23 @@ static void* _int_malloc(mstate av, size_t bytes)
   mbinptr bin;                      /* A pointer to fake chunk whose 
                                        fd/bk align with the bin headers. */
 
-  mchunkptr victim;                 /* inspected/selected chunk */
-  INTERNAL_SIZE_T size;             /* victim's size */
-  int victim_index;                 /* victim's bin index */
+  mchunkptr victim;                 /* Chunk being inspected. */
+  INTERNAL_SIZE_T size;             /* Victim's size. */
+  int victim_index;                 /* Victim's bin number. */
 
-  mchunkptr remainder;              /* remainder from a split */
-  unsigned long remainder_size;     /* its size */
+  mchunkptr remainder;              /* Remainder from a split. */
+  unsigned long remainder_size;     /* Remainder's size. */
 
-  unsigned int block;               /* bit map traverser */
-  unsigned int bit;                 /* bit map traverser */
-  unsigned int map;                 /* current word of binmap */
+  unsigned int block;               /* Bit map traverser. */
+  unsigned int bit;                 /* Bit map traverser. */
+  unsigned int map;                 /* Current word of binmap. */
 
-  mchunkptr fwd;                    /* misc temp for linking */
-  mchunkptr bck;                    /* misc temp for linking */
+  mchunkptr fwd;                    /* Temporary variables for 
+  mchunkptr bck;                       handling chunks. */
 
 #if USE_TCACHE
-  size_t tcache_unsorted_count;	    /* count of unsorted chunks processed */
+  size_t tcache_unsorted_count;	    /* The count of unsorted bin chunks 
+                                       processed during this malloc call. */
 #endif
 
   /* [STEP 1]: Align `bytes` to an internally usable form. */
@@ -4727,17 +4752,18 @@ static void* _int_malloc(mstate av, size_t bytes)
       check_malloced_chunk(av, victim, nb);
 
 #if USE_TCACHE
-  	  /* While we're here, if we see other chunks 
-      of the same size, stash them in the tcache. */
+  	  /* While we're here, if the small bin has more 
+         chunks, move them into the corresponding 
+         tcache bin. */
 	    size_t tc_idx = csize2tidx(nb);
 	    if (tc_idx < mp_.tcache_small_bins){
 	      mchunkptr tc_victim;
 
+        /* If it is the first time, setup the tcache 
+           infra. */
 	      if (__glibc_unlikely(tcache_inactive()))
       		tcache_init(av);
 
-        /* While bin not empty and tcache not full, 
-        copy chunks over. */
         tc_victim = last(bin);
 	      while(
           tcache->num_slots[tc_idx] != 0 && 
@@ -4745,14 +4771,20 @@ static void* _int_malloc(mstate av, size_t bytes)
         ){
     		  if (tc_victim != NULL){
   		      bck = tc_victim->bk;
-	  	      set_inuse_bit_at_offset(tc_victim, nb);
+
+            /* Chunks in the tcache bins are condiered 
+               inuse, so set the inuse bit of the chunk 
+               next to this one. */
+            set_inuse_bit_at_offset(tc_victim, nb);
 
             if (av != &main_arena)
         			set_non_main_arena (tc_victim);
 
+            /* Update the bin links. */
   		      bin->bk = bck;
 	  	      bck->fd = bin;
 
+            /* Pace the chunk in tcache bin. */
   		      tcache_put(tc_victim, tc_idx);
           }
         }
@@ -4786,6 +4818,9 @@ static void* _int_malloc(mstate av, size_t bytes)
   }
 
 #if USE_TCACHE
+  /* Create a variable tcache_nb and assign nb 
+     to it if nb is a valid small tcache size. */
+
   INTERNAL_SIZE_T tcache_nb = 0;
   size_t tc_idx = csize2tidx(nb);
 
@@ -4796,7 +4831,7 @@ static void* _int_malloc(mstate av, size_t bytes)
   tcache_unsorted_count = 0;
 #endif
 
-  /*  */
+  /* I don't know what this outer for loop is for. */
   for (;;){
     /* Iteration count. */
     int iters = 0;
@@ -4973,11 +5008,27 @@ static void* _int_malloc(mstate av, size_t bytes)
       		set_non_main_arena(victim);
 
 #if USE_TCACHE
+        /* Setup the tcache infra if not already. */
 	      if (__glibc_unlikely(tcache_inactive()))
       		tcache_init(av);
 
-	      /* Fill cache first, return to user only if cache fills.
-      		 We may return one of these chunks later. */
+        /* All exact-fit chunks are stashed into the 
+           tcache while it has room, including the 
+           victim that has been classified fit to 
+           service this request. Returning chunk is 
+           deferred until we stop stashing, either 
+           if no more chunks exist, or the limit has 
+           been exceeded. A chunk is returned later.
+
+          In the small bin path, we keep the first 
+          victim and stash the rest of the available 
+          chunks. Later, we return it. But that does 
+          not happen here. Every chunk including the 
+          first victim is stashed and we wait until 
+          the next tcache block to call tcache_get 
+          to return one. I don't know what's the 
+          benefit. */
+
 	      if(
           tcache_nb > 0 && 
           tcache->num_slots[tc_idx] != 0
@@ -5255,7 +5306,7 @@ static void* _int_malloc(mstate av, size_t bytes)
         mp_.tcache_unsorted_limit > 0 && 
         tcache_unsorted_count > mp_.tcache_unsorted_limit
       ){
-        return tcache_get (tc_idx);
+        return tcache_get(tc_idx);
       }
 #endif
 
@@ -5596,7 +5647,7 @@ static void* _int_malloc(mstate av, size_t bytes)
     }
 
 
-    /* [PATH]: Use the top chunk. */
+    /* [PATH 6]: Use the top chunk. */
 
     use_top:
       victim = av->top;
@@ -5606,7 +5657,7 @@ static void* _int_malloc(mstate av, size_t bytes)
       if (__glibc_unlikely (size > av->system_mem))
         malloc_printerr("malloc(): corrupted top size");
 
-      /* [PATH nA]: If the top chunk has enough memory to 
+      /* [PATH 6A]: If the top chunk has enough memory to 
           exist independently, split it.
           - The top chunk is treated as larger (and thus less 
             well fitting) than any other available chunk since 
@@ -5632,7 +5683,7 @@ static void* _int_malloc(mstate av, size_t bytes)
         return p;
       }
 
-      /* [PATH nB]: Call sysmalloc and extent the top chunk if 
+      /* [PATH 6B]: Call sysmalloc and extent the top chunk if 
          the top chunk doesn't have enough memory.  */
       else{
         void *p = sysmalloc(nb, av);
