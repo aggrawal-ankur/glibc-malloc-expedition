@@ -1640,41 +1640,80 @@ typedef struct malloc_chunk *mbinptr;
 /* Take a chunk off a bin list. */
 static void unlink_chunk (mstate av, mchunkptr p)
 {
+  /* [TEST 1]: The prevsize of the `(p+1)` chunk 
+      must be equal to the size of chunk p. */
   if (chunksize(p) != prev_size(next_chunk(p)))
     malloc_printerr("corrupted size vs. prev_size");
 
+  /* (p+1) chunk. */
   mchunkptr fd = p->fd;
+
+  /* (p-1) chunk. */
   mchunkptr bk = p->bk;
 
+  /* [TEST 2]: The (p+1) and (p-1) chunks must have 
+     correct links with chunk p. */
   if (__glibc_unlikely(fd->bk != p || bk->fd != p))
     malloc_printerr("corrupted double-linked list");
 
+  /* Unlink the chunk p from the bin. */
+
+  /* (p-1)->fd = (p+1) */
   fd->bk = bk;
+
+  /* (p+1)->bk = (p-1) */
   bk->fd = fd;
 
+  /* Modify the skip list pointers. */
+
+  /* If a large chunk and unique in its size. */
   if (
     !in_smallbin_range(chunksize_nomask(p)) && 
     p->fd_nextsize != NULL
   ){
+    /* Consistency check. */
     if (
-      p->fd_nextsize->bk_nextsize != p || 
-      p->bk_nextsize->fd_nextsize != p
+      (p->fd_nextsize)->bk_nextsize != p || 
+      (p->bk_nextsize)->fd_nextsize != p
     )
     	malloc_printerr("corrupted double-linked list (not small)");
 
+    /* If the (p+1) chunk is a non-unique chunk, its 
+       nextsize pointers will be NULL. */
     if (fd->fd_nextsize == NULL){
+      /* If the bin has only one size of chunks, the 
+         skip list pointers of `p` will point to 
+         itself. In that case, update the next chunk's 
+         skip list pointers to itself. */
   	  if (p->fd_nextsize == p)
 	      fd->fd_nextsize = fd->bk_nextsize = fd;
 
+      /* Otherwise, the bin has chunks of multiple 
+         sizes and we need to update the skip list 
+         pointers to treat the (p+1) chunk as the 
+         new unique chunk of that size in this bin. */
       else{
+        /* (p+1)->fd_next = p->fd_nextsize */
         fd->fd_nextsize = p->fd_nextsize;
+
+        /* (p+1)->bk_next = p->bk_nextsize */
         fd->bk_nextsize = p->bk_nextsize;
+
+        /* Update the skip list pointers of the next 
+           chunk in the skip list to (p+1) chunk. */
         p->fd_nextsize->bk_nextsize = fd;
         p->bk_nextsize->fd_nextsize = fd;
       }
     }
+
+    /* Else, chunk p is the only chunk of its size and 
+       the (p+1) chunk is already the next chunk in the 
+       skip list. */
     else{
+      /* (p+1)->bk_next = p->bk_next */
       p->fd_nextsize->bk_nextsize = p->bk_nextsize;
+
+      /* (p-1)->bk_next = p->fd_next */
       p->bk_nextsize->fd_nextsize = p->fd_nextsize;
     }
   }
