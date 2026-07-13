@@ -3419,46 +3419,58 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
    - It returns 1 if it actually released any memory, else 0. */
 static int systrim(size_t pad, mstate av)
 {
-  long  top_size;        /* Amount of top-most memory */
-  long  extra;           /* Amount to release */
-  long  released;        /* Amount actually released */
-  char* current_brk;     /* address returned by pre-check sbrk call */
-  char* new_brk;         /* address returned by post-check sbrk call */
+  long  top_size;        /* Amount of memory in the top chunk. */
+  long  extra;           /* Amount to release. */
+  long  released;        /* Amount actually released. */
+  char* current_brk;     /* Address returned by pre-check sbrk call. */
+  char* new_brk;         /* Address returned by post-check sbrk call. */
   long  top_area;
 
+  /* Current top size. */
   top_size = chunksize(av->top);
+
+  /* Subtracting MINSIZE from the existing top size, 
+     we get the actual amount of bytes that can be 
+     trimmed without eliminating the top chunk itself. */
   top_area = (top_size - MINSIZE - 1);
 
+  /* If the bytes available to trim are less than 
+     the bytes to keep in the top chunk, return. */
   if (top_area <= pad)
     return 0;
 
-  /* Release in pagesize units and round down to the nearest page. */
+  /* Align top_arena down to the previous huge page or 
+     standard page. */
   if (__glibc_unlikely (mp_.thp_pagesize != 0))
     extra = ALIGN_DOWN (top_area - pad, mp_.thp_pagesize);
   else
     extra = ALIGN_DOWN (top_area - pad, GLRO(dl_pagesize));
 
+  /* If the aligned bytes are 0, there is nothing to trim. */
   if (extra == 0)
     return 0;
 
-  /* Only proceed if end of memory is where we last set it.
-     This avoids problems if there were foreign sbrk calls. */
+  /* Only proceed if the end of memory is where 
+     we have set it last. This avoids problems 
+     if there were foreign sbrk calls. */
   current_brk = (char*) MORECORE(0);
   if (current_brk == (char*)(av->top) + top_size){
 
-    /* Attempt to release memory. We ignore MORECORE return value,
-    and instead call again to find out where new end of memory is.
-    This avoids problems if first call releases less than we asked,
-    of if failure somehow altered brk value. (We could still
-    encounter problems if it altered brk in some very bad way,
-    but the only thing we can do is adjust anyway, which will cause
-    some downstream failure.) */
+    /* Attempt to release memory. We ignore the MORECORE 
+       return value and instead call again to find out 
+       the new end of memory. This avoids problems if the 
+       first call releases less than we asked, of if 
+       failure somehow altered brk value. We could still
+       encounter problems if it altered brk in some very 
+       bad way, but the only thing we can do is adjust 
+       anyway, which will cause some downstream failure. */
 
     MORECORE(-extra);
     new_brk = (char*) MORECORE(0);
     LIBC_PROBE(memory_sbrk_less, 2, new_brk, extra);
 
     if (new_brk != (char*)(MORECORE_FAILURE)){
+      /* A defensive check. */
       released = (long)(current_brk - new_brk);
 
       /* Success. Adjust top. */
@@ -6328,17 +6340,38 @@ static void* _int_memalign(mstate av, size_t alignment, size_t bytes)
 
 /* ------------------ malloc_trim ------------------ */
 
+/* It does two things. 
+   1. Walk through every bin and check if the payload 
+      memory contains at least one complete page. If 
+      yes, the memory advise syscall is used to tell 
+      the kernel to reclaim the physical backing 
+      associated with that page. The virtual memory 
+      mapping remains intact and it is backed with 
+      physical memory in future if it is accessed 
+      again, not necessarily by the same physical page 
+      frame, though. This way, the pressure on the 
+      physical memory is reduced.
+   2. Call systrim to release memory from the top chunk. */
 static int mtrim(mstate av, size_t pad)
 {
+  /* Page size. */
   const size_t ps = GLRO(dl_pagesize);
+
+  /* Bin number corresponding to page size. */
   int psindex = bin_index(ps);
+
+  /* Page mask (I hope so). */
   const size_t psm1 = ps - 1;
+
+  /* Traverse all the bins. */
 
   int result = 0;
   for (int i = 1; i < NBINS; ++i){
     if (i == 1 || i >= psindex){
+      /* Bin handler for bin #i. */
       mbinptr bin = bin_at(av, i);
 
+      /* Start with the smaller size end. */
       for(
         (mchunkptr p = last(bin)); 
         (p != bin); 
@@ -6346,16 +6379,34 @@ static int mtrim(mstate av, size_t pad)
       ){
         INTERNAL_SIZE_T size = chunksize(p);
 
-        if (size > psm1 + sizeof(struct malloc_chunk)){
-          /* See whether the chunk contains at least one unused page. */
-          char *paligned_mem = (char*)( ((uintptr_t)p + sizeof(struct malloc_chunk) + psm1) & ~psm1);
+        /* The payload memory must have at least one page. */
+        if (size > (psm1 + sizeof(struct malloc_chunk))){
+          /* Align the payload memory pointer to the next page. */
+          char *paligned_mem = (char*)( 
+            ((uintptr_t)(p) + sizeof(struct malloc_chunk) + psm1) 
+            & ~psm1
+          );
 
-          assert ((char*)chunk2mem(p) + 2 * CHUNK_HDR_SZ <= paligned_mem);
-          assert ((char*)p + size > paligned_mem);
+          assert ( ((char*) chunk2mem(p) + (2 * CHUNK_HDR_SZ)) <= paligned_mem);
+          assert ( ((char*)(p) + size) > paligned_mem);
+
+          /* (paligned_mem - p) is the number of bytes from the 
+              start of the chunk (including the header) that are 
+              a part of a different page, not the first page 
+              aligned address within the payload memory.
+
+             (size - (paligned_mem - p)) represents the number 
+              of bytes from the first page-aligned address inside 
+              the payload memory region up to the end of the 
+              chunk. This size is not necessarily page-aligned. 
+              It can contain fragments belonging to an 
+              incomplete page, so we align it down to the previous 
+              page, before passing it to madvise. */
 
           /* This is the size we could potentially free. */
-          size -= paligned_mem - (char*)p;
+          size -= (paligned_mem - (char*)(p));
 
+          /* Must be at least one page. */
           if (size > psm1){
 #if MALLOC_DEBUG
             /* When debugging we simulate destroying the memory content. */
@@ -6378,11 +6429,15 @@ static int mtrim(mstate av, size_t pad)
 }
 
 
+/* Keep at least `s` bytes at the top of the arena 
+   and release the rest. */
 int __malloc_trim(size_t s)
 {
   int result = 0;
   mstate ar_ptr = &main_arena;
 
+  /* Iterate over reach available arena, 
+     starting from the main_arena. */
   do{
     __libc_lock_lock(ar_ptr->mutex);
     result |= mtrim(ar_ptr, s);
