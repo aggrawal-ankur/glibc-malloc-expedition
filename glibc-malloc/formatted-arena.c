@@ -362,33 +362,36 @@ static void dump_heap(heap_info *heap)
 }
 #endif /* MALLOC_DEBUG > 1 */
 
-/* If consecutive mmap (0, HEAP_MAX_SIZE << 1, ...) calls return decreasing
-   addresses as opposed to increasing, new_heap would badly fragment the
-   address space.  In that case remember the second HEAP_MAX_SIZE part
-   aligned to HEAP_MAX_SIZE from last mmap (0, HEAP_MAX_SIZE << 1, ...)
-   call (if it is already aligned) and try to reuse it next time.  We need
-   no locking for it, as kernel ensures the atomicity for us - worst case
-   we'll call mmap (addr, HEAP_MAX_SIZE, ...) for some value of addr in
-   multiple threads, but only one will succeed.  */
+/* If consecutive mmap (0, HEAP_MAX_SIZE << 1, ...) calls 
+   return decreasing addresses as opposed to increasing, 
+   new_heap would badly fragment the address space. In 
+   that case remember the second HEAP_MAX_SIZE part aligned 
+   to HEAP_MAX_SIZE from last mmap (0, HEAP_MAX_SIZE << 1, ...)
+   call (if it is already aligned) and try to reuse it next 
+   time. We need no locking for it, as kernel ensures the 
+   atomicity for us - worst case we'll call mmap 
+   (addr, HEAP_MAX_SIZE, ...) for some value of addr in
+   multiple threads, but only one will succeed. */
 static char *aligned_heap_area;
 
-/* Create a new heap segment. `size` is 
-   automatically rounded up to a multiple 
-   of the page size. */
+/* Create a new heap segment. `size` is automatically 
+   rounded up to a multiple of the page size. */
 static heap_info* alloc_new_heap(
   size_t size, size_t top_pad, 
   size_t pagesize, int mmap_flags
 ){
-  char *p1, *p2;     /* Their description is made clear in the later of the fn. */
+  char *p1, *p2;     /* Explained later. */
   unsigned long ul;  /* Explained later. */
   heap_info *h;
 
   size_t min_size = heap_min_size();
   size_t max_size = heap_max_size();
 
-  /* [STEP 1]: Calculate the size to reserve for this heap segment, 
-     i.e. [PROT_NONE] memory. */
-  /* This size revolves in the range: [HEAP_MIN_SIZE, HEAP_MAX_SIZE] */
+  /* [STEP 1]: Calculate the size to reserve for this 
+      heap segment, i.e. [PROT_NONE] memory.
+
+    It belongs to this range:
+     [HEAP_MIN_SIZE, HEAP_MAX_SIZE] */
 
   if (size + top_pad < min_size)
     size = min_size;
@@ -420,9 +423,9 @@ static heap_info* alloc_new_heap(
      require swap space anyways (on Linux). */
   /* [TODO]: But why do we need the base to be a multiple of HEAP_MAX_SIZE?
 
-  /* [PATH 1]: Use aligned_heap_area. */
-  /* [NOTE 1]: If the first time through, aligned_heap_area will be 0. */
-  /* [NOTE 2]: Explore path 2 before this path to understand better. */
+  /* [PATH 1]: Use aligned_heap_area.
+     [NOTE 1]: If the first time through, aligned_heap_area will be 0.
+     [NOTE 2]: Explore path 2 before this path to understand better. */
 
   p2 = MAP_FAILED;
   if (aligned_heap_area){
@@ -638,8 +641,9 @@ static int grow_heap(heap_info *h, long diff)
     h->mprotect_size = new_size;
   }
 
-  /* mprotect preserves MADV_HUGEPAGE semantics - this means that if the old
-     region was marked with MADV_HUGEPAGE, the new region will retain that.  */
+  /* mprotect preserves MADV_HUGEPAGE semantics. This means 
+     that if the old region was marked with MADV_HUGEPAGE, 
+     the new region will retain that. */
   if (h->size < mp_.thp_pagesize)
     madvise_thp (h, new_size);
 
@@ -653,16 +657,17 @@ static int shrink_heap(heap_info *h, long diff)
 {
   long new_size;
 
-  new_size = (long)h->size - diff;
-  if (new_size < (long) sizeof(*h))
+  new_size = (long)(h->size) - diff;
+  if (new_size < (long)(sizeof(*h)))
     return -1;
 
-  /* Try to re-map the extra heap space freshly to save memory, and make it
-     inaccessible.  See malloc-sysdep.h to know when this is true.  */
+  /* Try to re-map the extra heap space freshly to save 
+     memory, and make it inaccessible. See malloc-sysdep.h 
+     to know when this is true. */
   if (__glibc_unlikely(check_may_shrink_heap()))
   {
     if ((char*) MMAP(
-      (char*)h + new_size,
+      (char*)(h) + new_size,
       diff,
       PROT_NONE,
       MAP_FIXED
@@ -675,7 +680,7 @@ static int shrink_heap(heap_info *h, long diff)
   else
     __madvise ((char*)(h) + new_size, diff, MADV_DONTNEED);
 
-  /*fprintf(stderr, "shrink %p %08lx\n", h, new_size);*/
+  /* fprintf(stderr, "shrink %p %08lx\n", h, new_size); */
 
   h->size = new_size;
   LIBC_PROBE (memory_heap_less, 2, h, h->size);
@@ -697,107 +702,127 @@ static int heap_trim(heap_info *heap, size_t pad)
   while (top_chunk == chunk_at_offset(heap, sizeof(*heap)))
   {
     prev_heap = heap->prev;
-    prev_size = prev_heap->size - (MINSIZE - 2 * SIZE_SZ);
+    prev_size = prev_heap->size - (MINSIZE - (2 * SIZE_SZ));
     p = chunk_at_offset (prev_heap, prev_size);
 
-    /* fencepost must be properly aligned.  */
-      misalign = ((long) p) & MALLOC_ALIGN_MASK;
-      p = chunk_at_offset (prev_heap, prev_size - misalign);
-      assert (chunksize_nomask (p) == (0 | PREV_INUSE)); /* must be fencepost */
-      p = prev_chunk (p);
-      new_size = chunksize (p) + (MINSIZE - 2 * SIZE_SZ) + misalign;
-      assert (new_size > 0 && new_size < (long) (2 * MINSIZE));
-      if (!prev_inuse (p))
-        new_size += prev_size (p);
-      assert (new_size > 0 && new_size < max_size);
-      if (new_size + (max_size - prev_heap->size) < pad + MINSIZE
-						    + heap->pagesize)
-        break;
-      ar_ptr->system_mem -= heap->size;
-      LIBC_PROBE (memory_heap_free, 2, heap, heap->size);
-      if ((char *) heap + max_size == aligned_heap_area)
-	aligned_heap_area = NULL;
-      __munmap (heap, max_size);
-      heap = prev_heap;
-      if (!prev_inuse (p)) /* consolidate backward */
-        {
-          p = prev_chunk (p);
-          unlink_chunk (ar_ptr, p);
-        }
-      assert (((unsigned long) ((char *) p + new_size) & (heap->pagesize - 1))
-	      == 0);
-      assert (((char *) p + new_size) == ((char *) heap + heap->size));
-      top (ar_ptr) = top_chunk = p;
-      set_head (top_chunk, new_size | PREV_INUSE);
-      /*check_chunk(ar_ptr, top_chunk);*/
+    /* fencepost must be properly aligned. */
+    misalign = ((long) p) & MALLOC_ALIGN_MASK;
+    p = chunk_at_offset(prev_heap, prev_size - misalign);
+    assert (chunksize_nomask (p) == (0 | PREV_INUSE)); /* must be fencepost */
+
+    p = prev_chunk(p);
+    new_size = chunksize(p) + (MINSIZE - (2 * SIZE_SZ)) + misalign;
+    assert (new_size > 0 && new_size < (long) (2 * MINSIZE));
+
+    if (!prev_inuse(p))
+      new_size += prev_size (p);
+
+    assert ((new_size > 0) && (new_size < max_size));
+
+    if (
+      new_size + (max_size - prev_heap->size) < 
+      pad + MINSIZE + heap->pagesize
+    )
+      break;
+
+    ar_ptr->system_mem -= heap->size;
+    LIBC_PROBE (memory_heap_free, 2, heap, heap->size);
+
+    if ((char*)(heap) + max_size == aligned_heap_area)
+    	aligned_heap_area = NULL;
+
+    __munmap(heap, max_size);
+    heap = prev_heap;
+
+    /* Consolidate backward. */
+    if (!prev_inuse(p)){
+      p = prev_chunk(p);
+      unlink_chunk(ar_ptr, p);
     }
 
-  /* Uses similar logic for per-thread arenas as the main arena with systrim
-     and _int_free by preserving the top pad and rounding down to the nearest
-     page.  */
+    assert(((unsigned long) ((char*)(p) + new_size) & (heap->pagesize - 1)) == 0);
+    assert(((char*)(p) + new_size) == ((char*)(heap) + heap->size));
+
+    top(ar_ptr) = top_chunk = p;
+    set_head (top_chunk, new_size | PREV_INUSE);
+
+    /* check_chunk(ar_ptr, top_chunk); */
+  }
+
+  /* Uses similar logic for per-thread arenas as the main 
+     arena with systrim and _int_free by preserving the 
+     top pad and rounding down to the nearest page. */
   top_size = chunksize (top_chunk);
-  if ((unsigned long)(top_size) <
-      (unsigned long)(mp_.trim_threshold))
+  if ((unsigned long)(top_size) < (unsigned long)(mp_.trim_threshold))
     return 0;
 
   top_area = top_size - MINSIZE - 1;
-  if (top_area < 0 || (size_t) top_area <= pad)
+  if (top_area < 0 || (size_t)(top_area) <= pad)
     return 0;
 
-  /* Release in pagesize units and round down to the nearest page.  */
+  /* Release in pagesize units and round down to the nearest page. */
   extra = ALIGN_DOWN(top_area - pad, heap->pagesize);
   if (extra == 0)
     return 0;
 
   /* Try to shrink. */
-  if (shrink_heap (heap, extra) != 0)
+  if (shrink_heap(heap, extra) != 0)
     return 0;
 
   ar_ptr->system_mem -= extra;
 
   /* Success. Adjust top accordingly. */
   set_head (top_chunk, (top_size - extra) | PREV_INUSE);
-  /*check_chunk(ar_ptr, top_chunk);*/
+
+  /* check_chunk(ar_ptr, top_chunk); */
   return 1;
 }
 
 /* Create a new arena with initial size "size".  */
 
 #if IS_IN (libc)
-/* If REPLACED_ARENA is not NULL, detach it from this thread.  Must be
-   called while free_list_lock is held.  */
+/* If REPLACED_ARENA is not NULL, detach it from this thread.
+   Must be called while free_list_lock is held. */
 static void
 detach_arena (mstate replaced_arena)
 {
-  if (replaced_arena != NULL)
-    {
-      assert (replaced_arena->attached_threads > 0);
-      /* The current implementation only detaches from main_arena in
-	 case of allocation failure.  This means that it is likely not
-	 beneficial to put the arena on free_list even if the
-	 reference count reaches zero.  */
+  if (replaced_arena != NULL){
+    assert (replaced_arena->attached_threads > 0);
+
+    /* The current implementation only detaches from the 
+       main_arena in case of allocation failure. This means 
+       that it is likely not beneficial to put the arena on 
+       free_list even if the reference count reaches zero. */
       --replaced_arena->attached_threads;
     }
 }
 
-static mstate _int_new_arena (size_t size)
+static mstate _int_new_arena(size_t size)
 {
   mstate a;
   heap_info *h;
   char *ptr;
   unsigned long misalign;
 
-  h = new_heap (size + (sizeof (*h) + sizeof (*a) + MALLOC_ALIGNMENT),
-                mp_.top_pad);
-  if (!h)
-    {
-      /* Maybe size is too large to fit in a single heap.  So, just try
-         to create a minimally-sized arena and let _int_malloc() attempt
-         to deal with the large request via mmap_chunk().  */
-      h = new_heap (sizeof (*h) + sizeof (*a) + MALLOC_ALIGNMENT, mp_.top_pad);
-      if (!h)
-        return NULL;
-    }
+  h = new_heap(
+    size + (sizeof(*h) + sizeof(*a) + MALLOC_ALIGNMENT),
+    mp_.top_pad
+  );
+
+  if (!h){
+    /* Maybe size is too large to fit in a single heap. So, 
+       just try to create a minimally-sized arena and let 
+       _int_malloc() attempt to deal with the large request 
+       via mmap_chunk(). */
+
+    h = new_heap(
+      sizeof(*h) + sizeof(*a) + MALLOC_ALIGNMENT, 
+      mp_.top_pad
+    );
+    if (!h)
+      return NULL;
+  }
+
   a = h->ar_ptr = (mstate) (h + 1);
   malloc_init_state (a);
   a->attached_threads = 1;
@@ -819,12 +844,12 @@ static mstate _int_new_arena (size_t size)
 
   __libc_lock_lock (list_lock);
 
-  /* Add the new arena to the global list.  */
+  /* Add the new arena to the global list. */
   a->next = main_arena.next;
-  /* FIXME: The barrier is an attempt to synchronize with read access
-     in reused_arena, which does not acquire list_lock while
-     traversing the list.  */
-  atomic_write_barrier ();
+  /* FIXME: The barrier is an attempt to synchronize with 
+     read access in reused_arena, which does not acquire 
+     list_lock while traversing the list. */
+  atomic_write_barrier();
   main_arena.next = a;
 
   __libc_lock_unlock (list_lock);
@@ -849,118 +874,120 @@ static mstate _int_new_arena (size_t size)
 }
 
 
-/* Remove an arena from free_list.  */
-static mstate
-get_free_list (void)
+/* Remove an arena from free_list. */
+static mstate get_free_list (void)
 {
   mstate replaced_arena = thread_arena;
   mstate result = free_list;
-  if (result != NULL)
-    {
-      __libc_lock_lock (free_list_lock);
-      result = free_list;
-      if (result != NULL)
-	{
-	  free_list = result->next_free;
 
-	  /* The arena will be attached to this thread.  */
-	  assert (result->attached_threads == 0);
-	  result->attached_threads = 1;
+  if (result != NULL){
+    __libc_lock_lock (free_list_lock);
+    result = free_list;
 
-	  detach_arena (replaced_arena);
-	}
-      __libc_lock_unlock (free_list_lock);
+    if (result != NULL){
+      free_list = result->next_free;
 
-      if (result != NULL)
-        {
-          LIBC_PROBE (memory_arena_reuse_free_list, 1, result);
-          __libc_lock_lock (result->mutex);
-	  thread_arena = result;
-        }
+      /* The arena will be attached to this thread. */
+      assert (result->attached_threads == 0);
+      result->attached_threads = 1;
+
+      detach_arena (replaced_arena);
     }
+
+    __libc_lock_unlock (free_list_lock);
+
+    if (result != NULL){
+      LIBC_PROBE (memory_arena_reuse_free_list, 1, result);
+      __libc_lock_lock (result->mutex);
+      thread_arena = result;
+    }
+  }
 
   return result;
 }
 
-/* Remove the arena from the free list (if it is present).
-   free_list_lock must have been acquired by the caller.  */
-static void
-remove_from_free_list (mstate arena)
+/* Remove the arena from the free list (if it 
+   is present). free_list_lock must have been 
+   acquired by the caller. */
+static void remove_from_free_list (mstate arena)
 {
   mstate *previous = &free_list;
-  for (mstate p = free_list; p != NULL; p = p->next_free)
-    {
-      assert (p->attached_threads == 0);
-      if (p == arena)
-	{
-	  /* Remove the requested arena from the list.  */
-	  *previous = p->next_free;
-	  break;
-	}
-      else
-	previous = &p->next_free;
+  for (
+    mstate p = free_list; 
+    p != NULL; 
+    p = p->next_free
+  ){
+    assert (p->attached_threads == 0);
+    if (p == arena){
+      /* Remove the requested arena from the list.  */
+      *previous = p->next_free;
+      break;
     }
+    else
+    	previous = &p->next_free;
+  }
 }
 
-/* Lock and return an arena that can be reused for memory allocation.
-   Avoid AVOID_ARENA as we have already failed to allocate memory in
-   it and it is currently locked.  */
+/* Lock and return an arena that can be reused for 
+   memory allocation. Avoid AVOID_ARENA as we have 
+   already failed to allocate memory in it and it 
+   is currently locked. */
 static mstate reused_arena (mstate avoid_arena)
 {
   mstate result;
-  /* FIXME: Access to next_to_use suffers from data races.  */
+  /* FIXME: Access to next_to_use suffers from data races. */
   static mstate next_to_use;
+
   if (next_to_use == NULL)
     next_to_use = &main_arena;
 
   /* Iterate over all arenas (including those linked from
-     free_list).  */
+     free_list). */
   result = next_to_use;
-  do
-    {
-      if (!__libc_lock_trylock (result->mutex))
-        goto out;
+  do {
+    if (!__libc_lock_trylock (result->mutex))
+      goto out;
 
-      /* FIXME: This is a data race, see _int_new_arena.  */
-      result = result->next;
-    }
-  while (result != next_to_use);
+    /* FIXME: This is a data race, see _int_new_arena. */
+    result = result->next;
+  } while (result != next_to_use);
 
-  /* Avoid AVOID_ARENA as we have already failed to allocate memory
-     in that arena and it is currently locked.   */
+  /* Avoid AVOID_ARENA as we have already failed to allocate 
+     memory in that arena and it is currently locked. */
   if (result == avoid_arena)
     result = result->next;
 
-  /* No arena available without contention.  Wait for the next in line.  */
+  /* No arena available without contention. Wait for 
+     the next in line. */
   LIBC_PROBE (memory_arena_reuse_wait, 3, &result->mutex, result, avoid_arena);
   __libc_lock_lock (result->mutex);
 
-out:
-  /* Attach the arena to the current thread.  */
-  {
-    /* Update the arena thread attachment counters.   */
-    mstate replaced_arena = thread_arena;
-    __libc_lock_lock (free_list_lock);
-    detach_arena (replaced_arena);
-
-    /* We may have picked up an arena on the free list.  We need to
-       preserve the invariant that no arena on the free list has a
-       positive attached_threads counter (otherwise,
-       arena_thread_freeres cannot use the counter to determine if the
-       arena needs to be put on the free list).  We unconditionally
-       remove the selected arena from the free list.  The caller of
-       reused_arena checked the free list and observed it to be empty,
-       so the list is very short.  */
-    remove_from_free_list (result);
-
-    ++result->attached_threads;
-
-    __libc_lock_unlock (free_list_lock);
-  }
+  out:
+    /* Attach the arena to the current thread. */
+    {
+      /* Update the arena thread attachment counters. */
+      mstate replaced_arena = thread_arena;
+      __libc_lock_lock (free_list_lock);
+      detach_arena (replaced_arena);
+  
+      /* We may have picked up an arena on the free list.
+         - We need to preserve the invariant that no arena 
+           on the free list has a positive attached_threads 
+           counter (otherwise, arena_thread_freeres cannot 
+           use the counter to determine if the arena needs 
+           to be put on the free list).
+         - We unconditionally remove the selected arena 
+           from the free list. The caller of reused_arena 
+           checked the free list and observed it to be empty, 
+           so the list is very short. */
+      remove_from_free_list (result);
+      ++result->attached_threads;
+      __libc_lock_unlock (free_list_lock);
+    }
 
   LIBC_PROBE (memory_arena_reuse, 2, result, avoid_arena);
   thread_arena = result;
-  next_to_use = result->next;
+  next_to_use  = result->next;
 
   return result;
 }
@@ -973,20 +1000,20 @@ arena_get2 (size_t size, mstate avoid_arena)
 
   a = get_free_list();
   if (a == NULL){
-    /* Nothing immediately available, so generate a new arena.  */
+    /* Nothing immediately available, so generate a new arena. */
     if (narenas_limit == 0){
       if (mp_.arena_max != 0)
         narenas_limit = mp_.arena_max;
 
       else if (narenas > mp_.arena_test){
-        int n = __get_nprocs ();
+        int n = __get_nprocs();
 
         if (n >= 1)
-          narenas_limit = NARENAS_FROM_NCORES (n);
+          narenas_limit = NARENAS_FROM_NCORES(n);
         else{
-          /* We have no information about the system.  Assume two
-          cores.  */
-          narenas_limit = NARENAS_FROM_NCORES (2);
+          /* We have no information about the system. 
+             Assume two cores. */
+          narenas_limit = NARENAS_FROM_NCORES(2);
         }
       }
     }
@@ -995,16 +1022,18 @@ arena_get2 (size_t size, mstate avoid_arena)
 
     size_t n = narenas;
 
-    /* NB: the following depends on the fact that (size_t)0 - 1 is a
-       very large number and that the underflow is OK.  If arena_max
-       is set the value of arena_test is irrelevant.  If arena_test
-       is set but narenas is not yet larger or equal to arena_test
-       narenas_limit is 0.  There is no possibility for narenas to
-       be too big for the test to always fail since there is not
-       enough address space to create that many arenas.  */
+    /* NB: the following depends on the fact that (size_t)(0 - 1) 
+       is a very large number and that the underflow is OK.
+       - If arena_max is set the value of arena_test is 
+         irrelevant.
+       - If arena_test is set but narenas is not yet larger 
+         or equal to arena_test narenas_limit is 0. There is 
+         no possibility for narenas to be too big for the 
+         test to always fail since there is not enough address 
+         space to create that many arenas. */
 
-    if (__glibc_unlikely(n <= narenas_limit - 1)){
-      if (atomic_compare_and_exchange_bool_acq(&narenas, n + 1, n))
+    if (__glibc_unlikely(n <= (narenas_limit-1))){
+      if (atomic_compare_and_exchange_bool_acq (&narenas, n + 1, n))
         goto repeat;
 
       a = _int_new_arena(size);
@@ -1019,10 +1048,11 @@ arena_get2 (size_t size, mstate avoid_arena)
   return a;
 }
 
-/* If we don't have the main arena, then maybe the failure is due to 
-   running out of mmapped areas, so we can try allocating on the main 
-   arena. Otherwise, it is likely that sbrk() has failed and there is 
-   still a chance to mmap(), so try one of the other arenas.  */
+/* If we don't have the main arena, then maybe the failure 
+   is due to running out of mmapped areas, so we can try 
+   allocating on the main arena. Otherwise, it is likely 
+   that sbrk() has failed and there is still a chance to 
+   mmap(), so try one of the other arenas. */
 static mstate
 arena_get_retry (mstate ar_ptr, size_t bytes)
 {
@@ -1043,9 +1073,9 @@ arena_get_retry (mstate ar_ptr, size_t bytes)
 
 void __malloc_arena_thread_freeres(void)
 {
-  /* Shut down the thread cache first.  This could deallocate data for
-     the thread arena, so do this before we put the arena on the free
-     list.  */
+  /* Shut down the thread cache first. This could deallocate 
+     data for the thread arena, so do this before we put the 
+     arena on the free list. */
   tcache_thread_shutdown();
 
   mstate a = thread_arena;
@@ -1054,8 +1084,8 @@ void __malloc_arena_thread_freeres(void)
   if (a != NULL){
     __libc_lock_lock (free_list_lock);
 
-    /* If this was the last attached thread for this arena, put the
-    arena on the free list.  */
+    /* If this was the last attached thread for this arena, 
+       put the arena on the free list. */
     assert (a->attached_threads > 0);
     if (--a->attached_threads == 0){
       a->next_free = free_list;
