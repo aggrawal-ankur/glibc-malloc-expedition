@@ -2724,9 +2724,9 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     heap_info *heap;
     size_t old_heap_size;
 
-    old_heap = heap_for_ptr(old_top);    // The base of the heap.
-    old_heap_size = old_heap->size;      // Save the existing heap size.. 
-                                         // ..before grow_heap() is called.
+    old_heap = heap_for_ptr(old_top);    /* The base of the heap. */
+    old_heap_size = old_heap->size;      /* Save the existing heap size 
+                                            before grow_heap() is called. */
 
 
     /* [PATH 2A]: If the top chunk doesn't have enough 
@@ -2816,8 +2816,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
            satisfies the allocator's alignment invariant.
          - However, if the top size was corrupted, alignment 
            would reduce the size further and there will be some 
-           bytes that no longer belong to the top. They are carried 
-           by fencepost-1.
+           bytes that no longer belong to the top. 
          - An ALIGN_DOWN operation is favored as an ALIGN_UP 
            operation would disturb the size calculation for 
            fencepost chunks. */
@@ -4737,8 +4736,8 @@ static void* _int_malloc(mstate av, size_t bytes)
   unsigned int bit;                 /* Bit map traverser. */
   unsigned int map;                 /* Current word of binmap. */
 
-  mchunkptr fwd;                    /* Temporary variables for 
-  mchunkptr bck;                       handling chunks. */
+  mchunkptr fwd;                    /* Temporary variables for */
+  mchunkptr bck;                    /* handling chunks. */
 
 #if USE_TCACHE
   size_t tcache_unsorted_count;	    /* The count of unsorted bin chunks 
@@ -6115,9 +6114,10 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
 static void _int_free_maybe_trim(mstate av, INTERNAL_SIZE_T size)
 {
   /* We don't want to trim on each free. As a compromise, 
-  trimming is attempted if ATTEMPT_TRIMMING_THRESHOLD 
-  is reached. */
+     trimming is attempted if ATTEMPT_TRIMMING_THRESHOLD 
+     is reached. */
   if (size >= ATTEMPT_TRIMMING_THRESHOLD){
+    /* For the main_arena, we call systrim. */
     if (av == &main_arena){
 
 #ifndef MORECORE_CANNOT_TRIM
@@ -6126,8 +6126,9 @@ static void _int_free_maybe_trim(mstate av, INTERNAL_SIZE_T size)
 #endif
     }
 
-    /* Always try heap_trim, even if the top chunk is not 
-    large, because the corresponding heap might go away. */
+    /* For non-main arenas, we call heap_trim. Always try 
+       heap_trim, even if the top chunk is not large, 
+       because the corresponding heap might go away. */
     else{
       heap_info *heap = heap_for_ptr(top(av));
       assert(heap->ar_ptr == av);

@@ -79,9 +79,10 @@ typedef struct _heap_info
 {
   mstate ar_ptr;              /* Arena for this heap. */
   struct _heap_info *prev;    /* Previous heap. */
-  size_t size;                /* The total memory the process is actively using. This is shrinkable. */
-  size_t mprotect_size;       /* The memory that has been mprotected with read/write permissions 
-                                 (PROT_READ | PROT_WRITE). This is non-shrinkable. */
+  size_t size;                /* The total memory available to 
+                                 this heap. */
+  size_t mprotect_size;       /* The total memory that has been
+                                 mprotected with RW permissions. */
 
   /* [RELATIONSHIP]: size <= mprotect_size */
 
@@ -456,8 +457,8 @@ static heap_info* alloc_new_heap(
     }
   }
 
-  /* [Path 2]: Manage to mmap a HEAP_MAX_SIZE sized segment which is
-               mandatorily a multiple of HEAP_MAX_SIZE. */
+  /* [Path 2]: mmap() a HEAP_MAX_SIZE segment which is
+               aligned to HEAP_MAX_SIZE boundary. */
 
   if (p2 == MAP_FAILED){
     /* [PATH 2A]: Request a region twice of HEAP_MAX_SIZE bytes and 
@@ -466,7 +467,7 @@ static heap_info* alloc_new_heap(
     /* We are not hinting the kernel with a HEAP_MAX_SIZE aligend
        address. Therefore, the kernel can return any address, which
        might be off by any number of bytes (including a perfectly 
-       aligned address with 0 off byte as well.
+       aligned address with 0 off bytes as well.
        - For this reason, we can not choose an arbitray number of 
          extra bytes on top of HEAP_MAX_SIZE.
        - Therefore, we request a region of (HEAP_MAX_SIZE * 2) bytes.
@@ -560,14 +561,14 @@ static heap_info* alloc_new_heap(
     return NULL;
   }
 
-  /* Only considere the actual usable range.  */
+  /* Only considere the actual usable range. */
   /* [WHAT IS THIS FOR] */
   __set_vma_name (p2, size, " glibc: malloc arena");
 
   /* [Advice the kernel to make it a huge page?] */
   madvise_thp (p2, size);
 
-  h = (heap_info*) p2;
+  h = (heap_info*)(p2);
   h->size = size;
   h->mprotect_size = size;
   h->pagesize = pagesize;
@@ -629,7 +630,7 @@ static int grow_heap(heap_info *h, long diff)
          the newly mprotected region and put new_size in
          h->size. */
 
-  /* [Case 2]: (h->size + diff) > h->mprotect_size */
+  /* [Case 2]: If the new size goes beyond the mprotected region. */
   if ((unsigned long)(new_size) > h->mprotect_size){
     if (__mprotect(
       (char*)(h) + h->mprotect_size,
@@ -641,9 +642,9 @@ static int grow_heap(heap_info *h, long diff)
     h->mprotect_size = new_size;
   }
 
-  /* mprotect preserves MADV_HUGEPAGE semantics. This means 
-     that if the old region was marked with MADV_HUGEPAGE, 
-     the new region will retain that. */
+  /* mprotect preserves MADV_HUGEPAGE semantics. So, if 
+     the old region was marked with MADV_HUGEPAGE, the 
+     new region will retain that. */
   if (h->size < mp_.thp_pagesize)
     madvise_thp (h, new_size);
 
@@ -661,9 +662,11 @@ static int shrink_heap(heap_info *h, long diff)
   if (new_size < (long)(sizeof(*h)))
     return -1;
 
-  /* Try to re-map the extra heap space freshly to save 
-     memory, and make it inaccessible. See malloc-sysdep.h 
-     to know when this is true. */
+  /* Try to re-map the extra heap space freshly to 
+     save memory, and make it inaccessible. See 
+     malloc-sysdep.h to know when this is true. */
+  /* The PROT_NONE mapping removes the RW mapping 
+     from the region. */
   if (__glibc_unlikely(check_may_shrink_heap()))
   {
     if ((char*) MMAP(
@@ -674,93 +677,185 @@ static int shrink_heap(heap_info *h, long diff)
     ) == (char*) MAP_FAILED)
       return -2;
 
+    /* Because we have changed the permissions on the 
+       extra bytes, we need to update the mprotect_size 
+       as well. */
     h->mprotect_size = new_size;
   }
 
+  /* madvise only hints the kernel to remove the physical 
+     backing. The virtual address range remains reserved 
+     and is backed again when it is accessed. Therefore, 
+     we don't have to update the mprotect_size here. */
   else
     __madvise ((char*)(h) + new_size, diff, MADV_DONTNEED);
 
   /* fprintf(stderr, "shrink %p %08lx\n", h, new_size); */
 
+  /* Update the size this heap currently has. */
   h->size = new_size;
+
   LIBC_PROBE (memory_heap_less, 2, h, h->size);
   return 0;
 }
 
-/* Delete a heap. */
+/* [Note]: The heap is always the one that has the top chunk. */
 static int heap_trim(heap_info *heap, size_t pad)
 {
+  /* Arena for the incoming heap. */
   mstate ar_ptr = heap->ar_ptr;
+
+  /* The top chunk in this arena and a variable to 
+     hold pointer to a chunk. */
   mchunkptr top_chunk = top(ar_ptr), p;
 
   heap_info *prev_heap;
+
+  /* These variables ar divided into two sections.
+
+    Variables used by the while loop to re-establish 
+    the top chunk in the previous arena after removing 
+    the heap the top chunk belongs to.
+      new_size:   The size of the new top chunk is 
+                  built in this variable.
+      prev_size:  The size of the heap excluding the 
+                  second fencepost.
+      misalign:   Misaligned bytes near fencepost, if any.
+
+    Variables used to trim the top chunk.
+      top_size: Current top chunk size.
+      top_area: The number of bytes in the top chunk that 
+                can be potentially trimmed.
+      extra:
+  */
   long new_size, top_size, top_area, extra, prev_size, misalign;
 
-  size_t max_size = heap_max_size ();
+  size_t max_size = heap_max_size();
 
-  /* Can this heap go away completely? */
+
+  /* If the top chunk is the first and the only chunk in 
+     this heap, this heap can be deleted completely. */
   while (top_chunk == chunk_at_offset(heap, sizeof(*heap)))
   {
+    /* Previous heap. */
     prev_heap = heap->prev;
+
+    /* If we subtract the size of the second fencepost from 
+       the total heap size, we get to the second fencepost. 
+       From there, we crawl back to the first fencepost. */
     prev_size = prev_heap->size - (MINSIZE - (2 * SIZE_SZ));
-    p = chunk_at_offset (prev_heap, prev_size);
 
-    /* fencepost must be properly aligned. */
-    misalign = ((long) p) & MALLOC_ALIGN_MASK;
+    /* Fencepost-2 */
+    p = chunk_at_offset(prev_heap, prev_size);
+
+    /* Fencepost must be properly aligned. */
+    misalign = (long)(p) & MALLOC_ALIGN_MASK;
     p = chunk_at_offset(prev_heap, prev_size - misalign);
-    assert (chunksize_nomask (p) == (0 | PREV_INUSE)); /* must be fencepost */
+    assert(chunksize_nomask(p) == (0 | PREV_INUSE));
 
+    /* Fencepost-1 */
     p = prev_chunk(p);
+
+    /* The size of the two fenceposts and misaligned bytes, 
+       if any. */
     new_size = chunksize(p) + (MINSIZE - (2 * SIZE_SZ)) + misalign;
     assert (new_size > 0 && new_size < (long) (2 * MINSIZE));
 
+    /* If the last usable chunk in this heap is free 
+       count its size with fencepost size. */
     if (!prev_inuse(p))
-      new_size += prev_size (p);
+      new_size += prev_size(p);
 
-    assert ((new_size > 0) && (new_size < max_size));
+    assert(
+      (new_size > 0) && 
+      (new_size < max_size)
+    );
 
+    /* A new heap is spawned only when the existing heap 
+       is not able to service a request. That doesn't 
+       necessarily imply that the current heap doesn't 
+       is used up until HEAP_MAX_SIZE. Therefore, 
+       (max_size - prev_heap->size) represents the 
+       memory that has not been made RW yet and is 
+       immediately available.
+       
+       The new top size must contain at least padding 
+       bytes, MINSIZE bytes and a page worth of memory 
+       to prevent setting up a new heap soon. If not, 
+       we don't take this path. */
     if (
-      new_size + (max_size - prev_heap->size) < 
-      pad + MINSIZE + heap->pagesize
+      (new_size + (max_size - prev_heap->size)) < 
+      (pad + MINSIZE + heap->pagesize)
     )
       break;
 
+    /* Subtract the current heap's memory from the 
+       total memory managed by the arena. */
     ar_ptr->system_mem -= heap->size;
     LIBC_PROBE (memory_heap_free, 2, heap, heap->size);
 
+    /* If new_heap for this heap succeeded with the 
+       (2 * HEAP_MAX_SIZE) path, aligned_heap_area 
+       would point to a valid PROT_NONE mapping that 
+       could be utilized as a new heap later, but 
+       the allocator doesn't seem to be doing it. 
+       Instead, it clears aligned_heap_area. But the 
+       mapping still exist.
+
+       We are discarding the pointer to a perfectly 
+       PROT_NONE heap segment stored in aligned_heap_area 
+       but not unmapping the actual memory it refers to. 
+       How is that useful? */
     if ((char*)(heap) + max_size == aligned_heap_area)
     	aligned_heap_area = NULL;
 
+    /* Unmap the current heap. */
     __munmap(heap, max_size);
     heap = prev_heap;
 
-    /* Consolidate backward. */
+    /* Consolidate the fenceposts into the last usable 
+       chunk and establish the top chunk. */
     if (!prev_inuse(p)){
       p = prev_chunk(p);
       unlink_chunk(ar_ptr, p);
     }
 
-    assert(((unsigned long) ((char*)(p) + new_size) & (heap->pagesize - 1)) == 0);
-    assert(((char*)(p) + new_size) == ((char*)(heap) + heap->size));
+    assert(
+      ((unsigned long) ((char*)(p) + new_size) 
+      & (heap->pagesize - 1)) == 0
+    );
+    assert(
+      ((char*)(p) + new_size) == ((char*)(heap) + heap->size)
+    );
 
     top(ar_ptr) = top_chunk = p;
-    set_head (top_chunk, new_size | PREV_INUSE);
+    set_head(top_chunk, new_size | PREV_INUSE);
 
     /* check_chunk(ar_ptr, top_chunk); */
   }
 
-  /* Uses similar logic for per-thread arenas as the main 
-     arena with systrim and _int_free by preserving the 
-     top pad and rounding down to the nearest page. */
-  top_size = chunksize (top_chunk);
+
+  /* Otherwise, trim the top chunk in the arena. The 
+     logic is similar to systrim as used by the main 
+     arena. */
+
+  top_size = chunksize(top_chunk);
+
+  /* The top size must be more than the trim threshold. */
   if ((unsigned long)(top_size) < (unsigned long)(mp_.trim_threshold))
     return 0;
 
-  top_area = top_size - MINSIZE - 1;
+  /* The total memory that can be trimmed while 
+     keeping the top chunk. */
+  top_area = (top_size - MINSIZE - 1);
+
+  /* The trimmable size must be more than the 
+     padding that we need to keep in the top 
+     chunk. */
   if (top_area < 0 || (size_t)(top_area) <= pad)
     return 0;
 
-  /* Release in pagesize units and round down to the nearest page. */
+  /* Align top_area down to the previous page. */
   extra = ALIGN_DOWN(top_area - pad, heap->pagesize);
   if (extra == 0)
     return 0;
@@ -771,7 +866,7 @@ static int heap_trim(heap_info *heap, size_t pad)
 
   ar_ptr->system_mem -= extra;
 
-  /* Success. Adjust top accordingly. */
+  /* Update the top chunk. */
   set_head (top_chunk, (top_size - extra) | PREV_INUSE);
 
   /* check_chunk(ar_ptr, top_chunk); */
