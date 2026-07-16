@@ -38,7 +38,7 @@ A complete description of glibc-malloc
   - [Finding the solution](#finding-the-solution)
   - [Implementing the solution](#implementing-the-solution)
   - [Some concerns](#some-concerns)
-- [The Bookkeeping System, Part 2: Static Analysis of bins\[\]](#the-bookkeeping-system-part-2-static-analysis-of-bins)
+- [The Bookkeeping System, Part 2: Complete Analysis of bins\[\]](#the-bookkeeping-system-part-2-complete-analysis-of-bins)
   - [Bin counts](#bin-counts)
     - [Total number of bins](#total-number-of-bins)
     - [Number of smallbins](#number-of-smallbins)
@@ -60,8 +60,8 @@ A complete description of glibc-malloc
     - [The Naming Issue](#the-naming-issue)
     - [Macro #5: bin\_at(m, i)](#macro-5-bin_atm-i)
   - [Largebin Size Ranges, Part 2](#largebin-size-ranges-part-2)
-- [The Bookkeeping System, Part 3: Dynamic Analysis of Bins](#the-bookkeeping-system-part-3-dynamic-analysis-of-bins)
-  - [The List Of Experiments](#the-list-of-experiments)
+  - [Dynamic Analysis (Incomplete)](#dynamic-analysis-incomplete)
+- [The Bookkeeping System, Part 3: The Evidence](#the-bookkeeping-system-part-3-the-evidence)
 ---
 
 # Introduction To Userspace Memory Allocators
@@ -535,6 +535,7 @@ It stands for "chunk header size", which refers to the metadata bytes that sit a
 | :---   | :----------- |
 | 32-bit | 8 bytes |
 | 64-bit | 16 bytes |
+| INTERNAL_SIZE_T=4 | 16 bytes |
 
 ---
 
@@ -754,7 +755,7 @@ As of writing this, the release-tag for glibc is v2.43. But stable-release distr
 
 To ensure reproducibility, a Dockerfile is provided in the `glibc-malloc/` directory that does the whole setup. It builds glibc-2.43 from scratch. The details of the setup are discussed below.
 
-If you have cloned the repository and reading locally, open your terminal in the `./glibc-malloc/dynamic-analysis-code/` directory and run the docker commands.
+If you have cloned the repository and reading locally, open your terminal in the `./glibc-malloc/dynamic-analysis/` directory and run the docker commands.
 
 If you are reading on GitHub, you can either clone the repository and follow along, or just `wget` the `Dockerfile`. There is absolutely no compulsion to clone the repo.
 
@@ -1123,7 +1124,7 @@ So to answer how `bins` are implemented, ***they are implemented as an array of 
 
 Now you know why a `List*` array is not suitable. It creates hurdles in implementing that "repositioning trick". However, a `List` array might make sense because, internally, it is just `Node*` elements. But in this case, it would simply be an abstraction that is no longer required.
 
-# The Bookkeeping System, Part 2: Static Analysis of bins[]
+# The Bookkeeping System, Part 2: Complete Analysis of bins[]
 
 The source is basically a collection of code and annotations.
   - **Annotations** are comments that never execute. Ideally, they should represent what happens at runtime in "pretty words", i.e. the theoretical model.
@@ -1873,11 +1874,9 @@ Anyways, this summarizes the largebin ranges section. The script is the most rel
 
 Now it is time for dynamic analysis.
 
-# The Bookkeeping System, Part 3: Dynamic Analysis of Bins
+## Dynamic Analysis (Incomplete)
 
 You might be aware of tooling like pwndbg (PWN Debug) and GEF (GDB Extended Features). These are tools built on top of gdb. They provide a nice abstraction over the actual functionality. Because we want to build a strong mental model of the underlying architecture, we will not use any kind of tooling, except the debugger itself.
-
-## The List Of Experiments
 
 These are the experiments we will do.
 
@@ -1897,5 +1896,10 @@ These are the experiments we will do.
 13. Show coalescing (both forward and backward).
 14. Show fragmentation (internal, external, l1 and l2).
 15. The exact amount at which bins top out.
+16. Verify the distorted largebin boundaries.
 
 ---
+
+# The Bookkeeping System, Part 3: The Evidence
+
+Since I have made pretty big claims, it is important to prove them historically as well.

@@ -1,20 +1,23 @@
-_int_malloc is the gateway to the core architecture 
-that deals with syscalls and stuff. Therefore, the 
-first thing we do is checking if the requested bytes 
-are valid.
+_int_malloc orchestrates the core architecture (chunks, 
+bins, syscalls) and the tcache layer (USE_TCACHE), which 
+is like a fast path over the core architecture. Before 
+these dedicated paths are accessed, we align the size as 
+per the allocator's size and alignment model. But before 
+that, we check if the requested bytes can be serviced in 
+general.
 - If the requested bytes are greater than PTRDIFF_MAX, 
-  we can not service this request. We set errno and 
-  return NULL.
-- While it might look easy on surface, to understand 
-  it better, such that, there are no confusions left 
-  whatsoever, we have to explore pointers a little bit.
+  the request is very big to be serviced as a single 
+  malloc and the kernel refuses it. We set errno and 
+  return NULL. Otherwise, we call request2size.
+  Note:
+    1. The request can still be near PTRDIFF_MAX while 
+       being <= PTRDIFF_MAX.
+    2. The request has not overflowed as size belongs to 
+       an unsigned container and the max limit is SIZE_MAX.
+- While it looks simple on surface, to remove confusions, 
+  we have to explore pointers a little bit.
 
 # Overflow Mechanics
-
-A pointer is a variable that contains a memory address. A 
-memory address is a regular stream of numbers interpreted
-specially. But if we remove the interpretation part, it 
-just a number inside a variable.
 
 C is statically typed, so every variable has a type. We 
 have a few primitive types and a handful of aliases (type 
@@ -27,23 +30,24 @@ A type can be signed or unsigned. Unsigned types manage
 positive integers only, while signed types can manage 
 both positive and negative numbers.
 
-Each data type has a width, which represents the largest 
-number a type can manage. The number of bits is what the 
-width of a container is.
+Each data type has a width, which is the number of bits
+used to represent values. Using this, we can obtain the
+range of values a type can represent.
 - Because unsigned integers only grow upward, we don't 
   talk about the smallest value possible. But that's not 
   true for signed types.
 - A signed type has both largest and smallest possible 
   values.
 
-Signed types come with a problem. They carry an extra piece 
-of information, i.e. signedness. We can't magically say if 
-a signed integer is positive or negative. The number must 
-carry its signedness, as they generally do on paper. To make 
-this happen, we utilize the MSB to represent the signedness 
-of a number and the remaining bits are used for magnitude. 
-This reduces the magnitude that a signed type can manage, but 
-it allows signed types to exist properly.
+Signed types come with a problem. They carry an extra 
+piece of information, i.e. signedness. We can't magically 
+say if a signed integer is positive or negative. The 
+number must carry its signedness, as they generally do 
+on paper.
+- We use 2s complement, where the MSB carries a negative 
+  weight when the number is interpreted as signed.
+- This reduces the magnitude that a signed type can manage, 
+  but it standardizes signed types.
 
 To find the range of numbers a primitive type can manage, 
 just raise the number of bits to the power of 2.
@@ -57,33 +61,73 @@ For 64-bit types, the ranges are:
 - Signed:   [-(2^63), ((2^63) - 1)], 
             [-9223372036854775808, +9223372036854775807]
 
-What happens when try to stuff data beyond its limit? An 
-overflow occurs.
-  - What happens in an overflow? The data exceeds the 
-    limits of the container, so it wraps around the 
-    other side of the range.
-  - Examples:
-    - Unsigned 64-bit:
-      [1]: What happens if we subtract 1 from 0?
-           ((size_t)(0) - 1) => 18446744073709551615, 
-           : we get the maximum.
-      [2]: What happens if we add 1 to the maximum 
-           possible value?
-           ((size_t)(SIZE_MAX) + 1) => 0.
-           : we get the minimum.
+What happens when we try to stuff data beyond its limit?
+The answer is different for signed and unsigned integers.
+- For an unsigned integer, when the data goes beyond 
+  SIZE_MAX, we need the 65th bit to represent it, which 
+  we don't have. So we discard the 65th bit. But if the 
+  data uses any of the 64 bits, it remains intact. For 
+  example,
+  - SIZE_MAX+1 only has the 65th bit ON and the rest of 
+    the bits are 0.
+  - But SIZE_MAX+2 has the 65th bit and the 1st bit 
+    (counting from 0) ON, making the result 1, and so on.
 
-    - Signed 64-bit:
-      [3]: What happens if we subtract 1 from the minimum?
-           ((ssize_t)(SIZE_MAX/2) - 1) => 9223372036854775807, 
-           : we get the maximum.
-      [4]: ((ssize_t)((SIZE_MAX/2)+1) + 1) => -9223372036854775808,
-           : we get the minimum.
+- For a signed integer, the lower 63 bits carry a positive 
+  weight, while the MSB carries a negative weight.
+  - For a positive number, the MSB remains unset (0).
+  - For a negative number, the MSB is set and it is 
+    interpreted with a negative weight. Mathematically, the 
+    weight of the MSB is subtracted from the lower 63 bits 
+    generating the right negative number.
+  - For example, (1) is 63 zeroes followed by a 1 and (-1) 
+    is all the 64 bits 1.
+    - The weight of the 64th bit (MSB) in signed terms is 
+      -9223372036854775808.
+    - The weight of the the lower 63 bits combined is 
+      9223372036854775807.
+    - (-9223372036854775808) + 9223372036854775807 is (-1).
+
+Therefore,
+- an unsigned overflow implies that the resulting value 
+  can not be represented by the currently available 
+  bits, and 
+- a signed overflow implies that the resulting value does 
+  fit the currently available bits, but it can not be 
+  represented correctly.
+
+An overflow occurs. What happens in an overflow? The data 
+exceeds the limits of the container, so it wraps around 
+the other side of the range.
+- Examples:
+  - Unsigned 64-bit:
+    [1]: What happens if we subtract 1 from 0?
+         ((size_t)(0) - 1) => 18446744073709551615, 
+         : we get the maximum.
+    [2]: What happens if we add 1 to the maximum 
+         possible value?
+         ((size_t)(SIZE_MAX) + 1) => 0.
+         : we get the minimum.
+
+  - Signed 64-bit:
+    [3]: What happens if we subtract 1 from the minimum?
+         ((ssize_t)(SIZE_MAX/2) - 1) => 9223372036854775807, 
+         : we get the maximum.
+    [4]: ((ssize_t)((SIZE_MAX/2)+1) + 1) => -9223372036854775808,
+         : we get the minimum.
 
 
-A pointer variable is different than a normal variable 
-in a way that its width is decided by the hardware. It 
-doesn't matter if we create an int*, or a char*, every 
-pointer is 8-bytes wide on 64-bit.
+A pointer is a variable that contains a memory address. A 
+memory address is a regular stream of numbers interpreted
+specially. But if we remove the interpretation part, it 
+just a number inside a variable.
+
+Pointers differ from ordinary variables in that their 
+size is determined by the hardware, regardless of the 
+type it is created for. An `int*` and a `char*` have 
+equal widths, the only difference is in the value the 
+address they contains points to. This is true for flat 
+memory architectures, like x64 and ARM64.
 
 Pointer arithmetic defines operations on pointers. They 
 include addition/subtraction of an integer from a pointer, 
@@ -101,7 +145,7 @@ Let's look at subtraction of two pointers.
     that both the positive and negative output can be 
     stored.
   - The C standard mandates a type called `ptrdiff_t`, 
-    which is an alias to `long` on GNU/Linux. The 
+    which is an alias to `long` on LP64 GNU/Linux. The 
     range of this type is [PTRDIFF_MIN, PTRDIFF_MAX], 
     which are macros to what is discussed earlier. 
   - As long as (p2-p1) doesn't exceed PTRDIFF_MAX, and 
