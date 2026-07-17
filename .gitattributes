@@ -1,2 +1,3 @@
-glibc-malloc/formatted-malloc.c linguist-vendored
-glibc-malloc/org-malloc.c linguist-vendored
+annotated-src/* linguist-vendored
+upstream-src/* linguist-vendored
+*.md linguist-detectable
