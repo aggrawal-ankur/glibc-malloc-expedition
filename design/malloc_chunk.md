@@ -1,3 +1,23 @@
+- [Chunk Description](#chunk-description)
+  - [Layout Description](#layout-description)
+  - [Usage Description](#usage-description)
+  - [The Problem: Fragmentation](#the-problem-fragmentation)
+  - [Coalescing](#coalescing)
+    - [The second use of 'mchunk\_size'](#the-second-use-of-mchunk_size)
+    - [The Boundary Tag Method](#the-boundary-tag-method)
+  - [The Size Model](#the-size-model)
+    - [The use of size\_t](#the-use-of-size_t)
+    - [Macro #1 -\> SIZE\_SZ](#macro-1---size_sz)
+    - [Macro #2 -\> CHUNK\_HDR\_SZ](#macro-2---chunk_hdr_sz)
+    - [Macro #3 -\> MIN\_CHUNK\_SIZE](#macro-3---min_chunk_size)
+    - [Macro #4 -\> MALLOC\_ALIGNMENT](#macro-4---malloc_alignment)
+    - [Macro #5 -\> MALLOC\_ALIGN\_MASK](#macro-5---malloc_align_mask)
+    - [Macro #6 -\> MINSIZE](#macro-6---minsize)
+    - [Macro #7 -\> request2size](#macro-7---request2size)
+    - [Macro #8 -\> chunk2mem](#macro-8---chunk2mem)
+- [Chunk Description Labs](#chunk-description-labs)
+
+
 # Chunk Description
 
 When malloc is called, the allocator carves a piece of dynamic memory, attaches some bookkeeping and returns it to the process. This bookkeeping is kept in a structure called `malloc_chunk`.
