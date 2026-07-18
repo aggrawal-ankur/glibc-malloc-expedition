@@ -1,6 +1,6 @@
 # The Size Model
 
-Everything in glibc-malloc is directly or indirectly related with size. Therefore, the allocator has a size model to work with "size" efficiently.
+Everything in glibc-malloc is directly or indirectly in relation with size. Therefore, the allocator has a size model to work efficiently.
 
 The size model is described using macros. It contains two types of macros.
   1. Macros which resolve to certain numeric values.
@@ -22,11 +22,11 @@ The size model is about making the **request size** usable as per the bookkeepin
 
 The first thing we need to understand is the allocator's choice for receiving the request size.
 
-### The use of size_t
+## The use of size_t
 
-malloc() takes a size (in bytes) as its argument.
+malloc() takes a size (in bytes) as argument.
 
-Each data type has a maximum addressable limit. We need a type which can contain the largest addressable value in an architecture. The answer is `size_t`.
+Each data type has a maximum addressable limit. We need a type which can contain the largest addressable value in an architecture. That is `size_t`.
 
 ***`size_t` is a guarantee from the C standard to be an "unsigned integer data type", which is exactly as wide as the "pointer type" in an architecture, taking the platform's data model in account. In simple words, size_t is a data type which is wide enough to contain the largest addressable value in an architecture.***
 
@@ -47,31 +47,29 @@ This makes `size_t` a tunable parameter.
 
 ***A parameter whose value can be tweaked at compile-time is called a tunable parameter (or, a tunable).*** There are multiple such parameters provided for the programmers to customize malloc to their needs.
 
-size_t being a tunable creates a third possibility, where pointers are 8 bytes and INTERNAL_SIZE_T is 4 bytes wide. But this looks counterintuitive to the definition of size_t.
+size_t being a tunable creates a third possibility, where pointers are 8 bytes and INTERNAL_SIZE_T is 4 bytes wide. In this case, 
+  1. the metadata size per in-use chunk is shrunk by half, reducing the overall memory footprint. Both mchunk_prev_size and mchunk_size occupy 4 bytes each, totaling to 8 bytes.
+  2. the maximum request size is reduced drastically to ~4 GiB of virtual memory (that's what 32-bits can represent).
 
-In certain IoT and embedded system configurations, the architecture is modern (64-bit) with memory constraints. Tweaking INTERNAL_SIZE_T to 4 does two things.
-  1. The metadata size per in-use chunk is shrunk by half, reducing the overall memory footprint. With INTERNAL_SIZE_T=4, mchunk_prev_size and mchunk_size size 4 bytes each, totaling to 8 bytes.
-  2. The maximum request size is reduced drastically to ~4 GiB of virtual memory.
+INTERNAL_SIZE_T=4 doesn't create possibility for padding bytes in the struct as each member is naturally aligned to its own width given the layout order.
 
-Tuning INTERNAL_SIZE_T is not problematic because, we use size_t to store a size, not an address. The tradeoff is also explicit and acceptable provided the constraints.
-
-Also, INTERNAL_SIZE_T=4 doesn't create possibility for padding bytes in the struct as each member is naturally aligned to its own width given the layout order.
+But I am not sure why this configuration actually exist.
 
 ---
 
 To summarize, there are the three configurations the allocator must handle.
 
-| Config # | size_t width | Pointer width |
-| :------- | :----------- | :------------ |
+| Config # | INTERNAL_SIZE_T | Pointer width |
+| :------- | :-------------- | :------------ |
 | 1 | 4 bytes | 4 bytes |
 | 2 | 8 bytes | 8 bytes |
 | 3 | 4 bytes | 8 bytes |
 
 ---
 
-Now we are set to explore the macros that resolve to a numerical value.
+These are the macros that implement this size model.
 
-### Macro #1 -> SIZE_SZ
+## Macro #1 -> SIZE_SZ
 
 It is the width of `size_t` on the target machine's architecture.
 ```c
@@ -86,9 +84,9 @@ It is the width of `size_t` on the target machine's architecture.
 
 ---
 
-### Macro #2 -> CHUNK_HDR_SZ
+## Macro #2 -> CHUNK_HDR_SZ
 
-It stands for "chunk header size", which refers to the metadata bytes that sit at the beginning of an in-use chunk i.e. "mchunk_prev_size and mchunk_size".
+It stands for "chunk header size", which is the metadata bytes at the beginning of a chunk i.e. "mchunk_prev_size and mchunk_size".
 ```c
 #define CHUNK_HDR_SZ    (2 * SIZE_SZ)
 ```
@@ -101,11 +99,11 @@ It stands for "chunk header size", which refers to the metadata bytes that sit a
 
 ---
 
-**Note: It refers to the structural overhead, not the functional overhead. Because, if it were functional, we wouldn't have count mchunk_prev_size, as it is a property of the previous chunk.**
+**Note: It refers to the structural overhead, not the functional overhead. Because, if it were functional, we wouldn't count mchunk_prev_size, as it is a property of the previous chunk.**
 
 ---
 
-### Macro #3 -> MIN_CHUNK_SIZE
+## Macro #3 -> MIN_CHUNK_SIZE
 
 It is the size of the "structurally" smallest possible chunk in an architecture.
 ```c
@@ -125,6 +123,8 @@ Let's derive it manually on 64-bit.
 ```
 So, MIN_CHUNK_SIZE would be 32 on 64-bit.
 
+---
+
 | Config # | MIN_CHUNK_SIZE |
 | :------- | :------------- |
 | 32-bit   | 16 bytes |
@@ -133,7 +133,7 @@ So, MIN_CHUNK_SIZE would be 32 on 64-bit.
 
 ---
 
-### Macro #4 -> MALLOC_ALIGNMENT
+## Macro #4 -> MALLOC_ALIGNMENT
 
 It defines the minimum alignment for in-use chunks.
 ```c
@@ -160,14 +160,13 @@ MALLOC_ALIGNMENT == (8 < 4)  ?  4  :  8  == 8
 MALLOC_ALIGNMENT == (16 < 8)  ?  16  :  16  == 16
 ```
 
-In both the cases, the alignment is kept twice of the maximum addressable width. This is because malloc is a general purpose allocator. It is unaware of what the caller will store in the returned memory. So it ensures that the returned memory is aligned to all the fundamental types the C standard supports. This is in accord to what we have discussed in the mchunk_size section.
+In either case, the alignment is kept twice the maximum addressable width. This is because malloc is a general purpose allocator. It is unaware of what the caller will store in the returned memory. So it ensures that the returned memory is aligned to all the fundamental (or primitive) types the C standard supports. This is in accord to what we have discussed in the mchunk_size section.
 
 However, it's real importance is in that third configuration, where pointers are 8 bytes and INTERNAL_SIZE_T is 4 bytes wide.
 ```c
 MALLOC_ALIGNMENT = (2 * 4) < 16  ?  16  :  16
 ```
-
-Notice how the alignment is decided based on the largest fundamental type in the architecture, not the value of INTERNAL_SIZE_T.
+- Notice how the alignment is decided based on the largest fundamental type in the architecture, not the value of INTERNAL_SIZE_T.
 
 ---
 
@@ -179,7 +178,7 @@ Notice how the alignment is decided based on the largest fundamental type in the
 
 ---
 
-### Macro #5 -> MALLOC_ALIGN_MASK
+## Macro #5 -> MALLOC_ALIGN_MASK
 
 MALLOC_ALIGNMENT is a power-of-2 value and MALLOC_ALIGN_MASK is the bit mask of it.
 ```c
@@ -199,14 +198,14 @@ It is used in a variety of bitwise operations.
      (addr & MALLOC_ALIGN_MASK) == 0  :=  aligned
      (addr & MALLOC_ALIGN_MASK) != 0  :=  misaligned
      ```
-  2. Round a size/address up to the alignment boundary.
+  2. Round a size/address up to the next alignment boundary.
      ```c
      -> (size + MALLOC_ALIGN_MASK) & ~MALLOC_ALIGN_MASK
      -> (34 + 15) & ~15
      -> 49 & -16
      -> 48
      ```
-  3. Round a size/address down to the alignment boundary.
+  3. Round a size/address down to the previous alignment boundary.
      ```c
      -> size & ~MALLOC_ALIGN_MASK
      -> 41 & ~15
@@ -222,7 +221,7 @@ It is used in a variety of bitwise operations.
 
 ---
 
-### Macro #6 -> MINSIZE
+## Macro #6 -> MINSIZE
 
 It is the smallest size that malloc supports.
 ```c
@@ -231,25 +230,25 @@ It is the smallest size that malloc supports.
 )
 ```
 
-We know that an in-use chunk requires (2 * SIZE_SZ) bytes for storing metadata and when it is freed, it requires (2 * ptr_width) bytes to manage fd/bk. That totals to 16 bytes on 32-bit and 32 bytes on 64-bit.
+We know that an in-use chunk requires (2 * SIZE_SZ) bytes for storing metadata and when it is freed, it requires (2 * ptr_width) bytes to manage fd/bk. That totals to 16 bytes on 32-bit and 32 bytes on 64-bit. Note that fd_nextsize/bk_nextsize are only used by large chunks, which already have huge space.
 
 In INTERNAL_SIZE_T=4, the metadata overhead is 24 bytes, but 24 is not aligned to the alignment boundary (16-div), so we round it up to the next boundary, making MINSIZE 32 bytes.
 
-| Config # | MINSIZE |
-| :------- | :------ |
+| Config # | MINSIZE  |
+| :------- | :------  |
 | 32-bit   | 16 bytes |
 | 64-bit   | 32 bytes |
 | INTERNAL_SIZE_T=4 | 32 bytes |
 
 ---
 
-In the MIN_CHUNK_SIZE section, we have seen that it is the size of the structurally smallest chunk possible in an architecture. MINSIZE is the actual smallest chunk size possible in an architecture after adding alignment constraints.
+MIN_CHUNK_SIZE is the size of the structurally smallest chunk possible in an architecture. MINSIZE is the actual smallest chunk size possible in an architecture after adding alignment constraints.
 
-The values happen to be equal in the first two configurations because the struct layout aligned with the alignment constraints. However, it broke with INTERNAL_SIZE_T=4.
+The values happen to be equal in the first two configurations because the struct layout is aligned with the alignment constraints. However, it broke with INTERNAL_SIZE_T=4.
 
 ---
 
-### Macro #7 -> request2size
+## Macro #7 -> request2size
 
 This macro is responsible for enforcing the size model on the requested size.
 
@@ -265,7 +264,8 @@ It is defined as:
 ```
 
 Let's take an example on 64-bit architecture: `malloc(20)`.
-  - (20 + 8 + 15) < 32; 43 < 32; Therefore, the false case is chosen.
+  - (20 + 8 + 15) < 32
+  - (43 < 32); So the false case is chosen.
   - aligned_size = (20 + 8 + 15) & ~15
   - aligned_size = 43 & ~15 = 32.
   - In these 32 bytes, we need 20 bytes of usable memory. That leaves us 12 bytes of memory for metadata. But metadata requires 16 bytes of space. We are short on 4 bytes. Visually:
@@ -276,25 +276,25 @@ Let's take an example on 64-bit architecture: `malloc(20)`.
     -----------------------------------------------------------------
                                 ^ ptr_to_mem
     ```
-  - But in the boundary tag discussion, we have agreed on a dummy chunk in the end. That would make the situation this:
+  - But in the boundary tag discussion, we have agreed on a dummy chunk in the end. That would make the situation:
     ```
           8           8         8     8
     -----------------------------------------------------------------
     | prev_size | mchunk_size | fd | bk | fd_nextsize | bk_nextsize |
     -----------------------------------------------------------------
                                               8
-                                        -----------------------------------------------------------------
-                                        | prev_size | mchunk_size | fd | bk | fd_nextsize | bk_nextsize |
-                                        -----------------------------------------------------------------
+                                        -------------------------------------------------------------------
+                                        | prev_size   | mchunk_size | fd | bk | fd_nextsize | bk_nextsize |
+                                        -------------------------------------------------------------------
                                 ^ ptr_to_mem
     ```
-  - That dummy chunk has a name. **The top chunk** is a special chunk that sits after all the malloced chunk. We'll talk about it later in detail.
+  - That dummy chunk has a name. **The top chunk** is a special chunk that sits after all the malloc-ed chunk. We'll talk about it later in detail.
 
 So, request2size deliberately leaves out SIZE_SZ bytes of memory in every chunk because the payload memory of a chunk is allowed to "spill over" and occupy the prev_size of the next chunk. For the last allocated chunk, the prev_size is provided by the top chunk.
 
 ---
 
-### Macro #8 -> chunk2mem
+## Macro #8 -> chunk2mem
 
 `chunk2mem` takes a pointer to a chunk, casts it to `char*` (for pointer arithmetic) and add "chunk header size" to it.
 ```c
@@ -302,11 +302,3 @@ So, request2size deliberately leaves out SIZE_SZ bytes of memory in every chunk 
 ```
 
 This will land us at the `fd` field in the struct, where the payload memory starts in an in-use chunk, just the way we have discussed.
-
----
-
-***That's what the author probably meant when he said, "This struct declaration is misleading (but accurate and necessary)."***
-
-Let's verify these things at runtime.
-
----
