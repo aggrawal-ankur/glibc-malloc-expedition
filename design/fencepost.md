@@ -1,116 +1,94 @@
-- Along side freeing, the allocator also explores the 
-  possibility of consolidation.
-- If chunk `p` is asked to be freed, we check if it 
-  can be consolidated with `(p-1)` and `(p+1)` chunks,
-  i.e. backward and forward consolidation.
+# Fencepost Chunks
+
+When the allocator is asked to free a chunk, it also explores the possibility of consolidation. If chunk (p) is asked to be freed, we check if it can be consolidated with (p-1) and (p+1) chunks, i.e. backward and forward consolidation.
+
+The process of consolidation is quite simple.
+  - To consolidate backward, we check the PREV_INUSE bit of the (p) chunk to find if the (p-1) chunk is free. If free, we merge the (p-1) and (p) chunks into (p-1).
+  - To consolidate forward, we check the PREV_INUSE bit of the (p+2) chunk to find if the (p+1) chunk is free. If free, we merge the (p) and (p+1) chunks into (p).
+
+To summarize,
+  - backwards consolidation requires access to (p-1) and (p) chunks, and
+  - forward consolidation requires access to (p), (p+1), and (p+2) chunks.
+
+Remember that
+  - backward consolidation is not defined for the first chunk, and
+  - the last chunk that can be consolidated is the one that borders with the top chunk.
+
+---
+
+There can be three situations in consolidation.
+  1. "Backwards consolidation only", where (p) is merged into (p-1).
+  2. "Forward consolidation only", where (p+1) is merged into (p).
+  3. "Full consolidation", where (p) is extended into (p-1), followed by (p+1) extending into the resulting one. The (p-1) pointer will point to the consolidated memory.
+
+However, there are three edge cases.
+
+\[EDGE CASE #1\]: Top chunk in the main arena.
+  - When (p) borders with the top chunk, i.e. [p, (p+1) == top], forward consolidation will lead to the merger of the top chunk and (p) into (p). So, we have to update av->top to point to (p).
+  - Forward consolidation requires access to (p+2) chunk, but there is no chunk after the top chunk. So we have to make this a special case, like `((p+1) == av->top)`.
 
 
-- The process of consolidation is simple.
-  - When we consolidate backwards, we check the PREV_INUSE 
-    bit of the `p` chunk to identify if the `(p-1)` chunk
-    is free.
-    - If free, we merge the `(p-1)` and `p` chunks into
-      `(p-1)`.
-    - While the `(p+1)` chunk already has the PREV_INUSE
-      bit clear (0), we are still required to update it's 
-      mchunk_prev_size.
-  - When we consolidate forward, we check the PREV_INUSE 
-    bit of the `(p+2)` chunk to identify if the `(p+1)` 
-    chunk is free. If free, we merge the `p` and `(p+1)` 
-    chunks into `p` and update the mchunk_prev_size of 
-    the `(p+2)` chunk.
-  - To summarize,
-    - Backwards consolidation: [p-1, p] chunks. 
-    - Forward consolidation: [p, p+1, p+2] chunks.
-  - **Notes**:
-    - Backward consolidation is not defined for the first
-      chunk.
-    - The last chunk that can be consolidated is the one
-      that borders with the top.
+\[EDGE CASE #2\]: A new heap is created in a non-main arena.
+  - In non-main arenas, when the existing heap segment (heap_info) can not be used to service the request, a new heap is created, followed by the creation of the new top chunk and av->top is updated to it.
+  - The old top is regularized and binned appropriately so that it can be used as a normal chunk. Now it has all the perks of a regular chunk, including consolidation.
+  - Heap segments can not be merged, therefore, forward consolidation is undefined for the last usable chunk in the old heap.
+  - In [EDGE CASE #1], the last chunk was specially identified by av->top. When there is no top chunk in a heap segment, how we are going to identify if a chunk is at the high end of the current heap segment?
 
 
-- There can be three cases.
-  - "Backwards consolidation only", where, `p` is merged into `(p-1)`.
-  - "Forward consolidation only", where, `(p+1)` is merged into `p`.
-  - "Full consolidation", where `p` is extended into `(p-1)`, 
-    followed by `(p+1)` extending into the resulting one. The `(p-1)` 
-    chunk will point to the consolidated memory.
+\[EDGE CASE #3\]: A positive foreign sbrk in the main arena. Explained below.
+
+---
+
+So, we have to handle two cases.
+  1. [p, (p+1) == high_end, (p+2) == missing].
+  2. [p == high_end, (p+1) == missing, (p+2) == missing].
+
+Both the cases are possible regardless of the type of arena. They just require the right conditions to get triggered.
+
+When (p) is the second last usable chunk, we have a deficit of one chunk. When (p) is the last usable chunk, we have a deficit of two chunks. Therefore, we need two chunks at max to solve this problem. Let's call them extra chunks E1 and E2.
+  1. [p, (p+1) == high_end, (p+2) = E1, (p+3) = E2]
+  2. [p == high_end, (p+1) = E1, (p+2) = E2]
 
 
-- There are two edge cases.
+How much space is required for these chunks? These chunks are always "in-use" and can not be consolidated. Therefore, we only need space for mchunk_prev_size and mchunk_size, i.e. CHUNK_HDR_SZ bytes.
 
-[EDGE CASE #1]
-- When `p` borders with the top chunk, i.e. [p, (p+1) == top], 
-  forward consolidation will lead to the merger of top and `p`
-  into `p`. This would corrupt av->top, and it must be updated
-  to point to `p`.
-- We don't have to unlink `p` as this function is called from
-  int_free_merge_chunk() which requires `p` to be not binned
-  already.
-- Also, forward consolidation requires the `(p+2)` chunk. But
-  nothing exists after the top chunk!
-- This is not a big issue. All we need is a special-case that
-  checking `((p+1) == av->top)`.
+What will be the state of the PREV_INUSE bit?
+  - We have to maintain the invariant that a free chunk is always surrounded by in-use chunks.
+  - To prevent E1 from consolidating, E2's PREV_INUSE bit must be set (1).
+  - E1's PREV_INUSE bit is dependent on the state of the last usable chunk.
+  - Both E1 and E2 must are in-use chunks.
 
-[EDGE CASE #2]
-- In non-main arenas, when a heap segment (heap_info) has used 
-  its maximum capacity (HEAP_MAX_SIZE), it can no longer service 
-  a request. A new heap is created, followed by the creation of 
-  the new top chunk for this segment, and av->top is updated.
-- The old top is regularized and binned appropriately so that it 
-  can be used as a normal chunk. Now it has all the perks of a 
-  regular chunk, including consolidation.
-- Heap segments are individual entities which can not be merged. 
-  That means, the last chunk in the old heap must not exceed its 
-  boundaries, making forward consolidation undefined for this 
-  chunk. But what separates two heap segments?
-- We need a boundary between two heap segments that can prevent
-  forward consolidation for the chunk that borders with the high
-  end of the heap segment.
-- In [EDGE CASE #1], the last chunk was specially identified by
-  av->top. When there is no top chunk in a heap segment, how we
-  are going to identify if a chunk is at the high end of the
-  current heap segment?
+Let's see if this solution works.
+
+[p, (p+1) == high_end, (p+2) == E1]
+  - We have checked the PREV_INUSE bit of the (p+2) chunk to know if the (p+1) chunk is free.
+  - It may or may not be free. So, forward consolidation is possible.
+
+[p == high_end, (p+1) == E1, (p+2) == E2]
+  - We have checked the PREV_INUSE bit of the (p+2) chunk. It will always be set (1).
+  - Therefore, for the last usable chunk, the next chunk is always "in-use", preventing forward consolidation.
 
 
-- We have two cases to handle.
-  - [p, (p+1) == high_end, (p+2) == missing].
-  - [p == high_end, (p+1) == missing, (p+2) == missing].
-- Clearly, we can sense the absence of two special chunks at the 
-  high end of a heap segment. These chunks will act as a barrier 
-  between two heaps. Let's call these chunks E1 and E2.
-- Let's talk about their structure. We need mchunk_size for the 
-  PREV_INUSE bit, so we need the first two members. As usual, the 
-  pointer fields are not required. So, `(2 * INTERNAL_SIZE_T)` 
-  bytes is enough.
-- Now the PREV_INUSE bit. We have to maintain the invariant that a 
-  free chunk is always surrounded by in-use chunk.
-  - To prevent E1 from consolidating, E2's PREV_INUSE bit must be 
-    set (1).
-  - E1's PREV_INUSE is directly the face of the last usable chunk 
-    at the high end. It must be tuned as its state changes.
-- All in all, both E1 and E2 must be in-use chunks to prevent drama.
+These extra chunks are called fenceposts. They are used at two places in malloc.
+  1. In the non-main arena path, when a heap segment can not be used to service a request, a new heap segment is set up. The existing top chunk is regularized and a new top chunk is created. Earlier, the last chunk can be easily identified with av->top. Now it can't be.
+  2. In the main arena path, a positive foreign sbrk corrupts the internal bookkeeping of the allocator. So, the allocator have to work extra and reestablish the top chunk after the foreign sbrk and the old top is regularized.
 
-- Let's see if this solution works.
-  - [p, (p+1) == high_end, (p+2) == E1]
-    - We want to consolidate `p` and `(p+1)`. To know if `(p+1)` 
-      is free, we have checked `(p+2)`. It has the PREV_INUSE bit 
-      clear (0), so it can be consolidated. `p` and `(p+1)` are 
-      consolidated into `p`.
-  - [p == high_end, (p+1) == E1, (p+2) == E2]
-    - We want to consolidate `p` forward. We checked `(p+2)` chunk 
-      and its PREV_INUSE bit is set (1). We can't merge with this 
-      chunk. Consolidation didn't occurred.
+In either case, the existing top chunk is regularized and a new top chunk is established. To create a boundary after the last usable chunk, we use the fencepost chunks.
 
+---
 
-- GLIBC has a name for these chunks. The fencepost chunks.
-- While these fenceposts span across (2 * INTERNAL_SIZE_T) bytes, 
-  their mchunk_size is set up differently. The first fencepost has 
-  a size of CHUNK_HDR_SZ bytes, while the second fencepost has a 
-  size of 0 bytes.
-- This is done so that we can access fencepost-2 with the usual 
-  chunk arithmetic, but we can not access anything past fencepost-2.
-  (But I am not sure about it).
+The space for these fencepost chunks is carved out from the old top chunk.
 
-- In total, we need MINSIZE bytes for fencepost.
-- Why SIZE_SZ, not INTERNAL_SIZE_T? CHUNK_HDR_SZ is based on SIZE_SZ.
+We can notice that we need MINSIZE bytes for these fencepost chunks. But it is not the case always.
+
+\[CASE #1\]: (top_size == MINSIZE)
+  - The top chunk has exactly as many bytes as it is required to setup the fencepost chunks.
+  - So, there will be no remainder to regularize.
+
+\[CASE #2\]: (top_size >= (2 * MINSIZE))
+  - The top chunk has twice as many bytes as it is required to setup the fencepost chunks.
+  - So, the remainder is a valid chunk and it can be regularized.
+
+\[CASE #3\]: (top_size == (MINSIZE + CHUNK_HDR_SZ))
+  - Here, the remainder will have CHUNK_HDR_SZ bytes. But the smallest possible chunk has MINSIZE bytes in it. Therefore, the remainder can not ve regularized.
+  - The extra bytes are carried away by fencepost-1.
