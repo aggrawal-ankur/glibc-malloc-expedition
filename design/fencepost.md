@@ -92,3 +92,11 @@ We can notice that we need MINSIZE bytes for these fencepost chunks. But it is n
 \[CASE #3\]: (top_size == (MINSIZE + CHUNK_HDR_SZ))
   - Here, the remainder will have CHUNK_HDR_SZ bytes. But the smallest possible chunk has MINSIZE bytes in it. Therefore, the remainder can not ve regularized.
   - The extra bytes are carried away by fencepost-1.
+
+---
+
+There is another aspect about the mchunk_size field of the fenceposts.
+  - In the non-main arena path, fencepost-2's mchunk_size is 0 bytes, i.e. `(0 | PREV_INUSE)`
+  - In the main arena path, fencepost-2's mchunk_size is CHUNK_HDR_SZ bytes, i.e. `(CHUNK_HDR_SZ | PREV_INUSE)`.
+
+I don't know why it is different.
