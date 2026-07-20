@@ -1,209 +1,119 @@
-_int_malloc orchestrates the core architecture (chunks, 
-bins, syscalls) and the tcache layer (USE_TCACHE), which 
-is like a fast path over the core architecture. Before 
-these dedicated paths are accessed, we align the size as 
-per the allocator's size and alignment model. But before 
-that, we check if the requested bytes can be serviced in 
-general.
-- If the requested bytes are greater than PTRDIFF_MAX, 
-  the request is very big to be serviced as a single 
-  malloc and the kernel refuses it. We set errno and 
-  return NULL. Otherwise, we call request2size.
-  Note:
-    1. The request can still be near PTRDIFF_MAX while 
-       being <= PTRDIFF_MAX.
-    2. The request has not overflowed as size belongs to 
-       an unsigned container and the max limit is SIZE_MAX.
-- While it looks simple on surface, to remove confusions, 
-  we have to explore pointers a little bit.
-
 # Overflow Mechanics
 
-C is statically typed, so every variable has a type. We 
-have a few primitive types and a handful of aliases (type 
-definitions) to them. They exist to improve how humans 
-interpret a variable. For example, a variable of type 
-`pid_t` contains a process identifier, but under the hood, 
-it is just an `int`.
+C is statically typed, so every variable has a type.
 
-A type can be signed or unsigned. Unsigned types manage 
-positive integers only, while signed types can manage 
-both positive and negative numbers.
+We have a few primitive types and a handful of aliases (type definitions) to them. Aliases improve how humans interpret a variable. For example, a variable of type `pid_t` contains a process identifier, but under the hood, it is just an `int`.
 
-Each data type has a width, which is the number of bits
-used to represent values. Using this, we can obtain the
-range of values a type can represent.
-- Because unsigned integers only grow upward, we don't 
-  talk about the smallest value possible. But that's not 
-  true for signed types.
-- A signed type has both largest and smallest possible 
-  values.
+Each data type has a width, which is the number of bits used to represent a value in that type.
 
-Signed types come with a problem. They carry an extra 
-piece of information, i.e. signedness. We can't magically 
-say if a signed integer is positive or negative. The 
-number must carry its signedness, as they generally do 
-on paper.
-- We use 2s complement, where the MSB carries a negative 
-  weight when the number is interpreted as signed.
-- This reduces the magnitude that a signed type can manage, 
-  but it standardizes signed types.
+A data type can be signed or unsigned. Unsigned types manage positive integers only, while signed types manage both positive and negative integers.
 
-To find the range of numbers a primitive type can manage, 
-just raise the number of bits to the power of 2.
-- Unsigned Types: [0, ((2^n) - 1)]
-- Signed   Types: [-(2^(n-1)), ((2^(n-1)) - 1)]
+Note that unsigned and signed are just interpretations of the same bits.
 
-For 64-bit types, the ranges are:
-- Unsigned: [0, ((2^64) - 1)],
-            [0, 18446744073709551615] 
-            i.e. [0, SIZE_MAX]
-- Signed:   [-(2^63), ((2^63) - 1)], 
-            [-9223372036854775808, +9223372036854775807]
+Computers use 2s complement to implement the signed interpretation of integers, where the unsigned range for a set of bits is divided in two equal halves and the upper half is used to represent negative integers.
+  - The total number of combinations a set of bits can represent remains unchanged, only what those combinations could be, is changed.
+  - When a number is interpreted as signed, its MSB carries a negative weight and the result interprets both the positive and negative integers properly.
 
-What happens when we try to stuff data beyond its limit?
-The answer is different for signed and unsigned integers.
-- For an unsigned integer, when the data goes beyond 
-  SIZE_MAX, we need the 65th bit to represent it, which 
-  we don't have. So we discard the 65th bit. But if the 
-  data uses any of the 64 bits, it remains intact. For 
-  example,
-  - SIZE_MAX+1 only has the 65th bit ON and the rest of 
-    the bits are 0.
-  - But SIZE_MAX+2 has the 65th bit and the 1st bit 
-    (counting from 0) ON, making the result 1, and so on.
+---
 
-- For a signed integer, the lower 63 bits carry a positive 
-  weight, while the MSB carries a negative weight.
-  - For a positive number, the MSB remains unset (0).
-  - For a negative number, the MSB is set and it is 
-    interpreted with a negative weight. Mathematically, the 
-    weight of the MSB is subtracted from the lower 63 bits 
-    generating the right negative number.
-  - For example, (1) is 63 zeroes followed by a 1 and (-1) 
-    is all the 64 bits 1.
-    - The weight of the 64th bit (MSB) in signed terms is 
-      -9223372036854775808.
-    - The weight of the the lower 63 bits combined is 
-      9223372036854775807.
-    - (-9223372036854775808) + 9223372036854775807 is (-1).
+The total number of combinations a set of bits can represent are 2<sup>n</sup>, where n is the number of bits.
 
-Therefore,
-- an unsigned overflow implies that the resulting value 
-  can not be represented by the currently available 
-  bits, and 
-- a signed overflow implies that the resulting value does 
-  fit the currently available bits, but it can not be 
-  represented correctly.
+The range of values a set of bits can represent is determined by the interpretation. (n is the number of bits)
+  - Unsigned Interpretation: [0, (2<sup>n</sup> - 1)]
+  - Signed   Interpretation: [(-2)<sup>(n-1)</sup>, 2<sup>(n-1)</sup> - 1]
 
-An overflow occurs. What happens in an overflow? The data 
-exceeds the limits of the container, so it wraps around 
-the other side of the range.
-- Examples:
-  - Unsigned 64-bit:
-    [1]: What happens if we subtract 1 from 0?
-         ((size_t)(0) - 1) => 18446744073709551615, 
-         : we get the maximum.
-    [2]: What happens if we add 1 to the maximum 
-         possible value?
-         ((size_t)(SIZE_MAX) + 1) => 0.
-         : we get the minimum.
+The logic behind these formulas is very simple.
+  1. If `m` is the total possible combinations, these combinations can be counted starting from anywhere. If we start from 0, we have to exclude `m` itself, otherwise, the total combinations will be (m+1), not m.
+  2. 2<sup>n</sup> is always equal to the sum of all values of n (in [0, (n-1)]) raised to a power-of-2. Therefore, the MSB represents all the combinations in the upper half, so (n-1) is used instead of n while calculating the range of values in both the halves.
 
-  - Signed 64-bit:
-    [3]: What happens if we subtract 1 from the minimum?
-         ((ssize_t)(SIZE_MAX/2) - 1) => 9223372036854775807, 
-         : we get the maximum.
-    [4]: ((ssize_t)((SIZE_MAX/2)+1) + 1) => -9223372036854775808,
-         : we get the minimum.
+For a 64-bit container (or, a set of 64 bits), these ranges are:
 
+  - Unsigned: [0, (2<sup>64</sup> - 1)],
+              i.e. [0, 18446744073709551615],
+              or [0, SIZE_MAX]
+  - Signed:   [-(2)<sup>63</sup>, 2<sup>63</sup> - 1], 
+              i.e. [-9223372036854775808, +9223372036854775807]
 
-A pointer is a variable that contains a memory address. A 
-memory address is a regular stream of numbers interpreted
-specially. But if we remove the interpretation part, it 
-just a number inside a variable.
+---
 
-Pointers differ from ordinary variables in that their 
-size is determined by the hardware, regardless of the 
-type it is created for. An `int*` and a `char*` have 
-equal widths, the only difference is in the value the 
-address they contains points to. This is true for flat 
-memory architectures, like x64 and ARM64.
+What happens when we put a value that is not in the range of values of a type? For examples,
+  - an unsigned 4-bit container manages [0, 15] and we put 16 in it, or
+  - a signed 4-bit container manages [-8, +7] and we put 10 in it.
 
-Pointer arithmetic defines operations on pointers. They 
-include addition/subtraction of an integer from a pointer, 
-subtraction of two pointers, and comparison. Increment 
-and decrement are addition/subtraction under the hood.
+We can notice that the range of positive values that a signed container can represent is basically a subset of the equivalent unsigned container. This insight holds the answer to the question above.
 
-Let's look at subtraction of two pointers.
-  - Take two non-equal pointers p1 and p2, such that 
-    p2>p1. We can do (p1-p2) or (p2-p1).
-  - (p2-p1) will yield a positive output and (p1-p2) 
-    will yield a negative output.
-  - The output is a number which is not a pointer.
-    Which container is the most suitable to store 
-    this output? We need a signed 64-bit container so 
-    that both the positive and negative output can be 
-    stored.
-  - The C standard mandates a type called `ptrdiff_t`, 
-    which is an alias to `long` on LP64 GNU/Linux. The 
-    range of this type is [PTRDIFF_MIN, PTRDIFF_MAX], 
-    which are macros to what is discussed earlier. 
-  - As long as (p2-p1) doesn't exceed PTRDIFF_MAX, and 
-    (p1-p2) doesn't fall below PTRDIFF_MIN, overflow 
-    will not occur.
+In unsigned interpretation, the range of values align exactly with what the bits can represent because we are counting from zero.
+  - If the number is beyond this range, the number requires a bit that is not available to this container.
+  - So, the extra bit(s) are discarded and the available bits are retained. This is what modulo 2<sup>n</sup> wraparound is.
 
-If we add 1 to PTRDIFF_MAX and interpret it as 
-  - signed (%ld), we get -9223372036854775808. The 
-    output has wrapped around the other side of the 
-    range.
-  - unsigned (%lu), we get +9223372036854775808, as 
-    the unsigned range uses all the bits for magnitude.
+In signed interpretation, the range of values doesn't align exactly with what the bits can represent because we have changed the meaning of combinations in the upper half.
+  - The number we are trying to put in a signed container might be invalid according to its range, but it could be valid in the equivalent unsigned container.
+  - That's what the above example is. 10 is valid as a 4-bit number, which is what the unsigned interpretation is. But the signed interpretation simply doesn't have 10, so it becomes invalid. The bit pattern is the same, only the interpretation is different.
 
-While it is impossible to allocate a size as huge as 
-PTRDIFF_MAX to a single malloc request, suppose we did 
-asked it. After request2size(sz), it will become 
-9223372036854775824.
+In unsigned interpretation, overflow is characterized by physical spillage. In signed interpretation, overflow happens when the result can not be represented by the applicable part of the signed range and because the upper half of the unsigned range is conceptually split to represent negative integers, overflow appears to be wrapping around the other side of the signed range. But as we have seen, it is just a consequence of what is said earlier.
+
+So, if 16 is put in an unsigned 4-bit container, it will be interpreted as 0 and if 10 is put in a signed 4-bit container, it will be interpreted as -6.
+
+How about putting 16 in a signed 4-bit container? 16 is not valid even in the unsigned range.
+  - 15 will be `1111`, and (-8 + 7) is -1.
+  - 16 will be `1 0000`, and the output will be 0.
+  - 17 will be `1 0001`, and the output will be 1.
+  - And so on....
+
+---
+
+A pointer variable is special in a way that it is interpreted specially. In the end, it also contains a number just like non-pointer variables.
+
+Another thing that makes pointers different from non-pointer variables is that their size is determined by the hardware, regardless of the type it is created for. An `int*` and a `char*` have equal widths, the only difference is in the value the address they contains points to. This is true for flat memory architectures, like x64 and ARM64.
+
+Pointer arithmetic defines operations on pointers. They include
+  1. addition/subtraction of an integer from a pointer,
+  2. subtraction of two pointers, and
+  3. comparison of two pointers.
+
+Increment/decrement are basically addition/subtraction under the hood.
+
+---
+
+Take two non-equal pointers p1 and p2, such that p2>p1. We can do (p1-p2) or (p2-p1). The magnitude will be the same, only the sign will be different; (p2-p1) will be positive and (p1-p2) will be negative.
+
+The output of pointer subtraction is a number which is not a pointer. Which container is most suitable to store this output?
+  - The width is fixed by the hardware, so 64-bit on x64.
+  - Because the output can be negative as well, we need a signed container.
+
+So, a 64-bit signed container is the most suitable option to store pointer difference.
+
+The C standard mandates a type called `ptrdiff_t`, which is a signed 64-bit type (an alias to `long`) on LP64 GNU/Linux. The range of this type is [PTRDIFF_MIN, PTRDIFF_MAX], which are macros to [-9223372036854775808, +9223372036854775807].
+
+As long as (p2-p1) doesn't exceed PTRDIFF_MAX, and (p1-p2) doesn't fall below PTRDIFF_MIN, the difference will be valid as per the signed 64-bit interpretation.
+
+If we add 1 to PTRDIFF_MAX and interpret it as signed (%ld), we get -9223372036854775808, i.e. PTRDIFF_MIN. If we interpret it as unsigned (%lu), we get +9223372036854775808, as the unsigned interpretation uses all the bits for magnitude.
+
+# How the allocator deals with it?
+
+The symbol `malloc` is a weak alias to `__libc_malloc`. When __libc_malloc is called, it checks if the thread-cache infrastructure is available (via the USE_TCACHE macro).
+
+If it is, it checks if a tcache-bin can be used to service the request. Otherwise, `__libc_malloc2` is called and its output is returned. `__libc_malloc2` calls `_int_malloc` and returns its output.
+
+`_int_malloc` orchestrates the core architecture (chunks, bins, sbrk and mmap) and the tcache layer (if, active). It receives the requested bytes in a size_t container.
+
+Before any allocation pathway is accessed, the requested size is aligned as per the size model. While doing this, the allocator checks the possibility of the size being so enormous that the system might fail to fulfill the request.
+
+Because `size` comes in a size_t container, SIZE_MAX feels like the natural upper bound. However, the allocator uses PTRDIFF_MAX instead, and the reason is **pointer subtraction**.
+
+Recently, we have understood that the difference of two pointers can be positive or negative, so it is a signed quantity.
+  - If we allocate an object which is so enormous that two pointers inside that object yield a difference which overflow's the signed 64-bit interpretation, we will not be able to represent the result safely.
+  - What are the two pointers in an object that can yield the largest possible difference (magnitude only)? It is the pointers that mark the start and end of the object, i.e. [start, (start+size-1)].
+
+If size was more than PTRDIFF_MAX, the largest pointer difference can not be managed by `ptrdiff_t` and the request is rejected. For this reason, PTRDIFF_MAX is the upper ceiling for a request size to be valid.
+
+---
+
+By validating size against PTRDIFF_MAX, _int_malloc sets the fundamental precondition that every allocation path relies on. After this point, the allocator assumes the request represents a valid C object and no longer revalidates that property.
 
 
-Overflow is not about pointers themselves. A pointer can
-point to any addressable byte, which is why uintptr_t is
-used for pointers. But there is no use of ptrdiff_t in
-malloc.c, while there is a lot of pointer arithmetic
-happening already.
+# References
 
-The pointer difference here represents size, which is an
-unsigned quantity. But signed doesn't mean "negative only",
-it means "negatives along with positives".
-
-mmap itself takes a size_t argument, which means, it can
-effectively service a request > PTRDIFF_MAX, at least in
-virtual memory, getting it backed by physical memory is
-a different thing. So I still don't understand the point
-of PTRDIFF_MAX. Wait!
-
-Because mmap takes a size_t argument, the effective
-ceiling for mmap is SIZE_MAX, not PTRDIFF_MAX. But sbrk
-takes an inptr_t argument, ssize_t, basically. Here, the
-limit is PTRDIFF_MAX. Because PTRDIFF_MAX itself is a
-very high value, we can use it as a single check for
-both sbrk and mmap, as mmap won't be able to service
-such a request either.
-
-
-
-
-
-See, I understand that the paths inside sysmalloc are stacked such that the request size reduces thru each pass. I don't understand how, though. Let's take sbrk. There is soft limit that glibc enforces, called MMAP_THRESHOLD. sbrk can't be used for a size above this. But with glossing look over the main arena path in sysmalloc, I can't find anything that ensures this.
-
-
-
-
-GLIBC sets a soft limit on sbrk, that it can not
-be used to service requests beyond MMAP_THRESHOLD.
-But how it is enforced? I see no condition that
-ensures this in the main arena pathway in sysmalloc.
-
-Apart from this soft limit, can sbrk and mmap succeed
-for any size < PTRDIFF_MAX? Provided that page alignment
-math is ensured and the kernel has enough memory to give?
-
+[ISO/IEC 9899:202y — N3854 working draft](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n3854.pdf)
+  - Section 6.5.7 Additive operators
+  - Page 88, Point 10.

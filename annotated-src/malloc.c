@@ -4142,7 +4142,12 @@ void* __libc_malloc (size_t bytes)
   size_t nb = checked_request2size(bytes);
 
   /* The normalized size must be less than the 
-     maximum size that the tcache bins manage. */
+     maximum size that the tcache bins manage. 
+     
+    If (bytes > PTRDIFF_MAX), nb would be SIZE_MAX, 
+    which is magnitudes greater than the maximum 
+    size managed by tcache bins, so this path will 
+    not be taken. */
   if (nb < mp_.tcache_max_bytes){
     /* The tcache bin index. */
     size_t tc_idx = csize2tidx(nb);
@@ -4497,6 +4502,8 @@ static void* _mid_memalign(size_t alignment, size_t bytes)
   /* [PATH 1]: Use the tcache bins if available. */
 
 #if USE_TCACHE
+  /* If the first argument was SIZE_MAX due to 
+     (bytes > PTRDIFF_MAX), the return will be NULL. */
   void *victim = tcache_get_align (checked_request2size(bytes), alignment);
   if (victim != NULL)
     return tag_new_usable(victim);
@@ -4680,6 +4687,7 @@ void* __libc_calloc (size_t n, size_t elem_size)
 #if USE_TCACHE
   size_t nb = checked_request2size(bytes);
 
+  /* If nb is SIZE_MAX, this path will not execute. */
   if (nb < mp_.tcache_max_bytes){
     size_t tc_idx = csize2tidx(nb);
 
@@ -4746,79 +4754,26 @@ static void* _int_malloc(mstate av, size_t bytes)
 
   /* [STEP 1]: Align `bytes` to an internally usable form. */
 
-  /* _int_malloc is an orchestrator that has multiple 
-     options to fulfill a request. It receives the raw 
-     size and tries to service it using one of the ways. 
-     The size must be converted as per the allocator's 
-     size and alignment model to become usable. 
+  /* While checked_request2size also has the same check, 
+     what happens after it is proven true is different.
 
-     Before we do that, we check out the possibility of 
-     size being so enormous that the system might not be 
-     able to fulfill it. 
+    Some callers validate the request size before calling 
+    checked_request2size(), making the internal check 
+    redundant. Other callers rely on the helper to perform 
+    the validation.
 
-     Because `bytes` is a size_t value, SIZE_MAX looks like 
-     the natural upper bound. However, we use PTRDIFF_MAX 
-     instead, and the reason is related to pointer arithmetic, 
-     more specifically, "subtraction of pointers within the 
-     same object".
-     - When we subtract two pointers, we get the distance 
-       (or, difference) between them. For two non-equal 
-       pointers, the difference is the same, but the sign 
-       depends on which pointer is subtracted from which.
-     - If (p2>p1), (p2-p1) is positive, while (p1-p2) is 
-       negative.
-     - Because the difference can be positive or negative, 
-       the result must be stored in a signed type. That's 
-       what the c-std says. "When two pointers within the 
-       same object are taken, their difference must be 
-       representable by ptrdiff_t". `ptrdiff_t` is a signed 
-       64-bit type on LP64 GNU/Linux.
-     - The maximum valid pointer difference within an object 
-       is equal to its size in bytes. If it exceeds what 
-       ptrdiff_t can safely represent, it is a UB.
-     - If bytes exceeds PTRDIFF_MAX, the resulting allocation 
-       could not be treated as a valid C object because pointer 
-       differences within it may no longer be representable 
-       by ptrdiff_t. Therefore, the request is rejected before 
-       any allocation logic begins. 
-       That's why we use PTRDIFF_MAX instead of SIZE_MAX.
-     - [CITATION]:
-       : https://www.open-std.org/jtc1/sc22/wg14/www/docs/n3854.pdf
-       : ISO/IEC 9899:202y — N3854 working draft
-       : Section 6.5.7 Additive operators
-       : Point 10.
-       : Page 88.
+    The callers that check the size manually are often the 
+    ones that implement API behavior. They set errno and 
+    return NULL. However, the callers that rely on 
+    checked_request2size are often helper functions, so 
+    setting errno and returning NULL is out of their scope. 
+    checked_request2size returns SIZE_MAX as a sentinel 
+    value and the callers safely fall back to the core 
+    pathways that can propagate the error.
 
-     While checked_request2size has the same check as 
-     the first thing, what happens after it is proven 
-     is different.
-     - Some callers already validate the request before 
-       calling checked_request2size(), making the internal 
-       check redundant for those paths. Other callers rely 
-       on the helper to perform the validation.
-     - The paths that check it manually are often the ones 
-       that implement API behavior, so how they deal with 
-       this is also different from checked_request2size. 
-       They set errno and return NULL, while the one in 
-       checked_request2size returns SIZE_MAX as a sentinel 
-       value to indicate failure.
-     - Another difference between the dedicated check and 
-       the one inside checked_request2size is that the 
-       latter is wrapped inside glibc_unlikely. [I DO NOT 
-       ITS IMPORTANCE IT, SO BETTER LEAVE IT FOR FUTURE] 
-
-
-     By validating size against PTRDIFF_MAX, _int_malloc 
-     sets the fundamental precondition that every allocation 
-     path downstream relies on. After this point, the 
-     allocator assumes the request represents a valid C 
-     object and no longer revalidates that property.
-
-
-     One last thing to understand is that every path runs 
-     some internal alignment math on the "aligned value of 
-     bytes". As we will explore them, we will understand 
-     that it is not the thing we can optimize away. */
+    Another difference between the dedicated check and 
+    the one inside checked_request2size is that the 
+    latter is wrapped inside glibc_unlikely. */
 
   if (bytes > PTRDIFF_MAX){
     __set_errno (ENOMEM);
