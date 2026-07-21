@@ -5852,9 +5852,11 @@ static void _int_free_chunk(
   }
 }
 
-/* Try to merge chunk P of SIZE bytes with its neighbors.
+/* Try to merge chunk P of SIZE bytes with its neighbors. 
    - Put the resulting chunk on the appropriate bin list.
-   - P must not be on a bin list yet, and it can be in use. */
+   - P must not be on a bin yet. It can be in use.
+
+  Basically, backwards consolidation. */
 static void _int_free_merge_chunk(
   mstate av, mchunkptr p, 
   INTERNAL_SIZE_T size
@@ -5892,43 +5894,6 @@ static void _int_free_merge_chunk(
   free_perturb(chunk2mem(p), size - CHUNK_HDR_SZ);
 
 
-  /* [THE FUNCTION, IN BRIEF] 
-     - A chunk can undergo forward and backward coalescing.
-     - Suppose the chunk to be freed is pointed to by `p`. We 
-       can call the forward chunk `(p+1)` and the backward 
-       chunk `(p-1)`.
-     - We can check the PREV_INUSE bit of the chunk `p` to 
-       identify the state of `(p-1)` chunk.
-     - If it is free, we add the size of `p` and `(p-1)` 
-       chunks to obtain the size of the backward consolidated
-       chunk and store the pointer to the `(p-1)` chunk in `p`.
-       - We don't have to preserve `p` because, the fn demands 
-         the invariant that `p` is not already managed by bins. [WHY]
-         The reason we update `p` instead of a separate variable
-         is discussed below.
-       - Remember, the metadata of this newly formed chunk is 
-         not updated yet.
-     - If it is not free, we can not perform backward consolidation.
-
-     - If the previous chunk was free, we had consolidated 
-       `(p-1)` and `p` chunks into `p`. If the previous chunk
-       was not free, we would have `p` intact. Either way, we 
-       have a chunk `p`, ready for forward consolidation.
-     - Next we call _int_free_create_chunk() with `p` and 
-       `(p+1)` chunks. Since we might have performed backward
-       consolidation, we can not rely on the size of chunk `p`. 
-       Therefore, we pass the correct one manually. (While we 
-       can obtain the size of the `(p+1)` chunk by `(p + size)`,
-       I am not sure why we are manually passing nextsize, 
-       maybe we don't want to take chance. But I am not sure.)
-
-     - Last, we call _int_free_maybe_trim() with av and the size
-       returned by _int_free_create_chunk().
-
-       [Why we pass `size`? It is not guaranteed that the 
-       resulting chunk is the top chunk.] */
-
-
   /* Consolidate backward. */
   /* If the (p-1) chunk is free, consolidate it with `p`. */
   if (!prev_inuse(p)){
@@ -5960,7 +5925,9 @@ static void _int_free_merge_chunk(
    - The chunk at P is not actually read and does not have 
      to be initialized. After creation, it is placed on the 
      appropriate bin list.
-   - The function returns the size of the new chunk. */
+   - The function returns the size of the new chunk.
+
+  Basically, forward consolidation. */
 static INTERNAL_SIZE_T _int_free_create_chunk(
   mstate av, mchunkptr p, 
   INTERNAL_SIZE_T size,
@@ -5970,9 +5937,6 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
   /* [PATH 1]: The nextchunk isn't the top chunk. */
   if (nextchunk != av->top){
     /* get and clear inuse bit */
-    /* For forward consolidation, we need to identify if the 
-       `(p+1)` chunk is free. For this, we need to obtain the 
-       PREV_INUSE bit of the `(p+2)` chunk. */
     /* [The description of this macro is confusing.] */
     bool nextinuse = inuse_bit_at_offset (nextchunk, nextsize);
 
@@ -5985,7 +5949,7 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
          consolidation happened or not. */
     }
     else{
-    /* If the nextchunk was an in-use chunk, we can not perform
+    /* If the nextchunk is an in-use chunk, we can not perform
        forward consolodation, but we do have to update the 
        PREV_INUSE bit of this chunk to reflect that the chunk 
        previous to it is now free. */
@@ -6000,12 +5964,9 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
 
     /* [PATH 1A]: If large chunk, place it in the unsorted bin.
 
-       Large chunks are placed in the unsorted bin. This is 
-       done to give them a chance on the next malloc call as
-       they might improve the locality of chunks. This branch 
-       is first in the if-statement to help branch prediction 
-       on consecutive adjacent frees. */
-
+      Large chunks are placed in the unsorted bin. They are 
+      given a chance to service the next malloc call, if 
+      possible. They might improve the locality of chunks. */
     if (!in_smallbin_range(size)){
       bck = unsorted_chunks(av);
       fwd = bck->fd;
@@ -6030,12 +5991,10 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
       mark_bin(av, chunk_index);
     }
 
-    // Update the bin pointers. Skip list pointers are not maintained
-    // in small chunks.
+    /* Skip list pointers are not maintained in small chunks. */
     p->bk = bck;
     p->fd = fwd;
 
-    // Update the bin pointers.
     bck->fd = p;
     fwd->bk = p;
 

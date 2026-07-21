@@ -1,4 +1,4 @@
-# Fencepost Chunks
+# Consolidation
 
 When the allocator is asked to free a chunk, it also explores the possibility of consolidation. If chunk (p) is asked to be freed, we check if it can be consolidated with (p-1) and (p+1) chunks, i.e. backward and forward consolidation.
 
