@@ -1345,7 +1345,7 @@ checked_request2size(size_t req) __nonnull (1)
 {
   /* A static assert checks a condition at compile-time 
      and stops compiling if that condition is evaluated 
-     false.*/
+     false. */
   _Static_assert(
     PTRDIFF_MAX <= (SIZE_MAX / 2),
     "PTRDIFF_MAX is not more than half of SIZE_MAX"
@@ -1571,6 +1571,7 @@ static __always_inline mchunkptr mmap_set_chunk(
   return p;
 }
 
+
 /* --------------- Internal data structures ---------------
 
   All internal state is held in an instance of malloc_state 
@@ -1601,15 +1602,16 @@ static __always_inline mchunkptr mmap_set_chunk(
     list is known to be preceded and followed by either inuse 
     chunks or the ends of memory.
 
-  Chunks in bins are kept in size order, with ties going to the
-  approximately least recently used chunk.
-  - Ordering isn't needed for the small bins, which all contain 
+  Chunks in bins are kept in size order, with ties going to 
+  the approximately least recently used chunk.
+  - Ordering isn't needed in small bins, which all contain 
     the same-sized chunks, but facilitates best-fit allocation 
     for larger chunks.
-  - These lists are just sequential. Keeping them in order almost 
+  - These lists are sequential. Keeping them in order almost 
     never requires enough traversal to warrant using fancier 
     ordered data structures.
 
+  [I AM CONFUSED ABOUT THIS PARAGRAPH]
   Chunks of the same size are linked with the most recently 
   freed at the front, and allocations are taken from the back.
   This results in LRU (FIFO) allocation order, which tends to 
@@ -1729,15 +1731,15 @@ typedef struct malloc_chunk *mbinptr;
 /* Take a chunk off a bin list. */
 static void unlink_chunk (mstate av, mchunkptr p)
 {
-  /* [TEST 1]: The prevsize of the `(p+1)` chunk 
+  /* [TEST 1]: The prevsize of the (p+1) chunk 
       must be equal to the size of chunk p. */
   if (chunksize(p) != prev_size(next_chunk(p)))
     malloc_printerr("corrupted size vs. prev_size");
 
-  /* (p+1) chunk. */
+  /* (p+1) chunk in the bin. */
   mchunkptr fd = p->fd;
 
-  /* (p-1) chunk. */
+  /* (p-1) chunk in the bin. */
   mchunkptr bk = p->bk;
 
   /* [TEST 2]: The (p+1) and (p-1) chunks must have 
@@ -1745,7 +1747,7 @@ static void unlink_chunk (mstate av, mchunkptr p)
   if (__glibc_unlikely(fd->bk != p || bk->fd != p))
     malloc_printerr("corrupted double-linked list");
 
-  /* Unlink the chunk p from the bin. */
+  /* Unlink p from its bin. */
 
   /* (p-1)->fd = (p+1) */
   fd->bk = bk;
@@ -1753,34 +1755,47 @@ static void unlink_chunk (mstate av, mchunkptr p)
   /* (p+1)->bk = (p-1) */
   bk->fd = fd;
 
-  /* Modify the skip list pointers. */
+  /* The skip list pointers are NULL in unsorted chunks, 
+     and garbage in small chunks. But they are maintained 
+     in large chunks.
 
-  /* If a large chunk and unique in its size. */
+    A large bin manage chunks of multiple sizes. The skip 
+    list pointers of the first chunk in every size class 
+    has a non-NULL value, while the duplicates are set NULL.
+
+    If (p) was a large chunk and unique in it size class, 
+    removing it from its large bin requires updating the 
+    skip list pointers as well.
+  */
   if (
     !in_smallbin_range(chunksize_nomask(p)) && 
     p->fd_nextsize != NULL
   ){
-    /* Consistency check. */
+    /* [TEST]: The chunks next and previous to (p) in 
+        the skip list must be pointing to (p). */
     if (
       (p->fd_nextsize)->bk_nextsize != p || 
       (p->bk_nextsize)->fd_nextsize != p
     )
     	malloc_printerr("corrupted double-linked list (not small)");
 
-    /* If the (p+1) chunk is a non-unique chunk, its 
-       nextsize pointers will be NULL. */
+    /* If the (p+1) chunk has its nextsize pointers NULL, 
+       it is a duplicate in the same size class as (p). */
     if (fd->fd_nextsize == NULL){
-      /* If the bin has only one size of chunks, the 
-         skip list pointers of `p` will point to 
-         itself. In that case, update the next chunk's 
-         skip list pointers to itself. */
+      /* If the large bin had chunks of only one size 
+         class, the skip list pointers of (p) will be 
+         pointing to itself. In this case, we just have 
+         to update the (p+1) chunk's skip list pointers 
+         to itself.
+      */
   	  if (p->fd_nextsize == p)
 	      fd->fd_nextsize = fd->bk_nextsize = fd;
 
-      /* Otherwise, the bin has chunks of multiple 
-         sizes and we need to update the skip list 
-         pointers to treat the (p+1) chunk as the 
-         new unique chunk of that size in this bin. */
+      /* Otherwise, the large bin has chunks of multiple 
+         size classes and we have to update the skip list 
+         pointers to treat the (p+1) chunk as the new 
+         unique chunk of that size class in this large bin.
+      */
       else{
         /* (p+1)->fd_next = p->fd_nextsize */
         fd->fd_nextsize = p->fd_nextsize;
@@ -1789,20 +1804,22 @@ static void unlink_chunk (mstate av, mchunkptr p)
         fd->bk_nextsize = p->bk_nextsize;
 
         /* Update the skip list pointers of the next 
-           chunk in the skip list to (p+1) chunk. */
+           and the previous chunks in the skip list 
+           to the (p+1) chunk.
+        */
         p->fd_nextsize->bk_nextsize = fd;
         p->bk_nextsize->fd_nextsize = fd;
       }
     }
 
-    /* Else, chunk p is the only chunk of its size and 
+    /* Chunk p is the only chunk in its size class and 
        the (p+1) chunk is already the next chunk in the 
        skip list. */
     else{
       /* (p+1)->bk_next = p->bk_next */
       p->fd_nextsize->bk_nextsize = p->bk_nextsize;
 
-      /* (p-1)->bk_next = p->fd_next */
+      /* (p-1)->fd_next = p->fd_next */
       p->bk_nextsize->fd_nextsize = p->fd_nextsize;
     }
   }
