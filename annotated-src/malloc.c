@@ -2065,6 +2065,9 @@ static inline void madvise_thp(void *p, INTERNAL_SIZE_T size)
   are not true, it's very likely that a user program has
   somehow trashed memory. (It's also possible that there is a
   coding error in malloc. In which case, please report it!)
+
+  By default, MALLOC_DEBUG is disabled, so these functions are 
+  essentailly a no-op.
 */
 #if !MALLOC_DEBUG
 
@@ -2361,6 +2364,7 @@ static void* sysmalloc_mmap(
   /* Effectively 0, as both the macros have the same 
      values in all the three configurations. [GDB] */
 
+  /* At least one page. */
   size_t size = ALIGN_UP(nb + padding + CHUNK_HDR_SZ, pagesize);
 
   char *mm = (char*) MMAP(
@@ -2374,13 +2378,14 @@ static void* sysmalloc_mmap(
     return mm;
 
   if (extra_flags == 0)
-    madvise_thp(mm, size);    /* [TODO]: Memory advise related. */
+    madvise_thp(mm, size);    /* [?] */
 
-  __set_vma_name(mm, size, " glibc: malloc");    /* [TODO]: Virtual memory related. */
+  /* [?] */
+  __set_vma_name(mm, size, " glibc: malloc");
 
   /* Add malloc_chunk to the base of the newly mmapped segment */
   mchunkptr p = mmap_set_chunk(
-    (uintptr_t)mm, 
+    (uintptr_t)(mm), 
     size, 
     padding, 
     extra_flags != 0
@@ -2394,7 +2399,7 @@ static void* sysmalloc_mmap(
   sum = atomic_fetch_add_relaxed (&mp_.mmapped_mem, size) + size;
   atomic_max (&mp_.max_mmapped_mem, sum);
 
-  check_chunk(NULL, p);    // A MALLOC_DEBUG check; A no-op when MALLOC_DEBUG is not defined.
+  check_chunk(NULL, p);
   return chunk2mem(p);
 }
 
@@ -3487,42 +3492,49 @@ static void munmap_chunk(mchunkptr p)
 
 static mchunkptr mremap_chunk (mchunkptr p, size_t new_size)
 {
-  bool is_hp = mmap_is_hp (p);
-  size_t pagesize = is_hp ? mp_.hp_pagesize : GLRO (dl_pagesize);
+  bool is_hp = mmap_is_hp(p);
+  size_t pagesize = is_hp ? mp_.hp_pagesize : GLRO(dl_pagesize);
 
-  INTERNAL_SIZE_T offset = mmap_base_offset (p);
-  INTERNAL_SIZE_T size = chunksize (p);
+  INTERNAL_SIZE_T offset = mmap_base_offset(p);
+  INTERNAL_SIZE_T size = chunksize(p);
 
   char *cp;
+  assert(chunk_is_mmapped(p));
 
-  assert (chunk_is_mmapped (p));
-
-  uintptr_t block = mmap_base (p);
+  uintptr_t block = mmap_base(p);
   uintptr_t mem = (uintptr_t) chunk2mem(p);
-  size_t total_size = mmap_size (p);
-  if (__glibc_unlikely ((block | total_size) & (pagesize - 1)) != 0
-      || __glibc_unlikely (!powerof2 (mem & (pagesize - 1))))
+  size_t total_size = mmap_size(p);
+
+  if (
+    __glibc_unlikely ((block | total_size) & (pagesize - 1)) != 0 || 
+    __glibc_unlikely (!powerof2 (mem & (pagesize - 1)))
+  )
     malloc_printerr("mremap_chunk(): invalid pointer");
 
   /* Note the extra CHUNK_HDR_SZ overhead as in mmap_chunk(). */
-  new_size = ALIGN_UP (new_size + offset + CHUNK_HDR_SZ, pagesize);
+  new_size = ALIGN_UP(new_size + offset + CHUNK_HDR_SZ, pagesize);
 
-  /* No need to remap if the number of pages does not change.  */
+  /* No need to remap if the number of pages does not change. */
   if (total_size == new_size)
     return p;
 
-  cp = (char *) __mremap ((char *) block, total_size, new_size,
-                          MREMAP_MAYMOVE);
+  cp = (char*) __mremap(
+                (char*)(block), 
+                total_size, 
+                new_size,
+                MREMAP_MAYMOVE
+              );
 
   if (cp == MAP_FAILED)
     return NULL;
 
-  /* mremap preserves the region's flags - this means that if the old chunk
-     was marked with MADV_HUGEPAGE, the new chunk will retain that.  */
+  /* mremap preserves the region's flags - this means that 
+     if the old chunk was marked with MADV_HUGEPAGE, the 
+     new chunk will retain that. */
   if (total_size < mp_.thp_pagesize)
     madvise_thp (cp, new_size);
 
-  p = mmap_set_chunk ((uintptr_t) cp, new_size, offset, is_hp);
+  p = mmap_set_chunk ((uintptr_t)(cp), new_size, offset, is_hp);
 
   INTERNAL_SIZE_T new;
   new = atomic_fetch_add_relaxed (&mp_.mmapped_mem, new_size - size - offset)
@@ -4234,8 +4246,7 @@ void* __libc_realloc (void *oldmem, size_t bytes)
 
   void *newp;                 /* chunk to return */
 
-  /* realloc(NULL, bytes) is supposed to be the same 
-     as malloc(bytes). */
+  /* realloc(NULL, bytes) is the same as malloc(bytes). */
   if (oldmem == NULL)
     return __libc_malloc(bytes);
 
@@ -4696,12 +4707,14 @@ void* __libc_calloc (size_t n, size_t elem_size)
 
 /* -------------------- malloc -------------------- */
 
+/* [PRECONDITION]: The caller must ensure a valid arena 
+    exist. */
 static void* _int_malloc(mstate av, size_t bytes)
 {
   INTERNAL_SIZE_T nb;               /* Normalized request size. */
   unsigned int idx;                 /* Bin number associated with nb. */
-  mbinptr bin;                      /* A pointer to fake chunk whose 
-                                       fd/bk align with the bin headers. */
+  mbinptr bin;                      /* The fake chunk whose fd/bk overlap 
+                                       with the bin headers. */
 
   mchunkptr victim;                 /* Chunk being inspected. */
   INTERNAL_SIZE_T size;             /* Victim's size. */
@@ -4751,85 +4764,63 @@ static void* _int_malloc(mstate av, size_t bytes)
   }
   nb = checked_request2size(bytes);
 
-  /* [PATH 1]: If there are no usable arenas, we have to use 
-     mmap as there is no other option to fulfill this request.
+  /* [PATH 1]: If there are no usable arenas, we have 
+      to use mmap, as there is no other option to 
+      fulfill this request.
 
-    [PRECONDITION]: _int_malloc is designed to operate on a 
-      valid arena and the caller is supposed to ensure it.
-
-    [HOW THE PRECONDITION IS ENSURED?]
-
-    1. __ptmalloc_init() initializes the allocator's state 
-       during libc startup, before normal requests are made. 
-       This includes the initialization of main_arena. As a 
-       result, when the first malloc() call is made, the 
-       main_arena has already been established.
-
-    2. In a multithreaded environment, a thread locks the 
-       arena before using it, preventing corruption of the 
-       allocator's state through concurrent access. It is 
-       possible that all the existing arenas are blocked by 
-       some threads. The caller waits until an arena is 
-       available again. It acquires and locks it, and calls 
-       _int_malloc.
-
-    Therefore, normal malloc() requests are expected to reach 
-    _int_malloc() with a valid arena. Nevertheless, we 
-    explicitly guard against (av==NULL) as an exceptional 
-    case and fall back to sysmalloc(), which eventually uses 
-    mmap() to service the request safely. */
-
+    As of now, it remains unanswered. See open-questions.md.
+  */
   if (__glibc_unlikely(av == NULL)){
     void *p = sysmalloc(nb, av);
+
     if (p != NULL)
     	alloc_perturb(p, bytes);
 
     return p;
   }
 
-  /* [PATH 2]: If a small request, check the right 
+  /* [PATH 2]: If a small request, check the corresponding 
       smallbin. This is an exact fit path. */
   if (in_smallbin_range(nb)){
-    /* Obtain the bin number corresponding to the size. */
     idx = smallbin_index(nb);
-
-    /* Obtain the fake chunk pointer whose fd/bk align 
-       with the bin headers. */
     bin = bin_at(av, idx);
 
     /* Ensure the bin is non-empty. */
     if ((victim = last(bin)) != bin){
       bck = victim->bk;
 
-      /* A corruption check. */
   	  if (__glibc_unlikely(bck->fd != victim))
         malloc_printerr ("malloc(): smallbin double linked list corrupted");
 
-      /* Update the PREV_INUSE bit of the chunk next to victim 
-         in memory. */
+      /* Set the PREV_INUSE bit of the chunk next 
+         to victim in memory. */
       set_inuse_bit_at_offset(victim, nb);
 
-      /* Update the bin links. */
+      /* Unlink victim. */
+
+      /* bin_handler->bk = prev_victim */
       bin->bk = bck;
+
+      /* prev_victim->fd = next_victim */
       bck->fd = bin;
 
-      /* Set the IS_MMAPPED bit for the non-main arena chunks. */
+      /* Set the NON_MAIN_ARENA bit, if applicable. */
       if (av != &main_arena)
   	    set_non_main_arena(victim);
 
-      /* A no-op when MALLOC_DEBUG is not defined (default). */
       check_malloced_chunk(av, victim, nb);
 
+      /* If the tcache infra is active, we check if the 
+         smallbin has more chunks. If yes, we stash them 
+         into the corresponding tcache bin for fast 
+         access by later malloc calls for that size. */
+
 #if USE_TCACHE
-  	  /* While we're here, if the small bin has more 
-         chunks, move them into the corresponding 
-         tcache bin. */
 	    size_t tc_idx = csize2tidx(nb);
 	    if (tc_idx < mp_.tcache_small_bins){
 	      mchunkptr tc_victim;
 
-        /* If it is the first time, setup the tcache 
-           infra. */
+        /* Setup the tcache infra, if first time. */
 	      if (__glibc_unlikely(tcache_inactive()))
       		tcache_init(av);
 
@@ -4841,28 +4832,29 @@ static void* _int_malloc(mstate av, size_t bytes)
     		  if (tc_victim != NULL){
   		      bck = tc_victim->bk;
 
-            /* Chunks in the tcache bins are condiered 
+            /* Chunks in the tcache bins are considered 
                inuse, so set the inuse bit of the chunk 
-               next to this one. */
+               next to this one in memory. */
             set_inuse_bit_at_offset(tc_victim, nb);
 
             if (av != &main_arena)
         			set_non_main_arena (tc_victim);
 
-            /* Update the bin links. */
+            /* Unlink the victim. */
   		      bin->bk = bck;
 	  	      bck->fd = bin;
 
-            /* Pace the chunk in tcache bin. */
+            /* Place in the tcache bin. */
   		      tcache_put(tc_victim, tc_idx);
           }
         }
 	    }
 #endif
+
       /* Pointer to the payload memory. */
       void *p = chunk2mem(victim);
 
-      /* A debugging helper. */
+      /* [?] */
       alloc_perturb(p, bytes);
 
       /* Return the payload memory to the process. */
@@ -4872,27 +4864,21 @@ static void* _int_malloc(mstate av, size_t bytes)
 
   /* [PATH 2] Analysis. 
 
-      If the request size was small, the corresponding 
-      smallbin is checked. If non-empty, a chunk is 
-      already returned.
+    If we are here, either
+      [1] the smallbin was empty, or
+      [2] nb is not a small size.
+  */
 
-      If we are here, the possibilities are:
-      1. The smallbin was empty.
-      2. `nb` is not a small size, in which case, the 
-         else block is executed. */
-
-  /* If a large request, obtain the large bin index. */
+  /* If nb is a large size, obtain the large bin index. */
   else{
     idx = largebin_index(nb);
   }
 
 #if USE_TCACHE
-  /* Create a variable tcache_nb and assign nb 
-     to it if nb is a valid small tcache size. */
-
   INTERNAL_SIZE_T tcache_nb = 0;
   size_t tc_idx = csize2tidx(nb);
 
+  /* If nb is small, assign it to tcache_nb. */
   if (tc_idx < mp_.tcache_small_bins)
     tcache_nb = nb;
 
@@ -4900,16 +4886,11 @@ static void* _int_malloc(mstate av, size_t bytes)
   tcache_unsorted_count = 0;
 #endif
 
-  /* I don't know what this outer for loop is for. */
+  /* I don't understand what this outer loop is for. */
   for (;;){
-    /* Iteration count. */
     int iters = 0;
 
-    /* [PATH 3]: Use the unsorted bin. */
-
-
-    /* Start with the first chunk in the unsorted bin and 
-       traverse the whole bin. */
+    /* [PATH 3]: Check the unsorted bin. */
     while(
       (victim = unsorted_chunks(av)->bk) 
       != unsorted_chunks(av)
@@ -4924,7 +4905,23 @@ static void* _int_malloc(mstate av, size_t bytes)
       /* The chunk after the victim chunk in memory. */
       mchunkptr next = chunk_at_offset(victim, size);
 
-      /* Consistency checks. */
+      /* Consistency checks.
+
+        They are performed on victim, the chunk before victim 
+        "in the bin" and the chunk next to victim "in the memory".
+
+        We start with the last chunk in the unsorted bin. 
+        Therefore, there is no chunk next to the victim in 
+        the first case. As we traverse, every chunk next 
+        to the victim is already analyzed. But we do need 
+        the next chunk "in memory" to ensure the prev_size 
+        metadata is correct.
+
+        If the victim is not fit for this request, it is 
+        binned appropriately. We have to update the bin 
+        links, so we ensure that the chunk previous to 
+        victim "in the bin" is OK.
+      */
 
       /* [TEST 1]: The size of the victim chunk must be >= 
          MINSIZE and less than the total memory managed by 
@@ -4944,8 +4941,8 @@ static void* _int_malloc(mstate av, size_t bytes)
       )
         malloc_printerr("malloc(): invalid next size (unsorted)");
 
-      /* [TEST 3]: The prev_size of the next chunk must be equal 
-         to the size of the victim. */
+      /* [TEST 3]: The prev_size of the next chunk in memory must 
+         be equal to the size of the victim. */
       if (__glibc_unlikely(
         (prev_size(next) & ~(SIZE_BITS)) != size
       ))
@@ -4963,78 +4960,37 @@ static void* _int_malloc(mstate av, size_t bytes)
       if (__glibc_unlikely(prev_inuse(next)))
         malloc_printerr("malloc(): invalid next->prev_inuse (unsorted)");
 
-      /* Notes about the consistency checks. 
-
-         Apart from the victim, the checks are performed on 
-         the chunk previous to the victim "in the bin" and 
-         the chunk next to the victim "in memory". The choice 
-         of words is careful.
-         - We start with the first chunk in the unsorted bin. 
-           Therefore, there is no chunk next to the victim in 
-           the first case. As we traverse, every chunk next 
-           to the victim is already analyzed. But we do need 
-           the next chunk "in memory" to ensure the prev_size 
-           metadata is correct.
-         - If the victim is not fit to service the request, it 
-           is binned appropriately. This requires accessing the 
-           chunk before the victim "in the bin". */
 
 
       /* [PATH 3A]: Use (av->last_remainder) if
-          1. nb is a small size,
-          2. the unsorted bin has only one chunk, which is 
-             last_remainder, and
-          3. the chunk has enough size to exist after 
-             splitting.
+          [1] nb is a small size,
+          [2] the unsorted bin has only one chunk, which 
+              is last_remainder, and
+          [3] the chunk has enough size to exist after 
+              splitting.
 
-        The condition is very precise. The request must be 
-        small, the unsorted bin must contain exactly one 
-        chunk and that chunk must be `last_remainder`, and 
-        it must be large enough to remain valid after it 
-        undergoes splitting.
-        - The highlight of this path is the requirement that 
-          the unsorted bin must be singleton with 
-          last_remainder as its only chunk.
-        - Based on my reading of the source, I have not been 
-          able to justify this requirement. I have explored 
-          multiple lines of reasoning, but none of them led 
-          to a convincing explanation.
-        - Before concluding that a question can not be resolved, 
-          I always revisit dlmalloc in hope that it can provide 
-          some useful context. So far, that has not been the 
-          case. The corresponding code in dlmalloc@2.7.0 is 
-          effectively the same. See:
-            https://github.com/DenizThatMenace/dlmalloc
-        - When a piece of code survives decades of evolution,
-          it is reasonable to assume that it may have been
-          introduced with a sound rationale. However, that
-          rationale is not necessarily recoverable from the
-          current implementation alone. It is entirely possible
-          that the explanation exists and I simply have not
-          found it yet.
-
-        So, as of July 08, 2026, I have exhausted the approaches 
-        I know to investigate this question and I don't have a 
-        definitive answer. */
-
+        I don't understand why the unsorted bin has to 
+        be singleton here. See open-questions.md.
+      */
       if (
         in_smallbin_range(nb) &&
         bck == unsorted_chunks(av) &&
         victim == av->last_remainder &&
         (unsigned long)(size) > (unsigned long)(nb + MINSIZE)
       ){
-        /* Split the remainder. */
+        /* Split. */
         remainder_size = (size - nb);
         remainder = chunk_at_offset(victim, nb);
 
-        /* Update the unsorted bin links and av->last_remainder to 
-           point to the new remainder. */
+        /* Update the unsorted bin links and av->last_remainder 
+           to the new remainder. */
         unsorted_chunks(av)->bk = unsorted_chunks(av)->fd = remainder;
         av->last_remainder = remainder;
         remainder->bk = remainder->fd = unsorted_chunks(av);
 
         /* If the resulting remainder is not a small chunk, 
-           set the skip list pointers NULL. */
+           set the skip list pointers NULL as the unsorted 
+           chunks have them NULL. */
         if (!in_smallbin_range(remainder_size)){
           remainder->fd_nextsize = NULL;
           remainder->bk_nextsize = NULL;
@@ -5046,26 +5002,24 @@ static void* _int_malloc(mstate av, size_t bytes)
           nb | PREV_INUSE | (av != &main_arena ? NON_MAIN_ARENA : 0)
         );
 
-        /* Update the metadata of the resulting remainder chunk. */
+        /* Update the size of remainder. */
         set_head(
           remainder, 
           remainder_size | PREV_INUSE
         );
 
-        /* Update the prev_size of the chunk after the remainder 
-           chunk in memory. */
+        /* Update the prev_size of the chunk next to remainder 
+           in memory. */
         set_foot(remainder, remainder_size);
 
-        /* A no-op unless debugging is enabled. */
         check_malloced_chunk(av, victim, nb);
-
         void *p = chunk2mem(victim);
         alloc_perturb(p, bytes);
 
         return p;
       }
 
-      /* Remove the victim from the unsorted bin. */
+      /* Unlink the victim. */
       unsorted_chunks(av)->bk = bck;
       bck->fd = unsorted_chunks(av);
 
@@ -5076,35 +5030,26 @@ static void* _int_malloc(mstate av, size_t bytes)
         if (av != &main_arena)
       		set_non_main_arena(victim);
 
+      /* If the tcache infra is not active, we return 
+         the victim. If not, all the exact-fit chunks 
+         are stashed in the tcache bin. Only when the 
+         tcache bin is full and there is a victim left, 
+         do we return it. Otherwise, we wait for the 
+         next tcache block to return a chunk. */
+
 #if USE_TCACHE
         /* Setup the tcache infra if not already. */
 	      if (__glibc_unlikely(tcache_inactive()))
       		tcache_init(av);
 
-        /* All exact-fit chunks are stashed into the 
-           tcache while it has room, including the 
-           victim that has been classified fit to 
-           service this request. Returning chunk is 
-           deferred until we stop stashing, either 
-           if no more chunks exist, or the limit has 
-           been exceeded. A chunk is returned later.
-
-          In the small bin path, we keep the first 
-          victim and stash the rest of the available 
-          chunks. Later, we return it. But that does 
-          not happen here. Every chunk including the 
-          first victim is stashed and we wait until 
-          the next tcache block to call tcache_get 
-          to return one. I don't know what's the 
-          benefit.
-        */
-
 	      if(
-          tcache_nb > 0 && 
+          (tcache_nb > 0) && 
           tcache->num_slots[tc_idx] != 0
         ){
     		  tcache_put(victim, tc_idx);
     		  return_cached = 1;
+
+          /* Move to the next chunk in unsorted bin. */
     		  continue;
         }
 	      else{
@@ -5112,8 +5057,8 @@ static void* _int_malloc(mstate av, size_t bytes)
 
           check_malloced_chunk(av, victim, nb);
           void *p = chunk2mem(victim);
-
           alloc_perturb(p, bytes);
+
           return p;
 #if USE_TCACHE
         }
@@ -5834,7 +5779,7 @@ static void _int_free_merge_chunk(
 ){
   /* Chunk (p+1) */
   mchunkptr nextchunk = chunk_at_offset(p, size);
-  check_inuse_chunk(av, p);    // A no-op when MALLOC_DEBUG is not defined.
+  check_inuse_chunk(av, p);
 
   /* Lightweight tests */
 
@@ -5975,7 +5920,6 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
     /* Update the next chunk's mchunk_prev_size with this chunk's size. */
     set_foot(p, size);
 
-    /* A no-op in the default configuration. */
     check_free_chunk(av, p);
   }
 
@@ -5984,10 +5928,10 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
      av->top to point to `p`. */
   else{
     size += nextsize;
+
     set_head(p, size | PREV_INUSE);
     av->top = p;
 
-    /* A no-op when MALLOC_DEBUG is not defined (which is the default). */
     check_chunk(av, p);
   }
 
@@ -6184,7 +6128,7 @@ static void* _int_memalign(mstate av, size_t alignment, size_t bytes)
     p = mmap_set_chunk(
       mmap_base(p), 
       mmap_size(p),
-      (uintptr_t)newp - mmap_base(p), 
+      (uintptr_t)(newp) - mmap_base(p), 
       mmap_is_hp(p)
     );
     return chunk2mem(p);
