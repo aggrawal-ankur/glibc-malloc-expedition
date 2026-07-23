@@ -7076,15 +7076,3 @@ weak_alias (__malloc_trim, malloc_trim)
 #if SHLIB_COMPAT (libc, GLIBC_2_0, GLIBC_2_26)
 compat_symbol (libc, __libc_free, cfree, GLIBC_2_0);
 #endif
-
-/* ------------------------------------------------------------
-   History:
-
-   [see ftp://g.oswego.edu/pub/misc/malloc.c for the history of dlmalloc]
-
- */
-/*
- * Local variables:
- * c-basic-offset: 2
- * End:
- */
