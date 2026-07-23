@@ -1,4 +1,4 @@
-# Unanswered Questions
+# Open Questions
 
 As per the git repository, I am on the quest of understanding malloc since February 27, 2026. As of writing this, July 21, 2026, **4 months and 24 days** have passed, or 144 days.
 
