@@ -3043,9 +3043,11 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
         );
       }
 
-      /* [WHAT DOES THIS DO?] */
+      /* If mmap succeeded, we can not use sbrk to find 
+         the end. Therefore, we have to update brk and 
+         snd_brk appropriately. */
       if (mbrk != MAP_FAILED){
-        /* [WHAT DOES THIS DO?] */
+        /* [?] */
         __set_vma_name(mbrk, fallback_size, " glibc: malloc");
 
         /* [REVISIT] */
@@ -5094,7 +5096,8 @@ static void* _int_malloc(mstate av, size_t bytes)
           first victim is stashed and we wait until 
           the next tcache block to call tcache_get 
           to return one. I don't know what's the 
-          benefit. */
+          benefit.
+        */
 
 	      if(
           tcache_nb > 0 && 
@@ -5139,7 +5142,8 @@ static void* _int_malloc(mstate av, size_t bytes)
 
         For me, this is one of those questions that have no 
         visible starting point, making them much harder to 
-        reason about. */
+        reason about.
+      */
 
       /* Why the smallbin path is wrapped in glibc_unlikely?
          This is a relatively recent change. Here is the link: 
@@ -5167,7 +5171,8 @@ static void* _int_malloc(mstate av, size_t bytes)
         Therefore, the chances of the victim chunk being a 
         small chunk are relatively low, so the allocator 
         communicates this expectation to the compiler using 
-        __glibc_unlikely(). */
+        __glibc_unlikely().
+      */
 
       /* [OBSERVATION]: We can notice "do no repeat yourself" 
           or the DRY principle, in action. Both the branches 
@@ -5390,8 +5395,8 @@ static void* _int_malloc(mstate av, size_t bytes)
     }
 #endif
 
-    /* [PATH 4]: If a large request, scan through the 
-       chunks of the associated large bin.
+    /* [PATH 4]: If a large request, scan the associated 
+        large bin.
 
       Chunks are scanned from smallest to biggest size. 
       The goal is to find the smallest chunk that can 
@@ -5399,12 +5404,11 @@ static void* _int_malloc(mstate av, size_t bytes)
       satisfy the request is the size itself. If not this, 
       then the next greater size available in the bin.
 
-      Since every unique chunk is a part of the skip list, 
-      we utilize these pointers to find our smallest fit, 
-      instead of traversing chunk-by-chunk. If there are 
-      multiple chunks of that size, we use one of them 
-      instead of the unique one to prevent rerouting the 
-      skip list.
+      We use the skip list to traverse the bin quickly 
+      and find the smallest fit. If there are multiple 
+      chunks of that size class, we use a duplicate and 
+      keep the unique one to prevent rerouting the skip 
+      list.
 
       The annotations for "bins" under the "Internal data 
       structures" section mentions that chunks of same size 
@@ -5433,6 +5437,7 @@ static void* _int_malloc(mstate av, size_t bytes)
         have to reroute the skip list in this case.
 
 
+      [VALIDATE THIS LRU CLAIM AND PUT THIS IN QUESTIONS.md]
       However, the current malloc doesn't do it. It takes 
       the duplicate just after the unique chunk. And I have 
       no answer to the "why". You can check out this lab to 
@@ -5460,9 +5465,8 @@ static void* _int_malloc(mstate av, size_t bytes)
     */
 
     if (!in_smallbin_range(nb)){
-      /* We have already obtained the index of the 
-         corresponding large bin, so we can directly 
-         obtain the bin handler. */
+      /* We have already obtained the large bin index 
+         corresponding to nb. */
       bin = bin_at(av, idx);
 
       if (
@@ -5550,12 +5554,14 @@ static void* _int_malloc(mstate av, size_t bytes)
         the large bin associated with nb is not able 
         to satisfy the request. 
 
-      We use binmap to quickly check which large bins 
-      are empty, starting from the next largest bin. 
-      This search is strictly by best-fit; i.e., the 
-      smallest (with ties going to approximately the 
-      least recently used) chunk that fits is selected.
-      [UPDATE THIS LRU CLAIM] */
+      Use binmap to quickly check which large bins are 
+      empty, starting from the next largest bin. 
+
+      This search is strictly best-fit. The smallest 
+      with ties going to approximately the least 
+      recently used chunk that fits is selected.
+      [UPDATE THIS LRU CLAIM]
+    */
 
     /* The next large bin. */
     ++idx;
@@ -5724,24 +5730,21 @@ static void* _int_malloc(mstate av, size_t bytes)
       if (__glibc_unlikely (size > av->system_mem))
         malloc_printerr("malloc(): corrupted top size");
 
-      /* [PATH 6A]: If the top chunk has enough memory to 
-          exist independently, split it.
-          - The top chunk is treated as larger (and thus less 
-            well fitting) than any other available chunk since 
-            it can be extended to be as large as necessary (up 
-            to the system's limitations).
-          - Therefore, it is in accord with the best-fit search 
-            rule. */
-
+      /* [PATH 6A]: If the top chunk has enough memory 
+          to exist independently, split it.
+      */
       if ((unsigned long)(size) >= (unsigned long)(nb + MINSIZE)){
         remainder_size = (size - nb);
         remainder = chunk_at_offset(victim, nb);
         av->top = remainder;
 
+        /* Set the metadata of the chunk to return. */
         set_head(
           victim, 
           nb | PREV_INUSE | (av != &main_arena ? NON_MAIN_ARENA : 0)
         );
+
+        /* Update the top chunk size. */
         set_head(remainder, remainder_size | PREV_INUSE);
 
         check_malloced_chunk(av, victim, nb);
@@ -5858,7 +5861,7 @@ static void _int_free_merge_chunk(
   ))
     malloc_printerr("free(): invalid next size (normal)");
 
-  /* [WHAT IS THIS?] */
+  /* [?] */
   free_perturb(chunk2mem(p), size - CHUNK_HDR_SZ);
 
 
@@ -5914,11 +5917,12 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
          (p, p+1)->mchunk_sizes; depending on whether backward
          consolidation happened or not. */
     }
+
+    /* If nextchunk is an in-use chunk, we can not perform
+       forward consolodation, but we have to update the 
+       PREV_INUSE bit of this chunk to reflect that the 
+       chunk previous to it is now free. */
     else{
-    /* If the nextchunk is an in-use chunk, we can not perform
-       forward consolodation, but we do have to update the 
-       PREV_INUSE bit of this chunk to reflect that the chunk 
-       previous to it is now free. */
       clear_inuse_bit_at_offset(nextchunk, 0);
     }
 
@@ -5932,7 +5936,8 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
 
       Large chunks are placed in the unsorted bin. They are 
       given a chance to service the next malloc call, if 
-      possible. They might improve the locality of chunks. */
+      possible. They might improve the locality of chunks.
+    */
     if (!in_smallbin_range(size)){
       bck = unsorted_chunks(av);
       fwd = bck->fd;
@@ -5964,13 +5969,13 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
     bck->fd = p;
     fwd->bk = p;
 
-    /* Last, update the size and PREV_INUSE bit of the resulting chunk. */
+    /* Update the size and PREV_INUSE bit of the resulting chunk. */
     set_head(p, size | PREV_INUSE);
 
     /* Update the next chunk's mchunk_prev_size with this chunk's size. */
     set_foot(p, size);
 
-    /* A no-op when MALLOC_DEBUG is not defined (which is the default). */
+    /* A no-op in the default configuration. */
     check_free_chunk(av, p);
   }
 
@@ -6086,11 +6091,11 @@ static void* _int_realloc(
       unlink_chunk(av, next);
     }
 
-    /* allocate, copy, free */
+    /* Allocate, Copy, Free. */
     else{
       newmem = _int_malloc(av, nb - MALLOC_ALIGN_MASK);
       if (newmem == NULL)
-        return NULL; /* propagate failure */
+        return NULL;
 
       newp = mem2chunk(newmem);
       newsize = chunksize(newp);
@@ -6125,7 +6130,7 @@ static void* _int_realloc(
     set_inuse_bit_at_offset (newp, newsize);
   }
 
-  /* split remainder */
+  /* Split remainder. */
   else{
     remainder = chunk_at_offset(newp, nb);
 
@@ -6160,6 +6165,7 @@ static void* _int_memalign(mstate av, size_t alignment, size_t bytes)
   }
   size_t nb = checked_request2size(bytes);
 
+  /* [?] */
   /* Call malloc with worst case padding to hit alignment.
     - ALIGNMENT is a power-of-2, so it tops out at 
       (PTRDIFF_MAX >> 1) + 1, leaving plenty of space to 
@@ -6186,9 +6192,9 @@ static void* _int_memalign(mstate av, size_t alignment, size_t bytes)
 
   size_t size = chunksize(p);
 
-  /* If not already aligned, align the chunk. 
-  Add MINSIZE before aligning so we can always 
-  free the alignment padding. */
+  /* If not already aligned, align the chunk. Add 
+     MINSIZE before aligning so we can always free 
+     the alignment padding. */
   if (!PTR_IS_ALIGNED(m, alignment)){
     newp = mem2chunk(ALIGN_UP((uintptr_t)m + MINSIZE, alignment));
     size_t leadsize = PTR_DIFF(newp, p);
@@ -6223,18 +6229,19 @@ static void* _int_memalign(mstate av, size_t alignment, size_t bytes)
 
 /* ------------------ malloc_trim ------------------ */
 
-/* It does two things. 
-   1. Walk through every bin and check if the payload 
+/* It does two things.
+
+  [1] Walk every bin and check if a chunk's payload 
       memory contains at least one complete page. If 
-      yes, the memory advise syscall is used to tell 
-      the kernel to reclaim the physical backing 
-      associated with that page. The virtual memory 
-      mapping remains intact and it is backed with 
-      physical memory in future if it is accessed 
+      yes, notify the kernel to reclaim the physical 
+      backing associated with that page. The virtual 
+      memory mapping remains intact and it is backed 
+      with physical memory in future if it is accessed 
       again, not necessarily by the same physical page 
-      frame, though. This way, the pressure on the 
-      physical memory is reduced.
-   2. Call systrim to release memory from the top chunk. */
+      frame, though. It is a way to reduce pressure on 
+      physical memory.
+  [2] Call systrim to release memory from the top chunk.
+*/
 static int mtrim(mstate av, size_t pad)
 {
   /* Page size. */
@@ -6273,20 +6280,20 @@ static int mtrim(mstate av, size_t pad)
           assert ( ((char*) chunk2mem(p) + (2 * CHUNK_HDR_SZ)) <= paligned_mem);
           assert ( ((char*)(p) + size) > paligned_mem);
 
-          /* (paligned_mem - p) is the number of bytes from the 
-              start of the chunk (including the header) that are 
-              a part of a different page, not the first page 
-              aligned address within the payload memory.
+          /* 
+            (paligned_mem - p) is the number of bytes from the 
+             start of the chunk (including the header) that are 
+             a part of a different page, not the first page 
+             aligned address within the payload memory.
 
-             (size - (paligned_mem - p)) represents the number 
-              of bytes from the first page-aligned address inside 
-              the payload memory region up to the end of the 
-              chunk. This size is not necessarily page-aligned. 
-              It can contain fragments belonging to an 
-              incomplete page, so we align it down to the previous 
-              page, before passing it to madvise. */
-
-          /* This is the size we could potentially free. */
+            (size - (paligned_mem - p)) is the number of bytes 
+             from the first page-aligned address inside the 
+             payload memory region up to the end of the chunk.
+             These are the bytes that can be potentially freed.
+             But it may or may not be page-aligned. To remove 
+             the fragments of an incomplete page, we align it 
+             down to the previous page.
+          */
           size -= (paligned_mem - (char*)(p));
 
           /* Must be at least one page. */
@@ -6296,7 +6303,6 @@ static int mtrim(mstate av, size_t pad)
             memset(paligned_mem, 0x89, size & ~psm1);
 #endif
             __madvise (paligned_mem, size & ~psm1, MADV_DONTNEED);
-
             result = 1;
           }
         }
@@ -6305,7 +6311,7 @@ static int mtrim(mstate av, size_t pad)
   }
 
 #ifndef MORECORE_CANNOT_TRIM
-  return result | (av == &main_arena ? systrim (pad, av) : 0);
+  return result | (av == &main_arena ? systrim(pad, av) : 0);
 #else
   return result;
 #endif
@@ -6319,8 +6325,7 @@ int __malloc_trim(size_t s)
   int result = 0;
   mstate ar_ptr = &main_arena;
 
-  /* Iterate over reach available arena, 
-     starting from the main_arena. */
+  /* Iterate over each arena. */
   do{
     __libc_lock_lock(ar_ptr->mutex);
     result |= mtrim(ar_ptr, s);
@@ -6353,7 +6358,8 @@ size_t __malloc_usable_size(void *m)
 {
   if (m == NULL)
     return 0;
-  return musable (m);
+
+  return musable(m);
 }
 #endif
 
@@ -6370,11 +6376,11 @@ static void int_mallinfo(mstate av, struct mallinfo2 *m)
 
   check_malloc_state(av);
 
-  /* Account for top */
+  /* Account for top. */
   avail = chunksize(av->top);
   nblocks = 1;  /* top always exists */
 
-  /* traverse regular bins */
+  /* Traverse regular bins. */
   for (i = 1; i < NBINS; ++i){
     b = bin_at (av, i);
     for (p = last(b); (p != b); (p = p->bk)){
@@ -6477,6 +6483,7 @@ void __malloc_stats(void){
   fprintf(stderr, "in use bytes     = %10u\n", in_use_b);
   fprintf(stderr, "max mmap regions = %10u\n", (unsigned int) mp_.max_n_mmaps);
   fprintf(stderr, "max mmap bytes   = %10lu\n", (unsigned long) mp_.max_mmapped_mem);
+
   stderr->_flags2 = old_flags2;
   _IO_funlockfile(stderr);
 }
@@ -6618,7 +6625,8 @@ do_set_tcache_unsorted_limit (size_t value)
 }
 #endif
 
-static __always_inline int do_set_mxfast (size_t value)
+static __always_inline 
+int do_set_mxfast (size_t value)
 {
   return 1;
 }
@@ -6626,9 +6634,9 @@ static __always_inline int do_set_mxfast (size_t value)
 static __always_inline int
 do_set_hugetlb (size_t value)
 {
-  if (value == 0)
+  if (value == 0){
     mp_.thp_mode = malloc_thp_mode_never;
-
+  }
   else if (value == 1){
     mp_.thp_mode = __malloc_thp_mode();
     if (
@@ -6652,11 +6660,13 @@ int __libc_mallopt(int param_number, int value)
 
   LIBC_PROBE(memory_mallopt, 2, param_number, value);
 
-  /* Many of these helper functions take a size_t. We do not worry
-  about overflow here, because negative int values will wrap to
-  very large size_t values and the helpers have sufficient range
-  checking for such conversions. Many of these helpers are also
-  used by the tunables macros in arena.c. */
+  /* Many of these helper functions take a size_t. We do 
+     not worry about overflow here, because negative int 
+     values will wrap to very large size_t values and the 
+     helpers have sufficient range checking for such 
+     conversions. Many of these helpers are also used by 
+     the tunables macros in arena.c.
+  */
 
   switch (param_number){
     case M_MXFAST:
@@ -6908,7 +6918,7 @@ int __malloc_info(int options, FILE *fp)
 
   /* Iterate over all arenas currently in use. */
   mstate ar_ptr = &main_arena;
-  do{
+  do {
     fprintf (fp, "<heap nr=\"%d\">\n<sizes>\n", n++);
 
     size_t nblocks = 0;
@@ -6925,9 +6935,7 @@ int __malloc_info(int options, FILE *fp)
 
     __libc_lock_lock (ar_ptr->mutex);
 
-    /* Account for the top chunk. The top-most available chunk is
-    treated specially and is never in any bin. See "initial_top"
-	  comments. */
+    /* Account for the top chunk. */
     avail = chunksize (ar_ptr->top);
     nblocks = 1;    /* Top always exists. */
 
