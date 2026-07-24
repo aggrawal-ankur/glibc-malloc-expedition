@@ -1355,9 +1355,10 @@ checked_request2size(size_t req) __nonnull (1)
 
 
 /* [Set #2]: They rely on a user supplied size to find 
-    the (p+1) chunk. It is useful in situations like 
-    coalescing, where the existing mchunk_size can not 
-    be used. */
+    the (p+1) chunk.
+    It is useful in situations like coalescing, where 
+    the existing mchunk_size can not be used.
+*/
 
 /* [1] Determine the status of chunk (p). */
 #define  inuse_bit_at_offset(p, s)  ( ((mchunkptr) ((char*)(p) + s))->mchunk_size & PREV_INUSE)
@@ -1371,7 +1372,8 @@ checked_request2size(size_t req) __nonnull (1)
 
 /* Set the mchunk_size of chunk (p) without disturbing its 
    metadata bits. The metadata bits are first extracted and 
-   then OR-ed with the new size. */
+   then OR-ed with the new size.
+*/
 #define  set_head_size(p, s)  ((p)->mchunk_size = (((p)->mchunk_size & SIZE_BITS) | (s)))
 
 /* Set the mchunk_size of chunk (p). */
@@ -1395,7 +1397,8 @@ checked_request2size(size_t req) __nonnull (1)
 /* If memory tagging is enabled the layout changes to 
    accommodate the granule size, this is wasteful for
    small allocations so not done by default. Both the 
-   chunk header and user data has to be granule aligned. */
+   chunk header and user data has to be granule aligned.
+*/
 _Static_assert(
   __MTAG_GRANULE_SIZE <= CHUNK_HDR_SZ,
   "memory tagging is not supported with large granule."
@@ -2448,16 +2451,16 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
 
   /* [PATH 1]: Use sysmalloc_mmap if:
-      [1]:  there are no usable arenas (the rare case), or
+      [1] there are no usable arenas (the rare case), or
 
-      [2A]: the request size meets the mmap threshold, and
-      [2B]: the number of currently mmapped regions is less 
-            than the maximum mmapped regions allowed.
+      [2A] the request size meets the mmap threshold, and
+      [2B] the number of existing mmapped regions is less 
+            than the maximum allowed.
 
-      Large requests are generally serviced via mmap to avoid 
-      consuming arena space. It allows the kernel to reclaim 
-      a large mapping when it is freed, keeping memory demand 
-      stable.
+      Large requests are generally serviced via mmap to 
+      avoid consuming arena space. It allows the kernel 
+      to reclaim a large mapping when it is freed, 
+      keeping the memory footprint stable.
   */
   if (
     av == NULL ||
@@ -2468,8 +2471,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
   ){
     char *mm;
 
-    /* [PATH 1A]: If huge pages are enabled and the requested
-       size is more than the huge page size, use huge pages.
+    /* [PATH 1A]: Use huge pages if the requested size is more 
+        than the huge page size and huge pages are enabled.
 
        We don't have to issue the THP madvise call. [WHY]
     */
@@ -2497,18 +2500,24 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
     [CASE 1] ~~ (av == NULL)
     - Path-1 is explored mandatorily.
-    - If succeeded, the memory is returned without waiting.
-    - If failed, the fail-safe path above would return NULL.
-    - Regardless of the outcome, "return" is confirmed. If 
-      we are here, this was not the case.
+    - Upon success, memory is returned.
+    - Upon failure, the fail-safe path would return NULL.
+    - Regardless of the outcome, "return" is confirmed. 
+      If we are here, this was not the case.
 
-    [CASE 2] ~~ (av != NULL), (nb >= mmap_threshold) and 
-                (cur(mmap) < max(mmap)
-    - nb belongs to [MMAP_THRESHOLD, PTRDIFF_MAX], which 
-      is a huge range.
-    - If path-1 succeeded, the memory is returned without 
-      waiting. If we are here, path-1 has failed and this 
-      can be the case.
+    [CASE 2] ~~ (av != NULL), (nb >= mmap_threshold)
+
+      [2A] ~~ (cur(mmap) < max(mmap)
+      - nb belongs to [MMAP_THRESHOLD, PTRDIFF_MAX], which 
+        is a huge range. Success depends on the kernel.
+      - Upon success, memory is returned. If we are here, 
+        path-1 has failed.
+      - This can be the case.
+
+      [2B] ~~ (cur(mmap) >= max(mmap)
+      - We have reached the maximum number of mmapped 
+        regions, so mmap can not be used.
+      - This can be the case.
 
     [CASE 3] ~~ (av != NULL) and (nb < mmap_threshold)
     - If there was an arena and nb didn't cross the mmap 
@@ -2518,17 +2527,18 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     The kernel's willingness to service a request depends 
     on a variety of factors. Replicating that in user space 
     requires knowledge of the kernel's policies and current 
-    state, which is either unavilable or become stale quickly.
+    state, which is either unavailable or become stale 
+    quickly.
 
     In practice, modest requests often succeed, but it is 
     still an observed behavior. Therefore, the allocator 
-    doesn't make assumptions based on the request size. The 
-    most reliable method to know if the kernel will fulfill 
-    a request is to ask the kernel.
+    doesn't make assumptions based on size. 
+    The most reliable method to know if the kernel will 
+    fulfill a request is to ask the kernel.
 
-    The virtual memory subsystem in Linux is the place where 
-    these policies are written and enforced, making it the 
-    right place to study this.
+    The virtual memory subsystem in Linux is the place 
+    where these policies are written and enforced, making 
+    it the right place to study this.
   */
 
 
@@ -2541,21 +2551,26 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
   brk = snd_brk = (char*)(MORECORE_FAILURE);
 
   /* If it is the first time, the top chunk must point 
-     to initial_top(av), and its size must be 0.
+     to initial_top(av) and its size must be 0.
 
     If it is not the first time, 
-    [1] the size of the top chunk (old_size) must be at
-        least MINSIZE bytes, 
+    [1] the size of the top chunk (old_size) must be 
+        at least MINSIZE bytes, 
     [2] the PREV_INUSE bit must be set (1), and 
-    [3] the top chunk must end at a page aligned boundary. 
+    [3] the top chunk must end at a page aligned 
+        boundary. 
 
-    Why the top chunk must end at a page-aligned boundary?
-    - It remains unanswered. See open-questions.md
+    Why the top chunk must end at a page-aligned 
+    boundary remains unanswered. See open-questions.md
 
-    The preconditions are not enforced via standard 
-    if-blocks, while assert(s) are compiled out in 
-    production builds. So, this precondition is not 
-    getting checked really.
+    The preconditions are enforced with asserts(s) 
+    which are compiled out in production builds. 
+    Their are no if-blocks asking this is true in 
+    production builds.
+
+    The most important condition here is the third one. 
+    Neither sysmalloc, nor _int_malloc checks this. It 
+    remains unanswered.
     - Checkout this GDB experiment.
     - See open-questions.md
   */
@@ -2575,10 +2590,11 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
      This requires the the top size to be less than 
      the required bytes + MINSIZE bytes.
 
-    If the top size is equal to nb and used as it is, 
-    it will cease to exist after the request is served. 
-    Therefore, the top chunk must have at least 
-    (nb + MINSIZE) bytes to remain valid afterwards.
+    If the top size is equal to nb and it is used as 
+    it is, it will cease to exist after the request 
+    is served. Therefore, the top chunk must have at 
+    least (nb + MINSIZE) bytes to remain valid 
+    afterwards.
 
     It is checked separately by the pathways below.
   */
@@ -2674,10 +2690,16 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
         chunk always has at least MINSIZE bytes. Therefore, 
         we don't have to worry about the subtraction.
 
-        Why the remaining top size is aligned down when we 
-        maintain the invariant that the top chunk always 
-        ends at page-aligned boundaries remains unanswered. 
-        See open-questions.md
+        There are two unanswered questions here. See 
+        open-questions.md
+        [1] Why the remaining top size is aligned down when 
+            we maintain the invariant that the top chunk 
+            always ends at page-aligned boundaries?
+        [2] In a rare situation, if the top was misaligned, 
+            aligning down would create some bytes that do 
+            not belong to the top chunk. What happens to 
+            them? They can not be carried by the fenceposts 
+            as it would disturb their alignment.
       */
 
       old_size = (old_size - MINSIZE) & ~MALLOC_ALIGN_MASK;
@@ -2705,7 +2727,9 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
         - After subtracting, old_size will be CHUNK_HDR_SZ.
         - Top chunk is no longer a valid chunk, so there is 
           nothing to regularize. The remaining bytes are 
-          carried away by fencepost-1.
+          carried away by fencepost-1. Since they are 
+          CHUNK_HDR_SZ, they don't disturb the alignment of 
+          the fenceposts.
       */
 
       /* If the old top chunk has enough space to exist, 
@@ -2747,12 +2771,17 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       }
     }
 
-    /* [PATH 2C]: Use sysmalloc_mmap to get an mmaped chunk. 
-        - If path-1 was not executed, mmap has not been 
-          attempted.
-        - We attempt with standard page size only. If new_heap 
-          already failed, it is unlikely that another attempt 
-          involving huge pages would succeed.
+
+    /* The current heap can not be extended and a new heap 
+       can't be setup. This leaves us with the only option, 
+       i.e. an mmapped chunk.
+    */
+
+    /* [PATH 2C]: Use sysmalloc_mmap to get an mmaped chunk.
+
+      new_heap has already tried huge pages and failed. So 
+      it is unlikely that another attempt would succeed.
+      Therefore, we attempt with standard page size only.
     */
     else if (!tried_mmap){
       char *mm = sysmalloc_mmap(nb, pagesize, 0);
@@ -2766,70 +2795,34 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
   else{
     /* [STEP 1]: Calculate the size to request from sbrk. */
 
-    /* `nb`: aligned request bytes as received from 
-             _int_malloc. If (req > PTRDIFF_MAX),
-             checked_request2size(req) returns SIZE_MAX
-             to return safely later.
-       `top_pad`: padding bytes to request more from sbrk
-                  to avoid syscall overhead.
-       `MINSIZE`: top_pad can be zero as well, thanks to
-                  (DEFAULT_TOP_PAD). So we ensure that
-                  there is enough space for the top to
-                  exist after carving a chunk out of it.
-       `size`: the amount we will request from sbrk. */
     size = nb + mp_.top_pad + MINSIZE;
 
-    /* The memory obtained through program break expansion 
-       (sbrk) forms a contiguous region. But there are two 
-       threats to this contiguity. First is, a foreign sbrk.
-
-      [AN OBSERVATION]:
-      - We know that sbrk(0) returns the current program 
-        break. It can be compared with the current top end 
-        to establish clarity on contiguity. So far, there 
-        are no traces of that happening.
-      - One possible explanation is that querying the current
-        program break first provides little benefit. If another
-        MORECORE call is required immediately afterward, the
-        first query may simply add overhead without reducing the
-        amount of work. We'll revisit this after exploring how
-        glibc actually detects and manages foreign sbrk events.
-
+    /* [?]
       If not contiguous already, we don't subtract old_size 
       from size. [WHY]
 
       If contiguous, we do subtract, but we wait until sbrk 
       actually return contiguous memory. If it doesn't, we 
-      undo this step. */
+      undo this step.
+    */
     if (contiguous(av))
       size -= old_size;
 
-    /* [NOTE]: It is the original annotation about keeping 
-        the top (or better, morecore) aligned to a page 
-        boundary. As said, I don't understand it yet.
-
-      If MORECORE is not contiguous, this ensures that we 
-      only call it with whole-page arguments.
-
-      If MORECORE is contiguous and this is not first time 
-      through, this preserves page-alignment of previous 
-      calls. */
-
-    /* Ensure thp_pagesize is initialized. */
     thp_init();
 
     /* If huge pages are enabled, `size` is aligned up to 
        the next multiple of the huge page size. Otherwise, 
-       use standard page size. */
+       use standard page size.
+    */
     if (__glibc_unlikely (mp_.thp_pagesize != 0)){
-      /* sbrk(0) returns the current program break. */
+      /* The current program break. */
       uintptr_t lastbrk = (uintptr_t) MORECORE(0);
 
-      /* The new program break after aligning the size to 
-         huge pages. */
+      /* The new program break after aligning size to 
+         a huge page. */
       uintptr_t top = ALIGN_UP(lastbrk + size, mp_.thp_pagesize);
 
-      /* The final size. */
+      /* The final aligned size. */
       size = (top - lastbrk);
     }
     else{
@@ -2842,10 +2835,11 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
     /* [PATH 3A]: Call sbrk. */
 
-    /* sbrk interprets size as a signed 64-bit argument. 
-       But size is an unsigned quantity. Therefore, it 
-       is interpreted as a signed quantity to ensure it 
-       represents a positive value. */
+    /* `size` is an unsigned quantity, but sbrk takes a 
+       signed quantity. Therefore, we interpret size as 
+       a signed value to ensure it represents a positive 
+       value.
+    */
     if ((ssize_t)(size) > 0){
       brk = (char*) MORECORE((long)(size));
       if (brk != (char*)(MORECORE_FAILURE))
@@ -2896,7 +2890,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       Since memory can not be obtained via sbrk for this 
       request, we try mmap. We ignore the mmap_threshold 
       and max mmapped regions count as it is not used as 
-      a standalone mmapped chunk. */
+      a standalone mmapped chunk.
+    */
 
     if (brk == (char*)(MORECORE_FAILURE)){
       /* Size to request. The actual size (after alignment) 
@@ -2938,7 +2933,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
            growth will be contiguous. After the first 
            time mmap is used as backup, we do not ever 
            rely on contiguous space as this could 
-           incorrectly bridge the regions. */
+           incorrectly bridge the regions.
+        */
 
         /* Update the NONCONTIGUOUS_BIT. */
         set_noncontiguous(av);
@@ -2958,14 +2954,14 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       of the code is essentially a no-op. errno is set and 
       NULL is returned in the end.
 
-      If this path has succeeded, we have an mmap-backed 
-      region. */
+      If this path has succeeded, we have an mmapped region.
+    */
 
     /* [STEP 2] Completed. All the avenues are checked. */
 
 
-    /* [STEP 3]: Assess which path has succeeded and operate 
-        accordingly. */
+    /* [STEP 3]: Assess which path has succeeded (if any) 
+        and operate accordingly. */
 
     /* If any of the path succeeded, brk will contain a 
        valid pointer. */
@@ -3233,28 +3229,28 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
   check_malloc_state(av);
 
-  /* Gather the top configuration. */
+  /* The existing top configuration. */
   p = av->top;
   size = chunksize(p);
 
-  /* Check one of the allocation paths succeeded. */
+  /* If an allocation pathway succeeded, the top chunk will 
+     have memory now. */
   if ((unsigned long)(size) >= (unsigned long)(nb + MINSIZE)){
-    /* Subtract nb from the top chunk and update av->top. */
     remainder_size = (size - nb);
     remainder = chunk_at_offset(p, nb);
     av->top = remainder;
 
-    /* Update the metadata of the chunk to be returned. */
+    /* The chunk to be returned. */
     set_head(p, nb | PREV_INUSE | (av != &main_arena ? NON_MAIN_ARENA : 0));
 
-    /* Update the metadata of the chunk. */
+    /* The top chunk. */
     set_head(remainder, remainder_size | PREV_INUSE);
 
     check_malloced_chunk(av, p, nb);
     return chunk2mem(p);
   }
 
-  /* Catch all failure paths. */
+  /* If none of the pathways succeeded. */
   __set_errno(ENOMEM);
   return NULL;
 }
@@ -3264,10 +3260,14 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
    memory back to the system (via negative arguments to 
    sbrk) if there is unused memory at the `high' end of 
    the malloc pool.
-   - It is called automatically by free() when top space 
-     exceeds the trim threshold. It is also called by the 
-     public malloc_trim routine.
-   - It returns 1 if it actually released any memory, else 0. */
+
+  It is called automatically by free() when top space 
+  exceeds the trim threshold. It is also called by the 
+  public malloc_trim routine.
+
+  It returns 1 if it has actually released any memory, 
+  else 0.
+*/
 static int systrim(size_t pad, mstate av)
 {
   long  top_size;        /* Amount of memory in the top chunk. */
@@ -3314,7 +3314,8 @@ static int systrim(size_t pad, mstate av)
        failure somehow altered brk value. We could still
        encounter problems if it altered brk in some very 
        bad way, but the only thing we can do is adjust 
-       anyway, which will cause some downstream failure. */
+       anyway, which will cause some downstream failure.
+    */
 
     MORECORE(-extra);
     new_brk = (char*) MORECORE(0);
@@ -3350,7 +3351,8 @@ static void munmap_chunk(mchunkptr p)
      Normally we would test BLOCK and TOTAL-SIZE separately for 
      compliance with the page size.  But gcc does not recognize 
      the optimization possibility (in the moment at least) so we 
-     combine the two values into one before the bit test. */
+     combine the two values into one before the bit test.
+  */
   if (
     __glibc_unlikely((block | total_size) & (pagesize - 1)) != 0 ||
     __glibc_unlikely(!powerof2(mem & (pagesize - 1)))
@@ -3360,9 +3362,11 @@ static void munmap_chunk(mchunkptr p)
   atomic_fetch_add_relaxed (&mp_.n_mmaps, -1);
   atomic_fetch_add_relaxed (&mp_.mmapped_mem, -total_size);
 
-  /* If munmap failed the process virtual memory address space is in 
-     a bad shape.  Just leave the block hanging around, the process 
-     will terminate shortly anyway since not much can be done. */
+  /* If munmap failed the process virtual memory address space 
+     is in a bad shape. Just leave the block hanging around, 
+     the process will terminate shortly anyway since not much 
+     can be done.
+  */
   __munmap ((char*)(block), total_size);
 }
 
@@ -3444,7 +3448,8 @@ typedef struct tcache_entry
      while 'num_slots' contains the number of free blocks 
      that can be added. Each bin may allow a different 
      maximum number of free blocks, and can be disabled by 
-     initializing 'num_slots' to zero. */
+     initializing 'num_slots' to zero.
+*/
 typedef struct tcache_perthread_struct
 {
   /* Max number of chunks the corresponding 
@@ -3992,23 +3997,22 @@ __libc_malloc2 (size_t bytes)
 void* __libc_malloc (size_t bytes)
 {
   /* This part is complied only when the thread cache 
-     layer is active, which is, in most modern systems. 
-     We check if the tcache infra can service this 
-     request. Otherwise, we fall back to the core system. 
-
-     However, we have disabled this in our custom built 
-     to see bins in action. In this case, __libc_malloc2 
-     is called directly. */
+     infrastructure is active, which is, in most modern 
+     systems. We check if the tcache infra can service 
+     this request. Otherwise, we fall back to the core 
+     system. 
+  */
 #if USE_TCACHE
   size_t nb = checked_request2size(bytes);
 
-  /* The normalized size must be less than the 
-     maximum size that the tcache bins manage. 
-     
+  /* The normalized size must be less than the maximum 
+     size that the tcache bins manage. 
+
     If (bytes > PTRDIFF_MAX), nb would be SIZE_MAX, 
     which is magnitudes greater than the maximum 
     size managed by tcache bins, so this path will 
-    not be taken. */
+    not be taken.
+  */
   if (nb < mp_.tcache_max_bytes){
     /* The tcache bin index. */
     size_t tc_idx = csize2tidx(nb);
@@ -4066,10 +4070,11 @@ void __libc_free(void *mem)
     return malloc_printerr_tail("free(): invalid pointer");
 
   /* If USE_TCACHE is enabled, the chunk is intercepted 
-     by the tcache layer. If the chunk has a valid 
-     size and the corresponding tcache bin has space 
-     to accommodate it, the chunk is kept by the tcache 
-     bins. Otherwise, it is passed to the arena. */
+     by the tcache layer. If the chunk has an accepted 
+     size and the corresponding tcache bin has space to 
+     accommodate it, the chunk is kept by the tcache bin. 
+     Otherwise, it is passed to the arena.
+  */
 
 #if USE_TCACHE
   /* Chunk size must be less than the max size 
@@ -4085,7 +4090,8 @@ void __libc_free(void *mem)
 
     /* Obtain the tcache bin index corresponding to 
        the size and call the right handler to place 
-       the chunk in the tcache bin. */
+       the chunk in the tcache bin.
+    */
     size_t tc_idx = csize2tidx(size);
     if (__glibc_likely(tc_idx < TCACHE_SMALL_BINS))
     {
@@ -4098,11 +4104,9 @@ void __libc_free(void *mem)
   	    return tcache_put_large (p, tc_idx);
 	  }
 
-    /* Probably requires the understanding of 
-       concurrency, which I don't have, at this 
-       moment. */
+    /* I don't understand this yet. */
     if (__glibc_unlikely(tcache_inactive()))
-    	return tcache_free_init (mem);
+    	return tcache_free_init(mem);
   }
 #endif
 
@@ -4150,7 +4154,8 @@ void* __libc_realloc (void *oldmem, size_t bytes)
     We want to avoid reusing the block for shrinkages 
     because it ends up unnecessarily fragmenting the 
     address space. This is also why the heuristic misses 
-    alignment padding for THP for now. */
+    alignment padding for THP for now.
+  */
 
   size_t usable = musable(oldmem);
   if (bytes <= usable){
@@ -4170,7 +4175,8 @@ void* __libc_realloc (void *oldmem, size_t bytes)
      the allocator never wraps around at the end of the 
      address space. Therefore we can exclude some size 
      values which might appear here by accident or by 
-     "design" from some intruder.  */
+     "design" from some intruder.
+  */
 
   if (__glibc_unlikely (
     (uintptr_t)(oldp) > (uintptr_t)(-oldsize) || 
@@ -4197,16 +4203,17 @@ void* __libc_realloc (void *oldmem, size_t bytes)
          to ensure that stale handles to the previous 
          mapping are not reused. There's a performance 
          hit for both us and the caller for doing this, 
-         so we might want to reconsider. */
+         so we might want to reconsider.
+      */
 	    return tag_new_usable(newmem);
     }
 #endif
 
-    /* Return the original pointer if mremap was 
-       unsuccessful as shrinking is not possible 
-       for an mmapped chunk and the old pointer 
-       already has enough memory (regardless of 
-       the fragment being small or large). */
+    /* Return the original pointer if mremap was unsuccessful, 
+       as shrinking is not possible for an mmapped chunk and 
+       the old pointer already has enough memory (regardless 
+       of the fragment being small or large).
+    */
     if (bytes <= usable)
     	return oldmem;
 
@@ -4285,7 +4292,8 @@ aligned_alloc (size_t alignment, size_t bytes)
    the standard requires an error for alignments 
    that are not supported by the implementation. 
    Valid alignments for the current implementation 
-   are non-negative powers of two. */
+   are non-negative powers of two.
+  */
 
   if (!powerof2(alignment) || alignment == 0){
     __set_errno(EINVAL);
@@ -4303,10 +4311,11 @@ free_sized (void *ptr, __attribute_maybe_unused__ size_t size)
      as the original requested size at this time. We 
      leave that to the sanitizers. We simply forward to 
      `free`. This allows existing malloc replacements
-     to continue to work. */
+     to continue to work.
+  */
 
-    /* Try harder to allocate memory in other arenas.  */
-  free (ptr);
+  /* Try harder to allocate memory in other arenas. */
+  free(ptr);
 }
 
 /* For ISO C23. */
@@ -4320,8 +4329,8 @@ free_aligned_sized (
      the same as the original requested size and alignment 
      at this time. We leave that to the sanitizers. We simply 
      forward to `free`. This allows existing malloc replacements 
-     to continue to work. */
-
+     to continue to work.
+  */
   free (ptr);
 }
 
@@ -4531,7 +4540,8 @@ __libc_calloc2 (size_t sz)
   Returns a contiguous zero-initialized region capable of 
   storing n objects of size elemsize.
 
-  It ensures that (nmemb * elem_size) doesn't overflow. */
+  It ensures that (nmemb * elem_size) doesn't overflow.
+*/
 void* __libc_calloc (size_t n, size_t elem_size)
 {
   size_t bytes;
@@ -5549,12 +5559,12 @@ static void* _int_malloc(mstate av, size_t bytes)
       victim = av->top;
       size = chunksize(victim);
 
-      /* Ensure the top chunk is not corrupted. */
+      /* Ensure the top size is not corrupted. */
       if (__glibc_unlikely (size > av->system_mem))
         malloc_printerr("malloc(): corrupted top size");
 
       /* [PATH 6A]: If the top chunk has enough memory 
-          to exist independently, split it.
+          to exist after serving this request, split it.
       */
       if ((unsigned long)(size) >= (unsigned long)(nb + MINSIZE)){
         remainder_size = (size - nb);
