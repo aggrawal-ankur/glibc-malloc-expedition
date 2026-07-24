@@ -1052,120 +1052,6 @@ struct malloc_chunk {
   struct malloc_chunk* bk_nextsize;
 };
 
-/* malloc_chunk details:
-
-  The following includes lightly edited explanations 
-  by Colin Plumb.
-
-  Chunks of memory are maintained using a boundary tag 
-  method as described in e.g., Knuth or Standish. See 
-  the paper by Paul Wilson 
-    ftp://ftp.cs.utexas.edu/pub/garbage/allocsrv.ps
-  for a survey of such techniques.
-
-  Sizes of free chunks are stored both in the front of 
-  each chunk and at the end. This makes consolidating 
-  fragmented chunks into bigger chunks very fast.
-
-  The size fields also hold bits representing whether 
-  chunks are free or in use.
-
-  An allocated chunk looks like this:
-
-        chunk-> +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-                |             Size of previous chunk, if unallocated (P clear)  |
-                +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-                |             Size of chunk, in bytes                     |A|M|P|
-          mem-> +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-                |             User data starts here...                          |
-                .                                                               .
-                .             (malloc_usable_size() bytes)                      .
-                |                                                               |
-    nextchunk-> +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-                |             (size of chunk, but used for application data)    |
-                +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-                |             Size of next chunk, in bytes                |A|0|1|
-                +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-
-    where 
-    - "chunk" is the front of the chunk for the purpose 
-      of most of the malloc code, but "mem" is the 
-      pointer that is returned to the user. 
-    - "Nextchunk" is the beginning of the next contiguous 
-      chunk.
-
-  Chunks always begin on even word boundaries, so the mem 
-  portion (which is returned to the user) is also on an 
-  even word boundary, and thus at least double-word aligned.
-
-  Free chunks are stored in circular doubly-linked lists, 
-  and look like this:
-
-        chunk-> +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-                |             Size of previous chunk, if unallocated (P clear)  |
-                +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-         `head` |             Size of chunk, in bytes                     |A|0|P|
-          mem-> +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-                |             Forward pointer to next chunk in list             |
-                +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-                |             Back pointer to previous chunk in list            |
-                +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-                |             Unused space (may be 0 bytes long)                |
-                .                                                               .
-                |                                                               |
-    nextchunk-> +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-         `foot` |             Size of chunk, in bytes                           |
-                +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-                |             Size of next chunk, in bytes                |A|0|0|
-                +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-
-    The P (PREV_INUSE) bit, stored in the unused low-order bit 
-    of the chunk size (which is always a multiple of two words), 
-    is an in-use bit for the *previous* chunk.
-    - If that bit is "clear", then the word before the current 
-      chunk size contains the previous chunk size, and can be 
-      used to find the front of the previous chunk.
-    - The very first chunk allocated always has this bit set, 
-      preventing access to non-existent (or non-owned) memory.
-    - If prev_inuse is set for any given chunk, then you CANNOT 
-      determine the size of the previous chunk, and might even 
-      get a memory addressing fault when trying to do so.
-
-    [NEED TO VERIFY THE PER-THREAD ARENA CLAIM]
-    The A (NON_MAIN_ARENA) bit is cleared for chunks on the 
-    initial, main arena, described by the main_arena variable. 
-    When additional threads are spawned, each thread receives 
-    its own arena (up to a configurable limit, after which 
-    arenas are reused for multiple threads), and the chunks 
-    in these arenas have the A bit set. To find the arena for 
-    a chunk on such a non-main arena, heap_for_ptr performs a 
-    bit mask operation and indirection through the ar_ptr member 
-    of the per-heap header heap_info (see arena.c).
-
-    Note that the `foot` of the current chunk is actually 
-    represented as the prev_size of the NEXT chunk. This makes 
-    it easier to deal with alignments etc but can be very 
-    confusing when trying to extend or adapt this code.
-
-    The two exceptions to all this are:
-
-    [1] The top chunk doesn't bother using the trailing size 
-        field since there is no next contiguous chunk that 
-        would have to index off it. After initialization, the 
-        top chunk exist always. If it would become less than 
-        MINSIZE bytes long, it is replenished.
-
-    [CONFUSED ABOUT THE TRAILING SIZE FIELD]
-    [2] Chunks allocated via mmap, which have the second lowest 
-        order bit M (IS_MMAPPED) set in their size fields. As 
-        they are allocated one-by-one, each must contain its own 
-        trailing size field. If the M bit is set, the other bits 
-        are ignored (because mmapped chunks neither belong to an 
-        arena, nor adjacent to a freed chunk). The M bit is also 
-        used for chunks which originally came from a dumped heap
-        via malloc_set_state in hooks.c.
-*/
-
 
 /* ---------- Size and alignment checks and conversions ---------- */
 
@@ -1189,7 +1075,8 @@ struct malloc_chunk {
     _int_realloc:  Takes and returns tagged memory.
 */
 
-/* ? */
+/* It is the minimum overhead required in every chunk 
+   regardless of their type. */
 #define  CHUNK_HDR_SZ  (2 * SIZE_SZ)
 
 /* Return the pointer to the payload memory corresponding to 
@@ -1261,7 +1148,8 @@ checked_request2size(size_t req) __nonnull (1)
     request2size(), but that must be a macro that produces 
     a compile time constant if passed a constant literal.
   */
- /* ?? */
+
+  /* I don't know what it is about. */
   if (__glibc_unlikely(mtag_enabled)){
     /* Ensure this is not evaluated if !mtag_enabled, 
        see gcc PR 99551. */
@@ -1335,14 +1223,15 @@ checked_request2size(size_t req) __nonnull (1)
 #define  chunk_at_offset(p, s)  ((mchunkptr) ((char*)(p) + s))
 
 
-/* Extract the PREV_INUSE bit of the (p+1) chunk and perform
-   operations on it.
+/* Extract the PREV_INUSE bit of the (p+1) chunk and 
+   perform operations on it.
 
-  There are two set of macros doing the same thing with a 
-  small difference. */
+  There are two set of macros doing the same thing 
+  with a small difference.
+*/
 
-/* [Set #1]: They use the mchunk_size of chunk (p) to reach 
-    the (p+1) chunk. */
+/* [Set #1]: They use the mchunk_size of chunk (p) to 
+    reach the (p+1) chunk. */
 
 /* [1] Determine the status of chunk (p). */
 #define  inuse(p)          (( ((mchunkptr) ((char*)(p) + chunksize(p)))->mchunk_size ) &    PREV_INUSE)
@@ -1356,7 +1245,7 @@ checked_request2size(size_t req) __nonnull (1)
 
 /* [Set #2]: They rely on a user supplied size to find 
     the (p+1) chunk.
-    It is useful in situations like coalescing, where 
+    They are useful in situations like coalescing, where 
     the existing mchunk_size can not be used.
 */
 
@@ -1370,9 +1259,9 @@ checked_request2size(size_t req) __nonnull (1)
 #define  clear_inuse_bit_at_offset(p, s)  (((mchunkptr) ((char*)(p) + s))->mchunk_size &= ~(PREV_INUSE))
 
 
-/* Set the mchunk_size of chunk (p) without disturbing its 
-   metadata bits. The metadata bits are first extracted and 
-   then OR-ed with the new size.
+/* Set the mchunk_size of chunk (p) without disturbing 
+   its metadata bits. The metadata bits are first 
+   extracted and then OR-ed with the new size.
 */
 #define  set_head_size(p, s)  ((p)->mchunk_size = (((p)->mchunk_size & SIZE_BITS) | (s)))
 
@@ -1793,7 +1682,8 @@ static void unlink_chunk (mstate av, mchunkptr p)
 
   The initial value comes from MORECORE_CONTIGUOUS, 
   but is changed dynamically if mmap is ever used 
-  as an sbrk substitute. */
+  as an sbrk substitute.
+*/
 #define  NONCONTIGUOUS_BIT  (2U)
 
 /* Checks contiguity. */
@@ -1945,7 +1835,8 @@ static struct malloc_par mp_ =
 
 /* Initialize a malloc_state struct. It is called 
    from __ptmalloc_init() or from _int_new_arena() 
-   while creating a new arena. */
+   while creating a new arena.
+*/
 static void malloc_init_state(mstate av)
 {
   int i;
@@ -1972,12 +1863,14 @@ static int   systrim(size_t, mstate);
 
 
 /* ---------- Early definitions for debugging hooks ---------- */
+/*                     [NOT EXPLORED YET]                      */
 
 /* This function is called from the arena shutdown 
    hook to free the thread cache (if it exists). */
 static void tcache_thread_shutdown(void);
 
-/* ------------------ Testing support ------------------ */
+/* ------------------ Testing Support ------------------ */
+/*                  [NOT EXPLORED YET]                   */
 
 static int perturb_byte;
 
@@ -2042,6 +1935,8 @@ static inline void madvise_thp(void *p, INTERNAL_SIZE_T size)
 }
 
 /* ------------------- Support for multiple arenas -------------------- */
+/*                          [NOT EXPLORED YET]                          */
+
 #include "arena.c"
 
 /* Debugging support
@@ -2325,6 +2220,7 @@ static void do_check_malloc_state(mstate av)
 
 
 /* ----------------- Support for debugging hooks -------------------- */
+/*                         [NOT EXPLORED YET]                         */
 
 #if IS_IN (libc)
 #include "hooks.c"
@@ -2349,7 +2245,10 @@ static void* sysmalloc_mmap(
 ){
   size_t padding = MALLOC_ALIGNMENT - CHUNK_HDR_SZ;
   /* Effectively 0, as both the macros have the same 
-     values in all the three configurations. [GDB] */
+     values in all the three configurations.
+
+    [GDB EXPERIMENT]
+  */
 
   /* At least one page. */
   size_t size = ALIGN_UP(nb + padding + CHUNK_HDR_SZ, pagesize);
@@ -2365,9 +2264,12 @@ static void* sysmalloc_mmap(
     return mm;
 
   if (extra_flags == 0)
-    madvise_thp(mm, size);    /* [?] */
+    madvise_thp(mm, size);
 
-  /* [?] */
+  /* Used to name anonymous virtual memory areas via the 
+     Linux prctl system call. It helps identifying memory 
+     usage in tools like /proc/self/maps.
+  */
   __set_vma_name(mm, size, " glibc: malloc");
 
   /* Add malloc_chunk to the base of the newly mmapped segment */
@@ -2474,7 +2376,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     /* [PATH 1A]: Use huge pages if the requested size is more 
         than the huge page size and huge pages are enabled.
 
-       We don't have to issue the THP madvise call. [WHY]
+      We don't have to issue the THP madvise call because we 
+      are using huge pages directly.
     */
     if (mp_.hp_pagesize > 0 && nb >= mp_.hp_pagesize){
       mm = sysmalloc_mmap(nb, mp_.hp_pagesize, mp_.hp_flags);
@@ -2923,9 +2826,9 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
       /* If mmap succeeded, we can not use sbrk to find 
          the end. Therefore, we have to update brk and 
-         snd_brk appropriately. */
+         snd_brk appropriately.
+      */
       if (mbrk != MAP_FAILED){
-        /* [?] */
         __set_vma_name(mbrk, fallback_size, " glibc: malloc");
 
         /* [REVISIT] */
@@ -3050,16 +2953,17 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
             sbrk memory. When we subtract it from the old_end, 
             which is the program break before the foreign sbrk 
             was made, we get the number of bytes the foreign 
-            sbrk was called with. */
+            sbrk was called with.
+          */
           if (old_size)
             av->system_mem += (brk - old_end);
-
 
           /* While the first sbrk call has already requested 
              enough space to service the request, the second 
              sbrk call is about restoring the top chunk. So, 
              calculate the new bytes and store them inside 
-             `correction` */
+             `correction`
+          */
 
           /* The size of the foreign sbrk might not be aligned 
              at a MALLOC_ALIGNMENT boundary, which is necessary 
@@ -3088,7 +2992,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
               - `brk + (2*SIZE_SZ)`. is (100 + 16) on 64-bit. And 
                 (116 & 15) is 4.
               - If we do `brk & MALLOC_ALIGN_MASK` directly, we get, 
-                (100 & 15), i.e. 4. Exactly same output. */
+                (100 & 15), i.e. 4. Exactly same output.
+          */
 
           front_misalign = (INTERNAL_SIZE_T) chunk2mem(brk) & MALLOC_ALIGN_MASK;
           if (front_misalign > 0){
@@ -3105,14 +3010,16 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
              (brk + size) brings us to the current program break.
              (brk + size + correction) is where we will end up 
               after adding correction to the current program break. 
-              The result is stored in end_misalign. */
+              The result is stored in end_misalign.
+          */
           end_misalign = (INTERNAL_SIZE_T) (brk + size + correction);
 
           /* Align end_misalign to a standard page boundary and 
              subtract end_misalign from it, we get the number 
              of bytes end_misalign is far from the next "page 
              boundary". Add this to correction to obtain the 
-             actual page aligned bytes to call sbrk with. */
+             actual page aligned bytes to call sbrk with.
+          */
           correction += (ALIGN_UP(end_misalign, pagesize)) - end_misalign;
           assert(correction >= 0);
 
@@ -3136,7 +3043,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
              that space is contiguous with first sbrk. This is 
              a safe assumption unless program is multithreaded 
              but doesn't use locks and a foreign sbrk occurred 
-             between our first and second calls. */
+             between our first and second calls.
+          */
           if (snd_brk == (char*)(MORECORE_FAILURE)){
             correction = 0;    // Reset correction
             snd_brk = (char*) MORECORE(0);
@@ -3148,9 +3056,10 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
         /* The arena has already been marked as non-contiguous 
            by previous malloc calls. */
         else{
-          /* This is always true on on 32-bit, 64-bit and 
+          /* This is always true on 32-bit, 64-bit and 
              INTERNAL_SIZE_T=4. So, the else block is 
-             effectively dead code. */
+             effectively dead code. Then why it exists?
+          */
           if (MALLOC_ALIGNMENT == CHUNK_HDR_SZ){
             /* MORECORE/mmap must correctly align */
             assert (((unsigned long) chunk2mem(brk) & MALLOC_ALIGN_MASK) == 0);
@@ -3163,7 +3072,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
                  wasted front bytes. They will never be accessed 
                  anyway because prev_inuse of av->top (and any 
                  chunk created from its start) is always true 
-                 after initialization. */
+                 after initialization.
+              */
               aligned_brk += (MALLOC_ALIGNMENT - front_misalign);
             }
           }
@@ -3179,7 +3089,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
           /* Setup the new top chunk starting from aligned_brk. 
              The new top chunk starts from aligned_brk and 
              contains both the `size` memory and `correction` 
-             memory. */
+             memory.
+          */
           av->top = (mchunkptr)(aligned_brk);
           set_head(
             av->top, 
@@ -3195,7 +3106,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
              [NOTE]: If top size was (MINSIZE + MALLOC_ALIGNMENT),
               like, 48 bytes on 64-bit, the old_top is not really 
-              a valid chunk anymore. */
+              a valid chunk anymore.
+          */
           if (old_size != 0){
             old_size = (old_size - 2 * CHUNK_HDR_SZ) & ~MALLOC_ALIGN_MASK;
             set_head (old_top, old_size | PREV_INUSE);
@@ -4644,19 +4556,23 @@ static void* _int_malloc(mstate av, size_t bytes)
 
     Another difference between the dedicated check and 
     the one inside checked_request2size is that the 
-    latter is wrapped inside glibc_unlikely. */
-
+    latter is wrapped inside glibc_unlikely.
+  */
   if (bytes > PTRDIFF_MAX){
     __set_errno (ENOMEM);
     return NULL;
   }
   nb = checked_request2size(bytes);
 
-  /* [PATH 1]: If there are no usable arenas, we have 
-      to use mmap, as there is no other option to 
-      fulfill this request.
+  /* [PATH 1]: If there are no usable arenas, mmap 
+      is the only option available to fulfill this 
+      request.
 
-    As of now, it remains unanswered. See open-questions.md.
+    __ptmalloc_init() initializes the early allocator 
+    metadata during startup. This includes the main 
+    arena as well. So, I don't know the scenario in 
+    which (av == NULL) is possible.
+    - See open-questions.md.
   */
   if (__glibc_unlikely(av == NULL)){
     void *p = sysmalloc(nb, av);
@@ -4741,8 +4657,6 @@ static void* _int_malloc(mstate av, size_t bytes)
 
       /* Pointer to the payload memory. */
       void *p = chunk2mem(victim);
-
-      /* [?] */
       alloc_perturb(p, bytes);
 
       /* Return the payload memory to the process. */
@@ -4849,7 +4763,6 @@ static void* _int_malloc(mstate av, size_t bytes)
         malloc_printerr("malloc(): invalid next->prev_inuse (unsorted)");
 
 
-
       /* [PATH 3A]: Use (av->last_remainder) if
           [1] nb is a small size,
           [2] the unsorted bin has only one chunk, which 
@@ -4857,8 +4770,8 @@ static void* _int_malloc(mstate av, size_t bytes)
           [3] the chunk has enough size to exist after 
               splitting.
 
-        I don't understand why the unsorted bin has to 
-        be singleton here. See open-questions.md.
+        Why the unsorted bin has to be singleton remains 
+        unanswered. See open-questions.md.
       */
       if (
         in_smallbin_range(nb) &&
@@ -4878,7 +4791,8 @@ static void* _int_malloc(mstate av, size_t bytes)
 
         /* If the resulting remainder is not a small chunk, 
            set the skip list pointers NULL as the unsorted 
-           chunks have them NULL. */
+           chunks have them NULL.
+        */
         if (!in_smallbin_range(remainder_size)){
           remainder->fd_nextsize = NULL;
           remainder->bk_nextsize = NULL;
@@ -4923,7 +4837,8 @@ static void* _int_malloc(mstate av, size_t bytes)
          are stashed in the tcache bin. Only when the 
          tcache bin is full and there is a victim left, 
          do we return it. Otherwise, we wait for the 
-         next tcache block to return a chunk. */
+         next tcache block to return a chunk.
+      */
 
 #if USE_TCACHE
         /* Setup the tcache infra if not already. */
@@ -4953,29 +4868,17 @@ static void* _int_malloc(mstate av, size_t bytes)
 #endif
       }
 
-      /* Because the victim is neither an exact fit nor the 
-         last_remainder, classify it into its appropriate bin.
+      /* The victim is neither an exact fit nor the 
+         last_remainder, so classify it into its 
+         appropriate bin.
 
-        [OBSERVATION]
         It is reasonable to think that every chunk in the 
         unsorted bin must be given a chance to satisfy the 
         current request. But the implementation seems to 
-        have a different policy.
+        have a different policy. Victims are binned and 
+        later rediscovered through regular bin search.
 
-        Either the unsorted bin is singleton with its only 
-        chunk as the last_remainder, or the victim is an 
-        exact fit. Otherwise, the victim is classified and 
-        binned, even if it is large enough to satisfy the 
-        request.
-
-        Right now, victims are binned and later rediscovered 
-        through regular bin search, and I have no explanation 
-        regarding why it is better than directly using the 
-        victim while it is in the unsorted bin.
-
-        For me, this is one of those questions that have no 
-        visible starting point, making them much harder to 
-        reason about.
+        It remains unanswered. See oepn-questions.md.
       */
 
       /* Why the smallbin path is wrapped in glibc_unlikely?
@@ -4997,7 +4900,8 @@ static void* _int_malloc(mstate av, size_t bytes)
            directly in the corresponding small bin, while 
            large chunks are placed in the unsorted and given 
            a second chance on the next malloc request before 
-           binning.
+           binning. But if they are unfit, they are binned 
+           anyways. I am tired!
          - only way small chunks enter the unsorted bin is 
            when a large chunk is split.
 
@@ -5012,7 +4916,8 @@ static void* _int_malloc(mstate av, size_t bytes)
           effectively populate right values in fwd and bck 
           variables and only the large bin updates the skip 
           list pointers. The generic fd/bk pointers, which are 
-          common to both the paths are shared. */
+          common to both the paths are shared.
+      */
       if (__glibc_unlikely(in_smallbin_range(size))){
         victim_index = smallbin_index(size);
         bck = bin_at(av, victim_index);
@@ -5031,7 +4936,8 @@ static void* _int_malloc(mstate av, size_t bytes)
         /* If the bin is empty, we only have to update the 
            skip list pointers as the generic pointers are 
            shared. Therefore, the if-block ensures that the 
-           bin has at least one chunk. */
+           bin has at least one chunk.
+        */
         if (fwd != bck){
           /* Or with inuse bit to speed comparisons. */
           size |= PREV_INUSE;
@@ -5040,7 +4946,8 @@ static void* _int_malloc(mstate av, size_t bytes)
              NON_MAIN_ARENA bit set. This compile-time 
              assertion checks that. However, the macro's 
              name and definition doesn't indicate what 
-             it is really doing. */
+             it is really doing.
+          */
           assert(chunk_main_arena(bck->bk));
 
           /* If the size of the victim is smaller than the 
@@ -5052,7 +4959,8 @@ static void* _int_malloc(mstate av, size_t bytes)
              smallest chunk is. If we take the first large 
              bin in category #1, that is how it will look 
              like: [1072, 1056, 1040, 1024]
-                   ^ fwd              bck ^ */
+                   ^ fwd              bck ^
+          */
 
           if ((unsigned long)(size) < (unsigned long)chunksize_nomask(bck->bk)){
             /* [PERSONAL OPINION]: 
@@ -5063,7 +4971,8 @@ static void* _int_malloc(mstate av, size_t bytes)
                - Variable names represent an author's personal 
                  choice. So, it is not good to fight over that. We 
                  will continue using the best solution we have, 
-                 i.e. comments. */
+                 i.e. comments.
+            */
 
             fwd = bck;          /* bin_handler */
             bck = bck->bk;      /* bin_handler->bk,  i.e. the back end */
@@ -5114,7 +5023,8 @@ static void* _int_malloc(mstate av, size_t bytes)
                 - what will be the first chunk's bk_nextsize? Suppose it is X.
                 - what will be the fd_nextsize of X? Both will be the first 
                   chunk.
-              - what will fwd->fd represent? The first chunk. */
+              - what will fwd->fd represent? The first chunk.
+            */
             if (__glibc_unlikely(fwd->fd->bk_nextsize->fd_nextsize != fwd->fd))
               malloc_printerr ("malloc(): largebin double linked list corrupted (nextsize)");
 
@@ -5122,7 +5032,8 @@ static void* _int_malloc(mstate av, size_t bytes)
                smallest size available in this large bin, the 
                large bin has no chunk of victim's 
                size, so victim is uniquely sized, making its 
-               skip list pointers non-null. */
+               skip list pointers non-null.
+            */
             victim->fd_nextsize  = fwd->fd;
             victim->bk_nextsize  = fwd->fd->bk_nextsize;
 
@@ -5131,12 +5042,13 @@ static void* _int_malloc(mstate av, size_t bytes)
 
           /* The comparison in the previous path can fail in 
              two scenarios.
-             1. If the victim is not smaller than the smallest.
-             2. If the victim is a duplicate of the smallest 
-                size. */
+             [1] If the victim is not smaller than the smallest.
+             [2] If the victim is a duplicate of the smallest 
+                 size.
+          */
 
 
-          /* We traverse the large bin in forward direction. 
+          /* We traverse the large bin in forward direction.
              - If a chunk of victim's size is not available 
                already, we insert it at the position the loop 
                is stopped.
@@ -5147,7 +5059,8 @@ static void* _int_malloc(mstate av, size_t bytes)
                policy of FIFO for duplicates. Basically, the 
                first duplicate is the allocators choice to 
                satisfy a request. If there are no duplicates, 
-               we use the unique chunk directly. */
+               we use the unique chunk directly.
+          */
           else{
             assert(chunk_main_arena(fwd));
 
@@ -5160,7 +5073,8 @@ static void* _int_malloc(mstate av, size_t bytes)
                pointers as they are already set NULL before they 
                are pushed to the unsorted bin. The shared logic 
                will insert this chunk after its unique counterpart, 
-               as discussed. */
+               as discussed.
+            */
             if ((unsigned long)(size) == (unsigned long) chunksize_nomask(fwd))
               fwd = fwd->fd;
 
@@ -5170,7 +5084,8 @@ static void* _int_malloc(mstate av, size_t bytes)
               /* The chunk previous to victim may or may not be 
                  unique. But the chunk in fwd is is definitely a 
                  unique one, so we use that to find the correct 
-                 skip list chunks for victim. */
+                 skip list chunks for victim.
+              */
               victim->fd_nextsize = fwd;
               victim->bk_nextsize = fwd->bk_nextsize;
 
@@ -5602,7 +5517,8 @@ static void* _int_malloc(mstate av, size_t bytes)
 /* Free chunk P of SIZE bytes to the arena.
    - HAVE_LOCK indicates where the arena for P has 
      already been locked.
-   - Caller must ensure chunk and size are valid. */
+   - Caller must ensure chunk and size are valid.
+*/
 static void _int_free_chunk(
   mstate av, mchunkptr p, 
   INTERNAL_SIZE_T size, 
@@ -5660,7 +5576,8 @@ static void _int_free_chunk(
    - Put the resulting chunk on the appropriate bin list.
    - P must not be on a bin yet. It can be in use.
 
-  Basically, backwards consolidation. */
+  Basically, backwards consolidation.
+*/
 static void _int_free_merge_chunk(
   mstate av, mchunkptr p, 
   INTERNAL_SIZE_T size
@@ -5694,7 +5611,6 @@ static void _int_free_merge_chunk(
   ))
     malloc_printerr("free(): invalid next size (normal)");
 
-  /* [?] */
   free_perturb(chunk2mem(p), size - CHUNK_HDR_SZ);
 
 
@@ -5713,7 +5629,7 @@ static void _int_free_merge_chunk(
     if (__glibc_unlikely(chunksize(p) != prevsize))
       malloc_printerr("corrupted size vs. prev_size while consolidating");
 
-    // Unlink chunk (p-1).
+    /* Unlink chunk (p-1). */
     unlink_chunk(av, p);
   }
 
@@ -5731,7 +5647,8 @@ static void _int_free_merge_chunk(
      appropriate bin list.
    - The function returns the size of the new chunk.
 
-  Basically, forward consolidation. */
+  Basically, forward consolidation.
+*/
 static INTERNAL_SIZE_T _int_free_create_chunk(
   mstate av, mchunkptr p, 
   INTERNAL_SIZE_T size,
@@ -5754,7 +5671,8 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
     /* If nextchunk is an in-use chunk, we can not perform
        forward consolodation, but we have to update the 
        PREV_INUSE bit of this chunk to reflect that the 
-       chunk previous to it is now free. */
+       chunk previous to it is now free.
+    */
     else{
       clear_inuse_bit_at_offset(nextchunk, 0);
     }
@@ -5813,7 +5731,8 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
 
   /* [PATH 2]: If the nextchunk is the top chunk, 
      consolidate it with the top chunk and update 
-     av->top to point to `p`. */
+     av->top to point to `p`.
+  */
   else{
     size += nextsize;
 
@@ -6196,6 +6115,7 @@ size_t __malloc_usable_size(void *m)
 #endif
 
 /* -------------------- mallinfo -------------------- */
+/*                 [NOT EXPLORED YET]                 */
 
 /* Accumulate malloc statistics for arena AV into M. */
 static void int_mallinfo(mstate av, struct mallinfo2 *m)
@@ -6274,6 +6194,7 @@ struct mallinfo __libc_mallinfo(void)
 
 
 /* ------------------ malloc_stats ------------------ */
+/*                 [NOT EXPLORED YET]                 */
 
 void __malloc_stats(void){
   int i;
@@ -6483,6 +6404,7 @@ do_set_hugetlb (size_t value)
   return 0;
 }
 
+/* [NOT EXPLORED YET] */
 int __libc_mallopt(int param_number, int value)
 {
   mstate av = &main_arena;
@@ -6704,6 +6626,7 @@ malloc_printerr_tail(const char *str)
 
 #if IS_IN (libc)
 
+/* [NOT EXPLORED YET] */
 /* We need a wrapper function for one of the additions of POSIX. */
 int __posix_memalign(void **memptr, size_t alignment, size_t size)
 {
@@ -6731,7 +6654,7 @@ int __posix_memalign(void **memptr, size_t alignment, size_t size)
 weak_alias (__posix_memalign, posix_memalign)
 #endif
 
-
+/* [NOT EXPLORED YET] */
 int __malloc_info(int options, FILE *fp)
 {
   /* For now, at least. */
