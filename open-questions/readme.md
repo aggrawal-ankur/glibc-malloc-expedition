@@ -24,4 +24,31 @@ An interesting thing with questions is that everyone interprets them differently
 
 All I am saying is that a question itself doesn't carry the element of complexity. Complexity is perceived differently by different people because of different levels of experience and familiarity.
 
-Here is an index listing all the questions.
+---
+
+## Ques: In what scenario (av == NULL) ?
+
+As per `/glibc/elf/libc_early_init.c`, the function __libc_early_init calls __ptmalloc_init() to setup the early allocator metadata, including the main arena. By the time the first malloc call is made, an arena already exist.
+
+## Ques: What is the use of INTERNAL_SIZE_T=4 configuration?
+
+On a 64-bit machine with INTERNAL_SIZE_T = 4:
+  - The allocator still has to satisfy 16-byte alignment.
+  - The chunk layout still has to preserve that alignment.
+  - So reducing the width of the size fields does not automatically shrink every chunk header by 8 bytes.
+
+## Ques: What is the purpose of the outer for loop after path-2 in \_int\_malloc?
+
+## Ques: Why old_size is aligned down after carving space for fencepost chunks?
+
+The allocator maintains the invariant that the top chunk is always aligned to a page boundary. Size is always normalized to align it to a MALLOC_ALIGNMENT boundary.
+
+In what situation(s) the top chunk can be misaligned?
+
+---
+
+For an instance, let's accept the top chunk was misaligned. After aligning it down, there will be some bytes that no longer belong to the top chunk. What happens to them? The fencepost can not absorb them as it would disturb their alignment.
+
+## Ques: In the unsorted bin pathway (path-3) in \_int\_malloc, the victim must be an exact fit or the last_remainder. Otherwise, it is binned. Why?
+
+It is possible that a large chunk is there and is suitable to satisfy the request. But we bin every chunk only to rediscover them later through regular bin search. Why every chunk is not given an equal opportunity?
