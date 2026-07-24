@@ -308,10 +308,9 @@
    of chunks. It is a tunable parameter. */
 #define  TCACHE_FILL_COUNT 16
 
-/* This is the upper ceiling for TCACHE_FILL_COUNT 
-   for tuning it. This value must fit the range of 
-   tcache->num_slots[] entries, else they may 
-   overflow.
+/* This is the upper ceiling for TCACHE_FILL_COUNT. 
+   It is a fixed parameter.
+    (TCACHE_FILL_COUNT <= MAX_TCACHE_COUNT)
 */
 #define  MAX_TCACHE_COUNT  UINT16_MAX
 #endif
@@ -1698,49 +1697,50 @@ static void unlink_chunk (mstate av, mchunkptr p)
 /* Why av->top initially points to the unsorted bin?
 
   __ptmalloc_init() initializes the early allocator 
-  metadata. The top chunk is not initialized as that 
-  requires acuiring memory from the kernel.
+  metadata during startup. The top chunk is not 
+  initialized as we have to acquire memory from kernel.
 
   The main_arena is initialized on static storage. So, 
-  normal variables are zeroed and pointer variables are 
+  normal variables are zero and pointer variables are 
   NULL, i.e. (void*)(0). The only exception to this is
   manual initialization, which can happens in two ways.
-  [1] Initializing parts of the struct using `.member` 
-      addressing, which initializes rest of the members 
-      with zero. The members `mutex` (1st), `next` (7th) 
-      and `attached_threads` (the 9th member) are 
-      initialized in this manner.
-  [2] Initializing a member independently. More on this 
-      later.
+  [1] The `.member` addressing, where except the targeted 
+      member, every other member is initialized with zero. 
+      `mutex` (1st), `next` (7th) and `attached_threads` 
+      (9th) fields are initialized in this manner.
+  [2] Initializing a member after the struct is initialized.
 
-  Normally, av->top would be NULL. When it is dereferenced 
-  to access mchunk_size, we will get a segmentation fault 
-  as the Linux kernel doesn't map the first page.
+  On the first malloc call, the top chunk's mchunk_size 
+  must be 0, so that no special casing is required in 
+  sysmalloc.
 
-  On the first malloc call, the top chunk's mchunk_size must 
-  be 0, so that no special casing is required in sysmalloc.
+  Normally, av->top would be NULL. Dereferencing it to 
+  access mchunk_size will raise a segmentation fault, 
+  as the Linux kernel doesn't map the first virtual page.
 
-  The solution is to make av->top point at bin_at(M, 1), i.e. 
-  the unsorted bin. This is done using individual member 
-  initialzation in malloc_init_state(). Let's understand how 
-  it solves our problem.
-  - These members before bins[] in malloc_state are: 
+  The solution is to make av->top point at bin_at(M, 1), 
+  i.e. the unsorted bin. This is done using individual 
+  member initialzation in malloc_init_state(). Let's 
+  understand how it solves our problem.
+  - These are the members before bins[] in malloc_state: 
       mutex | flags | top | last_remainder | bins[]
   - Except mutex, the 3 members before bins[] are 0x0. 
-  - bin_at(M, 1) resolves to `&bins[-2]`, which is the same 
-    as `&top` "address-wise". We cast this address into an 
-    mchunkptr, dereference its mchunk_size and get zero.
-  - So, basically, we are putting the address of av->top 
-    in av->top, i.e. 
+  - bin_at(M, 1) resolves to `&bins[-2]`. So, &bins[-1] 
+    will represent the mchunk_size. Notice that these 
+    are basically `&top` and `&last_remainder` fields, 
+    respectively. Upon dereferencing, we will get 0.
+
+  Basically, we are putting the address of av->top in 
+  av->top, i.e. 
       av->top = (mchunkptr)(&(av->top))
   - When we do (av->top)->mchunk_size, it is 
       *(&av->top + 8), 
-    which is effectively *(&last_remainder), and we get 0.
+    which is effectively *(&last_remainder), which is 0.
   - If av->top was 0x0, (av->top)->mchunk_size would be 
       *(0x0 + 8), leading to a segmentation fault.
 
-  Non-main arenas are backed by mmap and the kernel returns 
-  zeroed memory, so this works for non-main arenas as well.
+  The kernel returns zeroed memory for mmap requests, 
+  so this works for non-main arenas as well.
 */
 #define initial_top(M)    unsorted_chunks(M)
 
@@ -1907,11 +1907,11 @@ struct malloc_par
 /* There are several instances of this struct ("arenas") 
    in this malloc.
 
-  If you are adapting this malloc in a way that does NOT 
-  use a static or mmapped malloc_state, you MUST explicitly 
-  zero-fill it before using. This malloc relies on the 
-  property that malloc_state is initialized to all zeroes 
-  (as is true of C statics). */
+  [PRECONDITION]: malloc_state must be zero-initialized.
+    If you are adapting this malloc in a way that does 
+    NOT use a static or mmapped malloc_state, you MUST 
+    explicitly zero-fill it before using.
+*/
 static struct malloc_state main_arena =
 {
   .mutex = _LIBC_LOCK_INITIALIZER,
@@ -1999,7 +1999,7 @@ static __always_inline void thp_init (void)
 {
   /* Initialize only once if DEFAULT_THP_PAGESIZE is defined. */
   if (
-    // 0 in sysdeps/generic/malloc-hugepages.h
+    /* 0 in sysdeps/generic/malloc-hugepages.h. */
     DEFAULT_THP_PAGESIZE == 0 || 
     mp_.thp_mode != malloc_thp_mode_not_supported
   )
@@ -2455,8 +2455,9 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
             than the maximum mmapped regions allowed.
 
       Large requests are generally serviced via mmap to avoid 
-      consuming arena space and to allow the kernel to reclaim 
-      the mapping independently when freed.
+      consuming arena space. It allows the kernel to reclaim 
+      a large mapping when it is freed, keeping memory demand 
+      stable.
   */
   if (
     av == NULL ||
@@ -2486,8 +2487,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     tried_mmap = true;
   }
 
-  /* [FAIL SAFE PATH]: If there are no usable arenas and mmap 
-     also failed, we can not do anything. */
+  /* [FAIL SAFE PATH]: If there are no usable arenas and 
+      mmap also failed, we can not do anything. */
   if (av == NULL)
     return NULL;
 
@@ -2519,7 +2520,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     requires knowledge of the kernel's policies and current 
     state, which is either unavilable or become stale quickly.
 
-    While modest requests often succeed in practice, it is 
+    In practice, modest requests often succeed, but it is 
     still an observed behavior. Therefore, the allocator 
     doesn't make assumptions based on the request size. The 
     most reliable method to know if the kernel will fulfill 
@@ -2550,6 +2551,13 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
     Why the top chunk must end at a page-aligned boundary?
     - It remains unanswered. See open-questions.md
+
+    The preconditions are not enforced via standard 
+    if-blocks, while assert(s) are compiled out in 
+    production builds. So, this precondition is not 
+    getting checked really.
+    - Checkout this GDB experiment.
+    - See open-questions.md
   */
 
   assert(
@@ -2563,30 +2571,31 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     )
   );
 
-  /* sysmalloc is all about extending the top chunk. This is 
-     done only when the top size is less than the required 
-     bytes + MINSIZE bytes.
+  /* sysmalloc is all about extending the top chunk. 
+     This requires the the top size to be less than 
+     the required bytes + MINSIZE bytes.
 
-    If the top size was equal to nb and we gave it away, the 
-    top chunk will cease to exist. Therefore, the top chunk 
-    must have at least (nb + MINSIZE) bytes, so that it remains 
-    valid after satisfying the request.
+    If the top size is equal to nb and used as it is, 
+    it will cease to exist after the request is served. 
+    Therefore, the top chunk must have at least 
+    (nb + MINSIZE) bytes to remain valid afterwards.
+
+    It is checked separately by the pathways below.
   */
   assert((unsigned long)(old_size) < (unsigned long)(nb + MINSIZE));
 
   /* [PATH 2]: Non-main arena. */
   if (av != &main_arena){
-    heap_info *old_heap;
-    heap_info *heap;
-    size_t old_heap_size;
+    heap_info *old_heap;     /* Base of the old heap segment. */
+    heap_info *heap;         /* Base of the new heap segment. */
+    size_t old_heap_size;    /* Size of the existing heap segment. */
 
-    old_heap = heap_for_ptr(old_top);    /* The base of the heap. */
-    old_heap_size = old_heap->size;      /* Save the existing heap size 
-                                            before grow_heap() is called. */
+    old_heap = heap_for_ptr(old_top);
+    old_heap_size = old_heap->size;
 
 
     /* [PATH 2A]: If the top chunk doesn't have enough 
-        memory, extend it with grow_heap().
+        memory, call grow_heap() and extend it.
 
       There are three possibilities.
       [1] If top chunk doesn't have enough size, the result 
@@ -2600,7 +2609,11 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       (long)((MINSIZE + nb) - old_size) > 0 && 
       grow_heap(old_heap, MINSIZE + nb - old_size) == 0
     ){
-      av->system_mem += (old_heap->size - old_heap_size);  /* (new - old) */
+      /* grow_heap will update the heap size. Subtracting 
+         the old one from the new one will give us the 
+         amount of new memory.
+      */
+      av->system_mem += (old_heap->size - old_heap_size);
 
       /* Update the size of the top chunk. */
       set_head(
@@ -2612,14 +2625,16 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     /* [PATH 2B]: If the current heap segment can't 
         be used, allocate a new heap segment.
 
-      If size exceeds HEAP_MAX_SIZE, the request is 
-      rejected immediately. Otherwise, it depends on 
-      the kernel.
+      If the size exceeds HEAP_MAX_SIZE, the request 
+      is rejected immediately. Otherwise, it depends 
+      on the kernel.
     */
 
-    /* [CONDITION BLOCK EXPLAINER]: Request a new heap 
-       segment, assign the returned pointer in `heap` 
-       and enter the branch if the return is not NULL.
+    /* [CONDITION BLOCK EXPLAINER]
+
+      Request a new heap segment, assign the returned 
+      pointer in `heap` and enter the branch if the 
+      returned value is not NULL.
     */
     else if (
       (heap = new_heap(nb + (MINSIZE + sizeof(*heap)), mp_.top_pad))
@@ -2627,40 +2642,42 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       /* Attach this heap to the arena. */
       heap->ar_ptr = av;
 
-      /* Attach this heap to the previous heap in the 
-         linked list of heaps managed by this arena. */
+      /* Add this heap to the linked list of heaps managed 
+         by this arena. */
       heap->prev = old_heap;
 
-      /* Update the memory footprint of the arena. */
+      /* Update the memory footprint. */
       av->system_mem += heap->size;
 
-      /* Create the top chunk for the new heap segment and 
-         update the top chunk for this arena, i.e. av->top. */
+      /* Establish the top chunk in the new heap segment 
+         and update av->top to it.
+
+        Currently, the top chunk owns all the memory in 
+        this heap, except the initial bytes, which are 
+        used for heap_info.
+      */
       top(av) = chunk_at_offset(heap, sizeof(*heap));
       set_head(
         top(av), 
         (heap->size - sizeof(*heap)) | PREV_INUSE
       );
 
-      /* Setup two fencepost chunks at the end of the old heap 
-         segment.
+      /* Setup two fencepost chunks at the end of the old 
+         heap segment and regularize the top chunk in it.
 
-        [1] Reduce the old top size by MINSIZE bytes to reserve 
-            space for the fencepost chunks.
-        [2] Align the updated old top size to a MALLOC_ALIGNMENT 
-            boundary. Under normal execution, the top chunk size 
-            is already aligned. So the alignment operation has no 
-            effect, but it guarantees that the resulting chunk 
-            satisfies the allocator's alignment invariant.
-        [3] However, if the top size was corrupted, alignment 
-            would reduce the size further and there will be some 
-            bytes that no longer belong to the top. 
-        [4] An ALIGN_DOWN operation is favored as an ALIGN_UP 
-            operation would disturb the size calculation for 
-            fencepost chunks.
+        MINSIZE bytes are required to setup two fenceposts. 
+        They are taken from the existing top chunk and the 
+        remaining top bytes are aligned to a 
+        MALLOC_ALIGNMENT boundary.
 
-        In which condition this alignment operation is actually 
-        useful remains unanswered. See open-questions.md
+        The allocator maintains the invariant that the top 
+        chunk always has at least MINSIZE bytes. Therefore, 
+        we don't have to worry about the subtraction.
+
+        Why the remaining top size is aligned down when we 
+        maintain the invariant that the top chunk always 
+        ends at page-aligned boundaries remains unanswered. 
+        See open-questions.md
       */
 
       old_size = (old_size - MINSIZE) & ~MALLOC_ALIGN_MASK;
@@ -2671,27 +2688,46 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 		    0 | PREV_INUSE
       );
 
-      /* (If old_size >= MINSIZE), the top chunk still has enough 
-         space to exist as a normal chunk, and fencepost-1 will be 
-         sized CHUNK_HDR_SZ (or, 2*SIZE_SZ) bytes. */
+      /* There are three possibilities based on what was 
+         in old_size before subtracting space for the 
+         fenceposts.
+
+        [CASE 1] ~~ (old_size == MINSIZE)
+        - After subtracting, old_top will vanish completely.
+        - There is nothing to regularize.
+
+        [CASE 2] ~~ (old_size >= 2*MINSIZE)
+        - After subtracting, old_top is still a valid chunk, 
+          a small chunk.
+        - We can regularize the top chunk here.
+
+        [CASE 3] ~~ (old_size == (MINSIZE + CHUNK_HDR_SZ))
+        - After subtracting, old_size will be CHUNK_HDR_SZ.
+        - Top chunk is no longer a valid chunk, so there is 
+          nothing to regularize. The remaining bytes are 
+          carried away by fencepost-1.
+      */
+
+      /* If the old top chunk has enough space to exist, 
+         regularize it. */
       if (old_size >= MINSIZE){
         /* Setup fencepost-1. */
-        /* The top chunk is a special chunk and it is kept as an
-           in-use chunk. Until it is binned, we must keep its 
-           PREV_INUSE bit set (1). */
+        /* The top chunk is kept as an in-use chunk. Until it 
+           is regularized, it must be kept as an in-use chunk.
+        */
         set_head(
           chunk_at_offset(old_top, old_size),
           CHUNK_HDR_SZ | PREV_INUSE
         );
 
-        /* Set the mchunk_prev_size of fencepost-2 to the size of 
-           fencepost-1. */
+        /* Set the mchunk_prev_size of fencepost-2 to the size 
+           of fencepost-1. */
         set_foot(
           chunk_at_offset(old_top, old_size), 
           CHUNK_HDR_SZ
         );
 
-        /* Update the size and the lower bits of the old top chunk */
+        /* Update the size and the lower bits of the top chunk. */
         set_head(
           old_top, 
           old_size | PREV_INUSE | NON_MAIN_ARENA
@@ -2701,11 +2737,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
         _int_free_chunk(av, old_top, chunksize(old_top), 1);
       }
 
-      /* If (old_size < MINSIZE), it is sure to be (2 * SIZE_SZ) 
-         bytes as we have aligned it to a MALLOC_ALIGN_MASK 
-         boundary. Since the top chunk doesn't have enough space 
-         to exist as a chunk, fencepost-1 absorbs the remaining 
-         size and old_top disappears. */
+      /* If (old_size == CHUNK_HDR_SZ) */
       else{
         /* Fencepost-1 */
         set_head (old_top, (old_size + CHUNK_HDR_SZ) | PREV_INUSE);
@@ -2718,12 +2750,12 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     /* [PATH 2C]: Use sysmalloc_mmap to get an mmaped chunk. 
         - If path-1 was not executed, mmap has not been 
           attempted.
-        - We attempt with standard page size only. If 
-          new_heap already failed, it is unlikely that 
-          another attempt involving huge pages would 
-          succeed. */
+        - We attempt with standard page size only. If new_heap 
+          already failed, it is unlikely that another attempt 
+          involving huge pages would succeed.
+    */
     else if (!tried_mmap){
-      char *mm = sysmalloc_mmap (nb, pagesize, 0);
+      char *mm = sysmalloc_mmap(nb, pagesize, 0);
       if (mm != MAP_FAILED)
       return mm;
     }
