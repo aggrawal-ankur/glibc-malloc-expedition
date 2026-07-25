@@ -38,8 +38,8 @@
    of mmapped heaps that are dynamically created 
    for multi-threaded programs.
    - The maximum size must be a power of two, for 
-     fast determination of which heap belongs to a 
-     chunk.
+     fast determination of which heap belongs to 
+     a chunk.
    - It should be much larger than the mmap threshold, 
      so that requests with a size just below that
      threshold can be fulfilled without creating too 
@@ -47,14 +47,12 @@
 
    HEAP_MAX_SIZE should be larger than the huge page 
    size, otherwise heaps will use not huge pages. It 
-   is a constant so arena_for_chunk() is efficient. */
-
+   is a constant so arena_for_chunk() is efficient.
+*/
 static __always_inline size_t
 heap_min_size (void)
 {
-  /* If huge pages are enabled, it evaluates to true, making the second 
-     condition unnecessary. -> HEAP_MIN_SIZE 
-     If huge pages is enabled and greater than HEAP_MAX_SIZE -> huge page size. */
+  /* [?] */
   return (
     (mp_.hp_pagesize == 0 || mp_.hp_pagesize > HEAP_MAX_SIZE)
 	  ? HEAP_MIN_SIZE 
@@ -74,7 +72,8 @@ heap_max_size (void)
 /* A heap is a single contiguous memory region 
    holding (coalesceable) malloc_chunks. It is 
    allocated with mmap() and always starts at 
-   an address aligned to HEAP_MAX_SIZE. */
+   an address aligned to HEAP_MAX_SIZE.
+*/
 typedef struct _heap_info
 {
   mstate ar_ptr;              /* Arena for this heap. */
@@ -96,52 +95,63 @@ typedef struct _heap_info
 
 /* Get a compile-time error if the heap_info padding 
    is not correct to make alignment work as expected 
-   in sYSMALLOc. */
+   in sYSMALLOc.
+*/
 extern int sanity_check_heap_info_alignment[
   (sizeof(heap_info) + 2 * SIZE_SZ) % MALLOC_ALIGNMENT ? -1 : 1
 ];
 
+/* [NOT EXPLORED YET] */
 /* Thread specific data. */
-
 static __thread mstate thread_arena attribute_tls_model_ie;
 
-/* Arena free list.
-   - free_list_lock synchronizes access to the free_list 
-     variable below, and the next_free and attached_threads
-     members of struct malloc_state objects.
-   - No other locks must be acquired after free_list_lock 
-     is acquired. */
 
+/* [NOT EXPLORED YET] */
+/* Arena free list.
+
+  free_list_lock synchronizes access to the free_list 
+  variable below, and the next_free and attached_threads
+  members of struct malloc_state objects.
+
+  No other locks must be acquired after free_list_lock 
+  is acquired.
+*/
 __libc_lock_define_initialized (static, free_list_lock);
+
 #if IS_IN (libc)
 static size_t narenas = 1;
 #endif
 static mstate free_list;
 
+
+/* [NOT EXPLORED YET] */
 /* list_lock prevents concurrent writes to the next member 
    of struct malloc_state objects.
 
-   Read access to the next member is supposed to synchronize 
-   with the atomic_write_barrier and the write to the next 
-   member in _int_new_arena. This suffers from data races; 
-   see the FIXME comments in _int_new_arena and reused_arena.
+  Read access to the next member is supposed to synchronize 
+  with the atomic_write_barrier and the write to the next 
+  member in _int_new_arena. This suffers from data races; 
+  see the FIXME comments in _int_new_arena and reused_arena.
 
-   list_lock also prevents concurrent forks. At the time 
-   list_lock is acquired, no arena lock must have been 
-   acquired, but it is permitted to acquire arena locks 
-   subsequently, while list_lock is acquired. */
+  list_lock also prevents concurrent forks. At the time 
+  list_lock is acquired, no arena lock must have been 
+  acquired, but it is permitted to acquire arena locks 
+  subsequently, while list_lock is acquired.
+*/
 __libc_lock_define_initialized (static, list_lock);
 
 
+/* [NOT EXPLORED YET] */
 /* arena_get() acquires an arena and locks the corresponding 
    mutex.
-   - First, try the one last locked successfully by this 
-     thread. This is the common case and handled with a 
-     macro for speed. Then, loop once over the circularly 
-     linked list of arenas.
-   - If no arena is readily available, create a new one. In 
-     this latter case, `size` is just a hint as to how much 
-     memory will be required immediately in the new arena. */
+
+  First, try the one last locked successfully by this thread. 
+  This is the common case and handled with a macro for speed. 
+  Then, loop once over the circularly linked list of arenas.
+  If no arena is readily available, create a new one. In this 
+  latter case, `size` is just a hint as to how much memory 
+  will be required immediately in the new arena.
+*/
 #define arena_get(ptr, size)    do {  \
     ptr = thread_arena;               \
     arena_lock (ptr, size);           \
@@ -153,6 +163,7 @@ __libc_lock_define_initialized (static, list_lock);
     else                                  \
       ptr = arena_get2 ((size), NULL);    \
   } while (0)
+
 
 /* Find the heap and corresponding arena for a given ptr. */
 static __always_inline heap_info*
@@ -172,8 +183,7 @@ arena_for_chunk (mchunkptr ptr)
 }
 
 
-
-
+/* [NOT EXPLORED YET] */
 /* atfork support.  */
 
 /* The following three functions are called around 
@@ -181,7 +191,8 @@ arena_for_chunk (mchunkptr ptr)
    the general fork handler mechanism to make sure 
    that our handlers are the last ones being called, 
    so that other fork handlers can use the malloc 
-   subsystem. */
+   subsystem.
+*/
 
 void __malloc_fork_lock_parent(void)
 {
@@ -277,7 +288,8 @@ void __ptmalloc_init(void){
   if ((TUNABLE_GET_FULL(glibc, mem, tagging, int32_t, NULL) & 1) != 0){
     /* If the tunable says that we should be using tagged memory
        and that morecore does not support tagged regions, then
-    	 disable it. */
+    	 disable it.
+    */
     if (__MTAG_SBRK_UNTAGGED)
       __always_fail_morecore = true;
 
@@ -288,9 +300,10 @@ void __ptmalloc_init(void){
 
 #if defined SHARED && IS_IN (libc)
   /* In case this libc copy is in a non-default namespace, 
-     never use brk.  Likewise if dlopened from statically 
-     linked program.  The generic sbrk implementation also 
-     enforces this, but it is not used on Hurd. */
+     never use brk. Likewise if dlopened from statically 
+     linked program. The generic sbrk implementation also 
+     enforces this, but it is not used on Hurd.
+  */
   if (!__libc_initial)
     __always_fail_morecore = true;
 #endif
@@ -319,9 +332,10 @@ void __ptmalloc_init(void){
     mp_.hp_pagesize <= heap_max_size()
   ){
     /* Force mmap for main arena instead of sbrk, so MAP_HUGETLB is 
-       always tried.  Also tune the mmap threshold, so allocation 
+       always tried. Also tune the mmap threshold, so allocation 
        smaller than the large page will also try to use large pages 
-       by falling back to sysmalloc_mmap_fallback on sysmalloc.  */
+       by falling back to sysmalloc_mmap_fallback on sysmalloc.
+    */
     if (!TUNABLE_IS_INITIALIZED(mmap_threshold))
       do_set_mmap_threshold (mp_.hp_pagesize);
       __always_fail_morecore = true;
@@ -372,7 +386,8 @@ static void dump_heap(heap_info *heap)
    time. We need no locking for it, as kernel ensures the 
    atomicity for us - worst case we'll call mmap 
    (addr, HEAP_MAX_SIZE, ...) for some value of addr in
-   multiple threads, but only one will succeed. */
+   multiple threads, but only one will succeed.
+*/
 static char *aligned_heap_area;
 
 /* Create a new heap segment. `size` is automatically 
@@ -419,35 +434,44 @@ static heap_info* alloc_new_heap(
      have it, the kernel denies the allocation to prevent crashing 
      later.
 
-     Here we are not requesting a massive block of writable memory.
-     We are asking for a non-writable block of memory, which doesn't
-     require swap space anyways (on Linux). */
-  /* [TODO]: But why do we need the base to be a multiple of HEAP_MAX_SIZE?
+    Here we are not requesting a massive block of writable memory.
+    We are asking for a non-writable block of memory, which doesn't
+    require swap space anyways (on Linux).
+  */
+
+  /* [TODO]: But why do we need the base to be a multiple of 
+      HEAP_MAX_SIZE? */
 
   /* [PATH 1]: Use aligned_heap_area.
      [NOTE 1]: If the first time through, aligned_heap_area will be 0.
-     [NOTE 2]: Explore path 2 before this path to understand better. */
+     [NOTE 2]: Explore path 2 before this path to understand better.
+  */
 
   p2 = MAP_FAILED;
   if (aligned_heap_area){
     p2 = (char*) MMAP(aligned_heap_area, max_size, PROT_NONE, mmap_flags);
     aligned_heap_area = NULL;
 
-    /* Without MAP_FIXED, the first argument to mmap, i.e. the address, is 
-       just a hint, which, the kernel can ignore for some reason and choose 
-       a more suitable address. This address may or may not be aligned to 
-       HEAP_MAX_SIZE. Therefore, we have to check if the returned address is
-       actually aligned. A few points:
-       - Since we have immediately made aligned_heap_area NULL, there is no
-         way to verify if the kernel honored our hint or returned what it 
-         found suitable. 
-       - The if block only checks whether the returned memory is aligned to
-         a HEAP_MAX_SIZE multiple or not. It doesn't care about whether our
-         suggestion got honored or not.
-       - It also acts as an integrity check where aligned_heap_area might be 
-         corrupted somehow, but the corruption must not hamper everything else. 
+    /* Without MAP_FIXED, the first argument to mmap, i.e. the 
+       address, is just a hint, which, the kernel can ignore 
+       for some reason and choose a more suitable address. This 
+       address may or may not be aligned to HEAP_MAX_SIZE. So we 
+       have to check if the returned address is actually aligned.
 
-       If the returned address is not aligned, we unmap the region immediately. */
+      A few things:
+      - Since we have immediately made aligned_heap_area NULL, 
+        there is no way to verify if the kernel honored our 
+        hint or returned what it found suitable. 
+      - The if block only checks whether the returned memory is 
+        aligned to a HEAP_MAX_SIZE multiple or not. It doesn't 
+        care if our suggestion got honored or not.
+      - It also acts as an integrity check where aligned_heap_area 
+        might be corrupted somehow, but the corruption must not 
+        hamper everything else. 
+
+      If the returned address is not aligned, we unmap the region 
+      immediately.
+    */
     if (
       p2 != MAP_FAILED && 
       ((unsigned long)(p2) & (max_size-1))
@@ -461,53 +485,58 @@ static heap_info* alloc_new_heap(
                aligned to HEAP_MAX_SIZE boundary. */
 
   if (p2 == MAP_FAILED){
-    /* [PATH 2A]: Request a region twice of HEAP_MAX_SIZE bytes and 
-                  let the kernel choose the base of the mapping.*/
+    /* [PATH 2A]: Request a region twice of HEAP_MAX_SIZE 
+        bytes and let the kernel choose the base of the 
+        mapping.
+    */
 
-    /* We are not hinting the kernel with a HEAP_MAX_SIZE aligend
-       address. Therefore, the kernel can return any address, which
-       might be off by any number of bytes (including a perfectly 
-       aligned address with 0 off bytes as well.
-       - For this reason, we can not choose an arbitray number of 
-         extra bytes on top of HEAP_MAX_SIZE.
-       - Therefore, we request a region of (HEAP_MAX_SIZE * 2) bytes.
+    /* Because we are not hinting the kernel with a 
+       HEAP_MAX_SIZE aligned address, the kernel can 
+       return any address, which might be off by any 
+       number of bytes (including a perfectly aligned 
+       address with 0 off bytes). Therefore, we request 
+       a region of (HEAP_MAX_SIZE * 2) bytes, as it is 
+       guaranteed to contain at least on HEAP_MAX_SIZE 
+       aligned region.
 
-       We align the returned address to the next multiple of 
-       HEAP_MAX_SIZE, which is a simple ALIGN_UP operation. It handles 
-       both the cases elegantly.
-       - [Case 1]:
-         - If p1 is already a multiple of HEAP_MAX_SIZE, p2 will be
-           equal to p1 and ul will be zero.
-         - The returned memory is worth two HEAP_MAX_SIZE segments, 
-           like this: [HEAP_MAX_SIZE_1, HEAP_MAX_SIZE_2].
-         - We keep the first segment and store the pointer to the 
-           second segment in `aligned_heap_area`, i.e. 
-           (p2 + HEAP_MAX_SIZE). Next time, when we allocate a new
-           heap, instead of going back box in a huge virtual memory,
-           we directly map the memory after the current heap segment,
-           keeping things sequential.
-       - [Case 2]:
-         - If p1 is not a multiple of HEAP_MAX_SIZE, p2 will contain
-           a value which will be greater than p1.
-         - p1 can be divided into two parts: "base value", which is
-           already a multiple of HEAP_MAX_SIZE and "excess value",
-           which is preventing the base value to be a multiple of
-           HEAP_MAX_SIZE.
-         - When p1 undergoes alignment, we add a number to this
-           "excess value" that converts the whole address into a
-           multiple of HEAP_MAX_SIZE.
-         - Based on this, we can construct what the returned memory
-           means for us: [HEAP_MAX_SIZE-excess, HEAP_MAX_SIZE, excess].
-         - We want to keep the aligned segment and munmap the remaining
-           two fragments.
-           - We know that adding "x" to the "excess value" makes the
-             address aligned to HEAP_MAX_SIZE. To obtain this x, all
-             we have to do is to subtarct the excess bytes from
-             HEAP_MAX_SIZE, i.e. HEAP_MAX_SIZE-excess, or, (p2-p1).
-           - After munmapping the first fragment, the second fragment
-             is simply the excess bytes. They start from
-             (p2+HEAP_MAX_SIZE) and they are (HEAP_MAX_SIZE-x), or,
-             (HEAP_MAX_SIZE-ul).
+      Align the returned address to the next multiple 
+      of HEAP_MAX_SIZE, which is a simple ALIGN_UP 
+      operation. It handles both the cases.
+
+      [Case 1]:
+      - If p1 is already a multiple of HEAP_MAX_SIZE, p2 
+        will be equal to p1 and ul will be zero.
+      - The returned memory is worth two HEAP_MAX_SIZE 
+        segments, like this: [HEAP_MAX_SIZE_1, HEAP_MAX_SIZE_2].
+      - We keep the first segment and store a pointer to 
+        the second segment in `aligned_heap_area`, i.e. 
+        (p2 + HEAP_MAX_SIZE). Next time, when we allocate 
+        a new heap, we use it.
+
+      [Case 2]:
+      - If p1 is not a multiple of HEAP_MAX_SIZE, p2 will 
+        contain a value which will be greater than p1.
+      - p1 can be divided into two parts: "base value", 
+        which is already a multiple of HEAP_MAX_SIZE and 
+        "excess value", which is preventing the base value 
+        to be a multiple of HEAP_MAX_SIZE.
+      - When p1 undergoes alignment, we add a number to this
+        "excess value" that converts the whole address into 
+        a multiple of HEAP_MAX_SIZE.
+      - Based on this, we can construct what the returned 
+        memory means for us: 
+          [HEAP_MAX_SIZE-excess, HEAP_MAX_SIZE, excess].
+      - We want to keep the aligned segment and munmap the 
+        remaining two fragments.
+      - We know that adding "x" to the "excess value" makes 
+        the address aligned to HEAP_MAX_SIZE. To obtain this 
+        x, all we have to do is to subtarct the excess bytes 
+        from HEAP_MAX_SIZE, i.e. HEAP_MAX_SIZE-excess, or, 
+        (p2-p1).
+      - After munmapping the first fragment, the second 
+        fragment is simply the excess bytes. They start from
+        (p2+HEAP_MAX_SIZE) and they are (HEAP_MAX_SIZE-x), 
+        or, (HEAP_MAX_SIZE-ul).
     */
     p1 = (char*) MMAP(NULL, max_size << 1, PROT_NONE, mmap_flags);
     if (p1 != MAP_FAILED){
@@ -523,9 +552,10 @@ static heap_info* alloc_new_heap(
       __munmap(p2 + max_size, max_size - ul);
     }
 
-    /* [PATH 2B]: If a request of (HEAP_MAX_SIZE * 2) bytes failed 
-       for some reason (like resource restrictions), we attempt for 
-       HEAP_MAX_SIZE, in hope we get an aligned region. */
+    /* [PATH 2B]: If a request of (HEAP_MAX_SIZE * 2) bytes 
+       failed for some reason, we attempt for a HEAP_MAX_SIZE 
+       region, in hope of getting an aligned region.
+    */
     else{
       p2 = (char*) MMAP(NULL, max_size, PROT_NONE, mmap_flags);
       if (p2 == MAP_FAILED)
@@ -533,7 +563,8 @@ static heap_info* alloc_new_heap(
 
       /* If the returned address is not a multiple of HEAP_MAX_SIZE, 
          the segment is useless for us as glibc operates on strict 
-         alignment rules. Therefore, we have to munmap it. */
+         alignment rules. Therefore, we have to munmap it.
+      */
       if ((unsigned long)(p2) & (max_size-1)){
         __munmap(p2, max_size);
         return NULL;
@@ -542,16 +573,18 @@ static heap_info* alloc_new_heap(
   }
 
 
-  /* If path 1 failed, we go to path 2. If path 2 fails, we exit this
-     function. So, if we have reached this part, that means, one of 
-     the paths have successed.
-     
-     There were two (char*) pointers, i.e. p1 and p2 declared on top.
-     The first path only uses p2, while the second path uses p1 as a
-     scratch variable and keeps the aligned one in p2. */
+  /* If path 1 failed, we go to path 2. If path 2 fails, we 
+     exit this function. So, if we have reached this part, 
+     one of the paths have succeeded.
 
-  /* [Step 2]: Update the permissions to read-write for `size` bytes 
-     of memory in the whole heap segment. */
+    There were two (char*) pointers, i.e. p1 and p2 declared 
+    on top. The first path only uses p2, while the second path 
+    uses p1 as a scratch variable and keeps the aligned one in 
+    p2.
+  */
+
+  /* [Step 2]: Update the permissions to read-write for `size` 
+     bytes of memory in the whole heap segment. */
   if (__mprotect(
       p2, size, 
       mtag_mmap_flags | PROT_READ | PROT_WRITE
@@ -561,11 +594,7 @@ static heap_info* alloc_new_heap(
     return NULL;
   }
 
-  /* Only considere the actual usable range. */
-  /* [WHAT IS THIS FOR] */
   __set_vma_name (p2, size, " glibc: malloc arena");
-
-  /* [Advice the kernel to make it a huge page?] */
   madvise_thp (p2, size);
 
   h = (heap_info*)(p2);
@@ -606,7 +635,7 @@ static int grow_heap(heap_info *h, long diff)
   size_t max_size = heap_max_size();
   long new_size;
 
-  diff = ALIGN_UP(diff, pagesize);     // Round up to the next page boundary.
+  diff = ALIGN_UP(diff, pagesize);
   new_size = (long)(h->size) + diff;
 
   /* The new size must not exceed the maximum size allowed
@@ -616,19 +645,21 @@ static int grow_heap(heap_info *h, long diff)
 
   /* If the heap was shrinked before, (h->size < h->mprotect_size).
      There can be two cases depending on the value of `diff`.
-     - [Case 1]: (h->size + diff) <= h->mprotect_size
-       - We don't have to call mprotect to update the
-         permissions on the region. It is already RW.
-       - Update h->size to new_size and leave h->mprotect_size.
-     - [Case 2]: (h->size + diff) > h->mprotect_size
-       - This splits the region in two parts: the left
-         side has the right permissions, and the right
-         part that lacks them due to extra bytes.
-       - To obtain the right part (extra bytes), we have
-         to subtract h->mprotect_size from new_size.
-       - Last, we update the h->mprotect_size to reflect
-         the newly mprotected region and put new_size in
-         h->size. */
+
+    [Case 1]: (h->size + diff) <= h->mprotect_size
+    - We don't have to call mprotect to update the permissions 
+      on the region. It is already RW.
+    - Update h->size to new_size and leave h->mprotect_size.
+
+    [Case 2]: (h->size + diff) > h->mprotect_size
+    - This splits the region in two parts: the left side has 
+      the right permissions, and the right part that lacks 
+      them due to extra bytes.
+    - To obtain the right part (extra bytes), we have to 
+      subtract h->mprotect_size from new_size.
+    - Last, we update the h->mprotect_size to reflect the 
+      newly mprotected region and put new_size in h->size.
+  */
 
   /* [Case 2]: If the new size goes beyond the mprotected region. */
   if ((unsigned long)(new_size) > h->mprotect_size){
@@ -642,9 +673,10 @@ static int grow_heap(heap_info *h, long diff)
     h->mprotect_size = new_size;
   }
 
-  /* mprotect preserves MADV_HUGEPAGE semantics. So, if 
-     the old region was marked with MADV_HUGEPAGE, the 
-     new region will retain that. */
+  /* mprotect preserves MADV_HUGEPAGE semantics. If the 
+     old region was marked with MADV_HUGEPAGE, the new 
+     region will retain that.
+  */
   if (h->size < mp_.thp_pagesize)
     madvise_thp (h, new_size);
 
@@ -664,9 +696,11 @@ static int shrink_heap(heap_info *h, long diff)
 
   /* Try to re-map the extra heap space freshly to 
      save memory, and make it inaccessible. See 
-     malloc-sysdep.h to know when this is true. */
-  /* The PROT_NONE mapping removes the RW mapping 
-     from the region. */
+     malloc-sysdep.h to know when this is true.
+
+    The PROT_NONE mapping removes the RW mapping 
+    from the region.
+  */
   if (__glibc_unlikely(check_may_shrink_heap()))
   {
     if ((char*) MMAP(
@@ -679,20 +713,23 @@ static int shrink_heap(heap_info *h, long diff)
 
     /* Because we have changed the permissions on the 
        extra bytes, we need to update the mprotect_size 
-       as well. */
+       as well.
+    */
     h->mprotect_size = new_size;
   }
 
   /* madvise only hints the kernel to remove the physical 
      backing. The virtual address range remains reserved 
      and is backed again when it is accessed. Therefore, 
-     we don't have to update the mprotect_size here. */
+     we don't have to update the mprotect_size here.
+  */
   else
     __madvise ((char*)(h) + new_size, diff, MADV_DONTNEED);
 
+  /* This line was commented in the original source as well. 
+     I am not sure why. */
   /* fprintf(stderr, "shrink %p %08lx\n", h, new_size); */
 
-  /* Update the size this heap currently has. */
   h->size = new_size;
 
   LIBC_PROBE (memory_heap_less, 2, h, h->size);
@@ -742,7 +779,8 @@ static int heap_trim(heap_info *heap, size_t pad)
 
     /* If we subtract the size of the second fencepost from 
        the total heap size, we get to the second fencepost. 
-       From there, we crawl back to the first fencepost. */
+       From there, we crawl back to the first fencepost.
+    */
     prev_size = prev_heap->size - (MINSIZE - (2 * SIZE_SZ));
 
     /* Fencepost-2 */
@@ -771,18 +809,20 @@ static int heap_trim(heap_info *heap, size_t pad)
       (new_size < max_size)
     );
 
-    /* A new heap is spawned only when the existing heap 
-       is not able to service a request. That doesn't 
-       necessarily imply that the current heap doesn't 
-       is used up until HEAP_MAX_SIZE. Therefore, 
-       (max_size - prev_heap->size) represents the 
+    /* A new heap is created only when the existing heap 
+       can not be used to service a request. That doesn't 
+       necessarily mean that the current heap has no space 
+       left. (max_size - prev_heap->size) represents the 
        memory that has not been made RW yet and is 
        immediately available.
-       
-       The new top size must contain at least padding 
-       bytes, MINSIZE bytes and a page worth of memory 
-       to prevent setting up a new heap soon. If not, 
-       we don't take this path. */
+
+      [WHY? We should be checking if the new size is 
+      enough for the request]
+      The size obtained from the above calculation must 
+      be at least (padding + MINSIZE + pagesize) bytes 
+      to prevent setting up a new heap soon. If it is 
+      not, we don't take this path.
+    */
     if (
       (new_size + (max_size - prev_heap->size)) < 
       (pad + MINSIZE + heap->pagesize)
@@ -796,16 +836,19 @@ static int heap_trim(heap_info *heap, size_t pad)
 
     /* If new_heap for this heap succeeded with the 
        (2 * HEAP_MAX_SIZE) path, aligned_heap_area 
-       would point to a valid PROT_NONE mapping that 
+       would points to a valid PROT_NONE mapping that 
        could be utilized as a new heap later, but 
-       the allocator doesn't seem to be doing it. 
-       Instead, it clears aligned_heap_area. But the 
-       mapping still exist.
+       the allocator is not doing that. Instead, it 
+       clears aligned_heap_area. But the mapping still 
+       exist.
 
-       We are discarding the pointer to a perfectly 
-       PROT_NONE heap segment stored in aligned_heap_area 
-       but not unmapping the actual memory it refers to. 
-       How is that useful? */
+      We are discarding the pointer to a perfectly 
+      PROT_NONE heap segment stored in aligned_heap_area 
+      but not unmapping the actual memory it refers to. 
+      How is that useful?
+
+      It remains unanswered. See open-questions.md
+    */
     if ((char*)(heap) + max_size == aligned_heap_area)
     	aligned_heap_area = NULL;
 
@@ -837,8 +880,8 @@ static int heap_trim(heap_info *heap, size_t pad)
 
   /* Otherwise, trim the top chunk in the arena. The 
      logic is similar to systrim as used by the main 
-     arena. */
-
+     arena.
+  */
   top_size = chunksize(top_chunk);
 
   /* The top size must be more than the trim threshold. */
@@ -876,8 +919,8 @@ static int heap_trim(heap_info *heap, size_t pad)
 /* Create a new arena with initial size "size".  */
 
 #if IS_IN (libc)
-/* If REPLACED_ARENA is not NULL, detach it from this thread.
-   Must be called while free_list_lock is held. */
+/* If REPLACED_ARENA is not NULL, detach it from this 
+   thread. Must be called while free_list_lock is held. */
 static void
 detach_arena (mstate replaced_arena)
 {
@@ -887,9 +930,10 @@ detach_arena (mstate replaced_arena)
     /* The current implementation only detaches from the 
        main_arena in case of allocation failure. This means 
        that it is likely not beneficial to put the arena on 
-       free_list even if the reference count reaches zero. */
-      --replaced_arena->attached_threads;
-    }
+       free_list even if the reference count reaches zero.
+    */
+    --replaced_arena->attached_threads;
+  }
 }
 
 static mstate _int_new_arena(size_t size)
@@ -908,7 +952,8 @@ static mstate _int_new_arena(size_t size)
     /* Maybe size is too large to fit in a single heap. So, 
        just try to create a minimally-sized arena and let 
        _int_malloc() attempt to deal with the large request 
-       via mmap_chunk(). */
+       via mmap_chunk().
+    */
 
     h = new_heap(
       sizeof(*h) + sizeof(*a) + MALLOC_ALIGNMENT, 
@@ -953,16 +998,17 @@ static mstate _int_new_arena(size_t size)
   detach_arena (replaced_arena);
   __libc_lock_unlock (free_list_lock);
 
-  /* Lock this arena.  NB: Another thread may have been attached to
-     this arena because the arena is now accessible from the
-     main_arena.next list and could have been picked by reused_arena.
-     This can only happen for the last arena created (before the arena
-     limit is reached).  At this point, some arena has to be attached
-     to two threads.  We could acquire the arena lock before list_lock
-     to make it less likely that reused_arena picks this new arena,
-     but this could result in a deadlock with
-     __malloc_fork_lock_parent.  */
-
+  /* Lock this arena. NB: Another thread may have been 
+     attached to this arena because the arena is now 
+     accessible from the main_arena.next list and could 
+     have been picked by reused_arena. This can only 
+     happen for the last arena created (before the arena
+     limit is reached). At this point, some arena has to 
+     be attached to two threads. We could acquire the 
+     arena lock before list_lock to make it less likely 
+     that reused_arena picks this new arena, but this 
+     could result in a deadlock with __malloc_fork_lock_parent.
+  */
   __libc_lock_lock (a->mutex);
 
   return a;
@@ -1003,7 +1049,8 @@ static mstate get_free_list (void)
 
 /* Remove the arena from the free list (if it 
    is present). free_list_lock must have been 
-   acquired by the caller. */
+   acquired by the caller.
+*/
 static void remove_from_free_list (mstate arena)
 {
   mstate *previous = &free_list;
@@ -1026,7 +1073,8 @@ static void remove_from_free_list (mstate arena)
 /* Lock and return an arena that can be reused for 
    memory allocation. Avoid AVOID_ARENA as we have 
    already failed to allocate memory in it and it 
-   is currently locked. */
+   is currently locked.
+*/
 static mstate reused_arena (mstate avoid_arena)
 {
   mstate result;
@@ -1074,7 +1122,8 @@ static mstate reused_arena (mstate avoid_arena)
          - We unconditionally remove the selected arena 
            from the free list. The caller of reused_arena 
            checked the free list and observed it to be empty, 
-           so the list is very short. */
+           so the list is very short.
+      */
       remove_from_free_list (result);
       ++result->attached_threads;
       __libc_lock_unlock (free_list_lock);
@@ -1125,8 +1174,8 @@ arena_get2 (size_t size, mstate avoid_arena)
          or equal to arena_test narenas_limit is 0. There is 
          no possibility for narenas to be too big for the 
          test to always fail since there is not enough address 
-         space to create that many arenas. */
-
+         space to create that many arenas.
+    */
     if (__glibc_unlikely(n <= (narenas_limit-1))){
       if (atomic_compare_and_exchange_bool_acq (&narenas, n + 1, n))
         goto repeat;
@@ -1147,7 +1196,8 @@ arena_get2 (size_t size, mstate avoid_arena)
    is due to running out of mmapped areas, so we can try 
    allocating on the main arena. Otherwise, it is likely 
    that sbrk() has failed and there is still a chance to 
-   mmap(), so try one of the other arenas. */
+   mmap(), so try one of the other arenas.
+*/
 static mstate
 arena_get_retry (mstate ar_ptr, size_t bytes)
 {
@@ -1170,7 +1220,8 @@ void __malloc_arena_thread_freeres(void)
 {
   /* Shut down the thread cache first. This could deallocate 
      data for the thread arena, so do this before we put the 
-     arena on the free list. */
+     arena on the free list.
+  */
   tcache_thread_shutdown();
 
   mstate a = thread_arena;
@@ -1190,9 +1241,3 @@ void __malloc_arena_thread_freeres(void)
     __libc_lock_unlock (free_list_lock);
   }
 }
-
-/*
- * Local variables:
- * c-basic-offset: 2
- * End:
- */
