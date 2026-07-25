@@ -2202,10 +2202,14 @@ static void* sysmalloc_mmap_fallback(
   size_t pagesize, 
   int extra_flags
 ){
+  /* Align the request size up to the next pagesize 
+     multiple. */
   size = ALIGN_UP(size, pagesize);
 
-  /* If we are relying on mmap as backup, then use 
-     larger units. */
+  /* If the aligned size is less than the minimum 
+     size (minsize) mmap must be called with, 
+     request a region of minsize bytes.
+  */
   if (size < minsize)
     size = minsize;
 
@@ -2596,8 +2600,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
   /* [PATH 3]: Main arena. */
   else{
-    /* Calculate the size to request from sbrk. */
-
+    /* [STEP 1]: Calculate the size to request from sbrk. */
     size = nb + mp_.top_pad + MINSIZE;
 
     /* [?]
@@ -2632,12 +2635,16 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       size = ALIGN_UP(size, GLRO(dl_pagesize));
     }
 
+    /* [STEP 1] Completed. */
+
+
+    /* [STEP 2] Get memory from the kernel. */
 
     /* [PATH 3A]: Call sbrk. */
 
     /* size is an unsigned quantity, but sbrk takes a 
-       signed quantity. So we interpret size in signed 
-       to ensure it is a positive growth. 
+       signed quantity. So we interpret size as a 
+       signed quantity to ensure the growth is positive.
     */
     if ((ssize_t)(size) > 0){
       brk = (char*) MORECORE((long)(size));
@@ -2656,62 +2663,56 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       find itself.
 
       A failed sbrk() indicates that "sbrk can not be 
-      used to satisfy this request". The user space has 
-      no realiable means to know why the kernel refused 
-      the request. Maybe the request exceeded the maximum 
-      limit for the data segment (RLIMIT_DATA), or there 
-      is a "hole" in the address space that is preventing 
-      contiguous growth.
-
-      What is a "hole" in the address space? It is the 
-      second threat to sbrk's contiguity.
-      - Suppose our program break is at 0x10000 (65536).
-      - The next mapping is at 0x14000 (81920).
-      - The difference between the program break and this 
-        mapping is 0x4000 bytes (16384), i.e. four 4-KiB 
-        pages.
-      - As long as the expansion fits under these four 
-        pages, contiguous growth is not objected. However, 
-        the kernel will refuse any extension beyond this.
-      - Therefore, a hole is an unmapped gap between two 
-        VMAs. Such gaps are a normal consequence of the 
-        kernel managing different types of mappings within 
-        a process's virtual address space. But it becomes 
-        a limitation when the requested program break 
-        extension is larger than the contiguous unmapped 
-        space available. 
+      used to satisfy this request". The user space 
+      has no realiable means to know why the kernel 
+      refused the request. Maybe the request exceeded 
+      the maximum limit for the data segment (RLIMIT_DATA), 
+      or there is a "hole" in the address space, 
+      preventing contiguous growth.
     */
 
 
-    /* [PATH 3B]: Use sysmalloc_mmap_fallback if path-3a 
-        failed.
+    /* [PATH 3B]: Use sysmalloc_mmap_fallback if sbrk 
+        has failed. It uses mmap as a fallback.
 
-      Since memory can not be obtained via sbrk for this 
-      request, we try mmap. We ignore the mmap_threshold 
-      and max mmapped regions count as it is not used as 
-      a standalone mmapped chunk.
+      If this path is executed, chances are that the 
+      currently available contiguous unmapped space 
+      is not enough (a hole in the address space).
     */
-
     if (brk == (char*)(MORECORE_FAILURE)){
-      /* Size to request. The actual size (after alignment) 
-         is assigned into `size`. */
+      /* Calculate the fallback size.
+
+        It is a temporary variable and the actual size 
+        variable is passed as an argument and it is 
+        populated if mmap happened to be successful.
+
+        It is aligned to appropriate page boundaries 
+        by sysmalloc_mmap_fallback.
+      */
       size_t fallback_size = nb + mp_.top_pad + MINSIZE;
 
-      /* mbrk is probably "mmap returned break"! */
+      /* Initialize mbrk (probably, "mmap returned break"). */
       char *mbrk = MAP_FAILED;
 
       /* [PATH (3B, 1)]: Use huge pages if enabled. */
       if (mp_.hp_pagesize > 0){
         mbrk = sysmalloc_mmap_fallback(
-          &size, fallback_size,
+          &size, 
+          fallback_size,
           mp_.hp_pagesize,
-          mp_.hp_pagesize, mp_.hp_flags
+          mp_.hp_pagesize, 
+          mp_.hp_flags
         );
       }
 
-      /* [EXPLAIN MMAP_AS_MORECORE_SIZE] */
-      /* [PATH (3B, 2)]: Use standard page size if huge 
-          pages were not enabled, or that path failed. */
+      /* [PATH (3B, 2)]: Use standard page size if 
+          [1] huge pages are not enabled, or 
+          [2] the huge page path has failed.
+
+        If the size after alignment is less than 
+        MMAP_AS_MORECORE_SIZE, mmap is called with 
+        that instead.
+      */
       if (mbrk == MAP_FAILED){
         mbrk = sysmalloc_mmap_fallback(
           &size, fallback_size,
@@ -2720,6 +2721,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
         );
       }
 
+      /* [?] */
       /* If mmap succeeded, we can not use sbrk to find 
          the end. Therefore, we have to update brk and 
          snd_brk appropriately.
@@ -2727,7 +2729,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       if (mbrk != MAP_FAILED){
         __set_vma_name(mbrk, fallback_size, " glibc: malloc");
 
-        /* [REVISIT] */
+        /* [?] */
         /* The allocator no longer assumes future sbrk 
            growth will be contiguous. After the first 
            time mmap is used as backup, we do not ever 
@@ -2735,34 +2737,37 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
            incorrectly bridge the regions.
         */
 
-        /* Update the NONCONTIGUOUS_BIT. */
+        /* Set the NONCONTIGUOUS_BIT. */
         set_noncontiguous(av);
 
         /* The start of the mmapped memory. */
         brk = mbrk;
 
-        /* The end of the mmapped memory. */
+        /* One past the end of the mmapped memory. */
         snd_brk = brk + size;
       }
     }
 
     /* [PATH 3B ANALYSIS]
 
-      If this path has failed, we have exhausted all the 
-      avenues and this request can not be served. The rest 
-      of the code is essentially a no-op. errno is set and 
-      NULL is returned in the end.
+      If this path has succeeded, we have an mmap 
+      backed region for the main arena.
 
-      If this path has succeeded, we have an mmapped region.
+      If this path has failed, we have exhausted 
+      all the avenues and this request can not be 
+      served. The rest of the code is essentially 
+      a no-op. errno is set and NULL is returned 
+      in the end.
     */
 
-    /* [STEP 2] Completed. All the avenues are checked. */
+    /* [STEP 2] Completed. */
 
 
-    /* [STEP 3]: Assess which path has succeeded (if any) 
-        and operate accordingly. */
+    /* [STEP 3]: Assess which path has succeeded 
+        (if any) and operate accordingly.
+    */
 
-    /* If any of the path succeeded, brk will contain a 
+    /* If a path has succeeded, brk will contain a 
        valid pointer. */
     if (brk != (char*)(MORECORE_FAILURE)){
       /* If malloc is called for the first time, store 
@@ -2770,7 +2775,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       if (mp_.sbrk_base == NULL)
         mp_.sbrk_base = brk;
 
-      /* Update the total memory the arena is managing. */
+      /* Update the total memory the main arena is 
+         managing. */
       av->system_mem += size;
 
       /* [Path 3A] has succeeded and no foreign sbrk is 
@@ -2778,9 +2784,10 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
           [1] old_end and brk have the same address, and 
           [2] snd_brk is still MORECORE_FAILURE.
 
-          That means, program break extension is contiguous 
-          with the allocator's bookkeeping and the top chunk 
-          can be safely extended. */
+        That means, program break extension is contiguous 
+        with the allocator's bookkeeping and the top chunk 
+        can be safely extended.
+      */
       if (
         brk == old_end && 
         snd_brk == (char*)(MORECORE_FAILURE)
@@ -2791,13 +2798,15 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       /* [Path 3A] has succeeded but a negative foreign 
           sbrk is detected if 
           [1] the program break extension was contiguous 
-              so far, 
-          [2] old_size is non-zero (top chunk exists), and 
-          [3] the program break returned by sbrk is behind 
+              so far, and
+          [2] the program break returned by sbrk is behind 
               the current top end.
 
+          Why we are checking old_size remains unanswered.
+
           In this situation, the allocator's state is 
-          corrupted and we simply terminate the process. */
+          corrupted and the process is simply terminated.
+      */
       else if (
         contiguous(av) && 
         old_size && 
@@ -2806,129 +2815,138 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
         malloc_printerr ("break adjusted to free malloc space");
 
 
-      /* Otherwise, make adjustments:
+      /* If we are here, both foreign sbrk and a "hole" 
+         in the address space are possible.
 
-        * If the first time through or noncontiguous, we need to call sbrk
-          just to find out where the end of memory lies.
+        To know what has happened, we can use snd_brk. 
+        Up until this point, snd_brk is only populated by 
+        the fallback path. If it has a valid pointer, we 
+        can be sure that the available contiguous unmapped 
+        region is not enough for this request.
 
-        * We need to ensure that all returned chunks from malloc will meet
-          MALLOC_ALIGNMENT
-
-        * If there was an intervening foreign sbrk, we need to adjust sbrk
-          request size to account for fact that we will not be able to
-          combine new space with existing space in old_top.
-
-        * Almost all systems internally allocate whole pages at a time, in
-          which case we might as well use the whole last page of request.
-          So we allocate enough more memory to hit a page boundary now,
-          which in turn causes future contiguous calls to page-align.
+        The question is, do we have different strategies 
+        for both the cases?
       */
 
-      /* If we are here, either a positive foreign sbrk 
-         is detected, or a hole in the address space. */
       else{
         front_misalign = 0;
         end_misalign   = 0;
         correction  = 0;
-        aligned_brk = brk;    /* Initialize with the previous 
-                                 program break (the end of the 
-                                 foreign sbrk region). */
 
-        /* If program break was contiguous so far and foreign 
-           sbrk is detected for the first time. */
+        /* The address in brk depends on the two cases 
+           we are discussing.
+           - In case of a foreign sbrk, it is the end of 
+             the foreign sbrk region and the start of the 
+             region the allocator has recently requested.
+           - In case of a "hole" in the address space, it 
+             represents the start of mmapped region.
+        */
+        aligned_brk = brk;
+
+        /* If program break was contiguous so far, foreign 
+           sbrk is detected for the first time.
+        */
         if (contiguous(av)){
-          /* Because the foreign sbrk is made by the process 
-             only, the allocator counts it in the system memory 
-             as well. But the gap is not treated as usable 
-             allocator space.
+          /* The foreign sbrk is made by the process only, 
+             so the allocator counts it in the arena memory. 
+             But the gap is not treated as usable allocator 
+             space.
 
-            The foreign sbrk would have advanced the program 
-            break. When the allocator would call sbrk again, 
-            a successful call would have returned the old 
-            program break, which is the end of the foreign 
-            sbrk memory. When we subtract it from the old_end, 
-            which is the program break before the foreign sbrk 
-            was made, we get the number of bytes the foreign 
-            sbrk was called with.
+            But why check old_size?
           */
           if (old_size)
             av->system_mem += (brk - old_end);
 
-          /* While the first sbrk call has already requested 
-             enough space to service the request, the second 
-             sbrk call is about restoring the top chunk. So, 
-             calculate the new bytes and store them inside 
-             `correction`
+          /* Right now, the state of program break memory 
+             looks like this:
+              [allocator_owned, foreign_sbrk, allocator_owned]
+
+            These are their one-past end pointers:
+              [old_end, brk, brk+size]
+
+            The existing top chunk can no longer be extended. 
+            So we need to setup a new top chunk.
+
+            The sbrk call made in path-3a has already requested 
+            enough space to service the request. A second sbrk 
+            requests some space for the new top chunk. They are 
+            calculated and stored in `correction`.
           */
 
-          /* The size of the foreign sbrk might not be aligned 
-             at a MALLOC_ALIGNMENT boundary, which is necessary 
-             for maintaining chunk integrity.
+          /* [CALCULATING CORRECTION BYTES] */
 
-             To tackle this, we have to move brk to the next 
-             MALLOC_ALIGNMENT boundary.
-             - We calculate how many bytes brk is misaligned from 
-               the previous alignment boundary. This is called 
-               front_misalign.
-             - We subtract front_misalign from MALLOC_ALIGNMENT to 
-               obtain the number of bytes brk is misaligned from 
-               the next boundary. The result is called `correction` 
-               bytes.
-             - Add correction to brk, we get the aligned_brk. 
-               Remember, it is aligned to a MALLOC_ALIGNMENT boundary, 
-               not a page boundary. It is easy to confuse as page 
-               alignment is what we are dealing with in malloc.
-             - For example, on 64-bit, if brk is 100, the previous 
-               MALLOC_ALIGNMENT boundary is 96. So, brk is 4 bytes 
-               front_misaligned.
+          /* [STEP 1]: Calculate the misalignment of brk.
 
-            [NOTE]: I don't understand why a complicated method is 
-             used. (brk + 2*SIZE_SZ) will be as much misaligned as 
-             `brk` is. Take brk=100.
-              - `brk + (2*SIZE_SZ)`. is (100 + 16) on 64-bit. And 
-                (116 & 15) is 4.
-              - If we do `brk & MALLOC_ALIGN_MASK` directly, we get, 
-                (100 & 15), i.e. 4. Exactly same output.
+            The size requested with foreign sbrk may or may 
+            not be aligned to a MALLOC_ALIGNMENT boundary. 
+            An align down operation can be used to find the 
+            number of bytes brk is misaligned from the 
+            previous boundary. They are stored in front_misalign.
+
+            If front_misalign is non-zero, subtracting it 
+            from MALLOC_ALIGNMENT gives us the bytes brk 
+            is misaligned from the next boundary. They are 
+            added to correction and aligned_brk to obtain 
+            the actual aligned_brk.
+
+            I don't understand why a complicated method is 
+            used to calculate front_misalign.
+            (brk + 2*SIZE_SZ) will be as much misaligned as 
+            brk is. Take brk=100 on 64-bit as an example.
+            - `brk + (2*SIZE_SZ)` is (100 + 16) and (116 & 15) 
+              is 4.
+            - `brk & MALLOC_ALIGN_MASK` is (100 & 15), i.e. 4.
           */
-
           front_misalign = (INTERNAL_SIZE_T) chunk2mem(brk) & MALLOC_ALIGN_MASK;
           if (front_misalign > 0){
             correction = MALLOC_ALIGNMENT - front_misalign;
             aligned_brk += correction;
           }
 
-          /* The new top will have the same space as the 
-             existing one. */
+          /* [STEP 2]: Add old_size. */
           correction += old_size;
 
-          /* (brk) is the address marking the end of the foreign 
-              sbrk extension.
-             (brk + size) brings us to the current program break.
-             (brk + size + correction) is where we will end up 
-              after adding correction to the current program break. 
-              The result is stored in end_misalign.
+          /* [STEP 3]: Compute end_misalign.
+
+            (old_end-1) is the end of the allocator owned 
+            memory.
+            
+            - old_end is the start of the foreign sbrk region.
+            - (brk-1) is the end of the foreign sbrk region.
+
+            - brk is the start of the first sbrk region.
+            - (brk+size-1) is the end of the first sbrk region.
+
+            - (brk+size) is the start of the second sbrk region.
+            - (brk + size + correction - 1) is the end of the 
+              second sbrk region.
+
+            (brk + size + correction) is the address we will 
+            end up at after the second sbrk call. This is 
+            called end_misalign.
           */
           end_misalign = (INTERNAL_SIZE_T) (brk + size + correction);
 
-          /* Align end_misalign to a standard page boundary and 
-             subtract end_misalign from it, we get the number 
-             of bytes end_misalign is far from the next "page 
-             boundary". Add this to correction to obtain the 
-             actual page aligned bytes to call sbrk with.
+          /* [STEP 4]: Computer the final page-aligned 
+              correction bytes.
+
+            Right now, we are at (brk+size). Because size is 
+            page-aligned, (brk+size) and (brk) have the same 
+            misalignment. We have added the misalignment and 
+            now we are MALLOC_ALIGNMENT aligned.
+
+            (brk+size+correction) is a MALLOC_ALIGNMENT aligned 
+            address, but not necessarily page-aligned. So we 
+            align it up to the next page. How many bytes it was 
+            misaligned from the next boundary?
+              ALIGN_UP(end_misalign, pagesize) - end_misalign.
           */
           correction += (ALIGN_UP(end_misalign, pagesize)) - end_misalign;
           assert(correction >= 0);
 
-          /* Call sbrk with the new size. */
-          /* correction = (
-               ALIGN_UP(
-                 ((MALLOC_ALIGNMENT - front_misalign) +
-                 old_size +
-                 foreign_sbrk_size),
-                 pagesize
-               ) - 
-               foreign_sbrk_size
-             ) */
+          /* Therefore, correction = ? */
+
+          /* Call sbrk. */
           snd_brk = (char*) MORECORE(correction);
 
           /* If can't allocate correction, try to at least 
