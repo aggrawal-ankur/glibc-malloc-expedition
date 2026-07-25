@@ -334,7 +334,7 @@
 
 
 /* The REALLOC_ZERO_BYTES_FREES macro controls the 
-   behavior of realloc(p, 0) when p is nonnull.
+   behavior of realloc(p, 0) when p is non-null.
 
   If the macro is non-zero, realloc returns NULL.
   Otherwise, it is equal to malloc(0).
@@ -494,20 +494,14 @@ tag_at (void *ptr)
 #define MORECORE_CLEARS 1
 #endif
 
-/* MMAP_AS_MORECORE_SIZE is the minimum mmap size 
-   argument to use if sbrk fails, and mmap is used 
-   as a backup. The value must be a multiple of 
-   page size.
+/* MMAP_AS_MORECORE_SIZE is the minimum size mmap is 
+   called with when sbrk has failed and mmap is used 
+   as backup. It must be page aligned.
 
   This backup strategy generally applies only when 
   systems have "holes" in the address space, so sbrk 
   cannot perform contiguous expansion, but the system 
   still have space.
-
-  Between this, and the fact that mmap regions tend 
-  to be limited, the size should be large, to avoid 
-  too many mmap calls and thus avoid running out of 
-  kernel resources.
 */
 #ifndef MMAP_AS_MORECORE_SIZE
 #define MMAP_AS_MORECORE_SIZE (1024 * 1024)
@@ -761,16 +755,16 @@ int __posix_memalign(void **, size_t, size_t);
 
 /* mallopt(int parameter_number, int parameter_value)
 
-  - Sets tunable parameters. The format is to provide a
-    (parameter-number, parameter-value) pair.
-  - mallopt then sets the corresponding parameter to the
-    argument value if it can (i.e., so long as the value 
-    is meaningful), and returns 1 if successful else 0.
+  Sets tunable parameters. The format is to provide a
+  (param-number, param-value) pair. mallopt then sets 
+  the corresponding parameter to the argument value if 
+  it can, and returns 1 if successful else 0.
 
-  - SVID/XPG/ANSI defines four standard param numbers for
-    mallopt, normally defined in malloc.h.
-  - These params (M_MXFAST, M_NLBLKS, M_GRAIN, M_KEEP) 
-    don't apply to our malloc, so setting them has no effect.
+  SVID/XPG/ANSI defines four standard param numbers for
+  mallopt, normally defined in malloc.h.
+  - They are (M_MXFAST, M_NLBLKS, M_GRAIN, M_KEEP) and 
+    they don't apply to our malloc, so setting them has 
+    no effect.
   - But this malloc also supports four other options in 
     mallopt. See below for details. Briefly, supported 
     parameters are as follows (listed defaults are for
@@ -804,16 +798,7 @@ libc_hidden_proto (__libc_mallopt)
   releasing this much memory.
 
   The trim threshold and the mmap control parameters 
-  (see below) can be traded off with one another.
-
-  Trimming and mmapping are two different ways of 
-  releasing unused memory back to the system. Using 
-  them, it is often possible to keep system-level 
-  demands of a long-lived program down to a bare 
-  minimum. For example, in one test suite of sessions 
-  measuring the XF86 X server on Linux, using a trim 
-  threshold of 128K and a mmap threshold of 192K led 
-  to near-minimal long term resource consumption.
+  can be traded off with one another.
 
   If you are using this malloc in a long-lived program, 
   it should pay to experiment with these values. As a 
@@ -822,29 +807,12 @@ libc_hidden_proto (__libc_mallopt)
   system. Releasing this much memory would allow such 
   a process to run in memory.
 
-  Generally, it's worth it to tune for trimming rather 
-  than memory mapping when a program undergoes phases 
-  where several large chunks are allocated and released 
-  in ways that can reuse each other's storage, perhaps 
-  mixed with phases where there are no such chunks at 
-  all. And in well-behaved long-lived programs, controlling 
-  release of large blocks via trimming versus mapping is 
-  usually faster.
-
-  However, in most programs, these parameters serve mainly 
-  as protection against the system-level effects of carrying 
-  around massive amounts of unneeded memory. Since frequent 
-  calls to sbrk, mmap, and munmap otherwise degrade performance, 
-  the default parameters are set to relatively high values 
-  that serve only as safeguards.
-
-  The trim value must be greater than page size to have any 
-  useful effect. To disable trimming completely, you can set 
-  it to `(unsigned long)(-1)`.
+  To disable trimming completely, make it
+    (unsigned long)(-1)
 
   You can force an attempted trim by calling malloc_trim.
 
-  Also, trimming is not generally possible in cases where
+  [IMPORTANT]: Trimming is not possible in cases where
   the main arena is obtained via mmap.
 */
 #define M_TRIM_THRESHOLD    (-1)
@@ -854,13 +822,7 @@ libc_hidden_proto (__libc_mallopt)
 #endif
 
 /* M_TOP_PAD is the amount of extra padding space to 
-   allocate or retain whenever sbrk is called. It is 
-   used in two ways internally:
-  - When sbrk is called to extend the top of the arena 
-    to satisfy a new malloc request, this much padding 
-    is added to the sbrk request.
-  - When malloc_trim is called automatically from free(), 
-    it is used as the `pad` argument.
+   allocate or retain whenever sbrk is called.
 
   In both cases, the actual amount of padding is rounded 
   to a page boundary, so that the arena always ends at a 
@@ -900,50 +862,16 @@ libc_hidden_proto (__libc_mallopt)
 
 #endif
 
-/* M_MMAP_THRESHOLD is the request size threshold for 
-   using mmap() to service a request. Requests of at 
-   least this size that cannot be allocated using 
-   already-existing space will be serviced via mmap.
-   (If enough normal freed space already exists it is 
-   used instead.)
+/* M_MMAP_THRESHOLD is the threshold for using mmap 
+   to service a request.
 
-  Using mmap segregates relatively large chunks of 
-  memory so that they can be individually obtained 
-  and released from the host system. A request that 
-  is serviced through mmap is never reused by any 
-  other request (at least not directly; the system 
-  may just so happen to remap successive requests 
-  to the same locations).
+  A request that is serviced via mmap is never reused. 
+  Once it is done, it is freed.
 
-  Segregating space in this way has the benefits that:
-
-  [1] Mmapped space can ALWAYS be individually released 
-      back to the system, which helps keep the system 
-      level memory demands of a long-lived program low.
-  [2] Mapped memory can never become 'locked' between 
-      other chunks, as can happen with normally allocated 
-      chunks, which means that even trimming via 
-      malloc_trim would not release them.
-  [3] On some systems with "holes" in address spaces, 
-      mmap can obtain memory that sbrk cannot.
-
-  However, it has the disadvantages that:
-
-  [1] The space cannot be reclaimed, consolidated, and 
-      used to service later requests, as happens with 
-      normal chunks.
-  [2] It can lead to more wastage because of mmap page 
-      alignment requirements.
-  [3] It causes malloc performance to be more dependent 
-      on the host system's memory management support 
-      routines which may vary in implementation quality 
-      and may impose arbitrary limitations. Generally, 
-      servicing a request via normal malloc steps is 
-      faster than going through mmap.
-
-
-  The goal is to serve really large requests directly 
-  with mmap.
+  Using mmap for very large requests separates them 
+  from normal chunks and the kernel can reclaim them 
+  completely when freed. This way, memory footprint 
+  remains stable.
 */
 #define M_MMAP_THRESHOLD    (-3)
 
@@ -952,14 +880,14 @@ libc_hidden_proto (__libc_mallopt)
 #endif
 
 /* M_MMAP_MAX is the maximum number of requests to 
-   simultaneously service using mmap. This parameter 
-   exists because some systems have a limited number 
-   of internal tables for use by mmap, and using more 
-   than a few of them may degrade performance.
+   service with mmap. This parameter exists because 
+   some systems have a limited number of internal 
+   tables for use by mmap, and using more than a few 
+   of them may degrade performance.
 
   The default is set to a value that serves only as 
-  a safeguard. Setting to 0 disables use of mmap for 
-  servicing large requests.
+  a safeguard. Setting to 0 disables the use of mmap 
+  for servicing large requests.
 */
 #define M_MMAP_MAX    (-4)
 
@@ -1044,11 +972,12 @@ struct malloc_chunk {
   INTERNAL_SIZE_T      mchunk_prev_size;  /* Size of previous chunk (if free).  */
   INTERNAL_SIZE_T      mchunk_size;       /* Size in bytes, including overhead. */
 
-  struct malloc_chunk* fd;                /* double links -- used only if free. */
+  /* Used by free chunks. */
+  struct malloc_chunk* fd;
   struct malloc_chunk* bk;
 
-  /* Only used for large blocks: pointer to next larger size. */
-  struct malloc_chunk* fd_nextsize;       /* double links -- used only if free. */
+  /* Only used by large free chunk. */
+  struct malloc_chunk* fd_nextsize;
   struct malloc_chunk* bk_nextsize;
 };
 
@@ -1094,8 +1023,10 @@ struct malloc_chunk {
 /* The smallest possible chunk structurally. */
 #define MIN_CHUNK_SIZE  (offsetof(struct malloc_chunk, fd_nextsize))
 
-/* The smallest possible chunk size after keeping alignment in 
-   consideration. This is the smallest chunk that malloc returns. */
+/* The smallest possible chunk size after ensuring 
+   alignment. This is the smallest chunk that malloc 
+   returns.
+*/
 #define MINSIZE  (unsigned long) (((MIN_CHUNK_SIZE+MALLOC_ALIGN_MASK) & ~MALLOC_ALIGN_MASK))
 
 
@@ -1107,8 +1038,8 @@ struct malloc_chunk {
 /* Align the requested bytes to the allocator's size model.
 
   [Precondition]: The input has already been validated. It 
-  only performs size normalization and reporting errors 
-  is out of its scope.
+  only performs size normalization and reporting errors is 
+  out of its scope.
 */
 #define request2size(req)  (  \
   (req + SIZE_SZ + MALLOC_ALIGN_MASK < MINSIZE)  \
@@ -1118,16 +1049,18 @@ struct malloc_chunk {
 
 
 /* Combines validation and size normalization together.
-   - If the validation fails, it returns SIZE_MAX and 
-     the caller decides what to do with it.
-   - Otherwise, it returns request2size.
+
+  If the validation fails, it returns SIZE_MAX and 
+  the caller decides what to do with it. Otherwise, 
+  request2size(req) is returned.
 */
 static __always_inline size_t
 checked_request2size(size_t req) __nonnull (1)
 {
   /* A static assert checks a condition at compile-time 
      and stops compiling if that condition is evaluated 
-     false. */
+     false.
+  */
   _Static_assert(
     PTRDIFF_MAX <= (SIZE_MAX / 2),
     "PTRDIFF_MAX is not more than half of SIZE_MAX"
@@ -1136,8 +1069,7 @@ checked_request2size(size_t req) __nonnull (1)
   if (__glibc_unlikely(req > PTRDIFF_MAX))
     return SIZE_MAX;
 
-  /* [Explore memory tagging and decide to keep it or not.] */
-
+  /* [NOT EXPLORED YET] */
   /* When using tagged memory, we cannot share the end of 
      the user block with the header for the next chunk, so
      ensure that we allocate blocks that are rounded up to
@@ -1245,23 +1177,27 @@ checked_request2size(size_t req) __nonnull (1)
 
 /* [Set #2]: They rely on a user supplied size to find 
     the (p+1) chunk.
-    They are useful in situations like coalescing, where 
-    the existing mchunk_size can not be used.
+
+  They are useful in situations, like coalescing, where 
+  the existing mchunk_size can not be passed to other 
+  functions as it may represent stale information.
 */
 
 /* [1] Determine the status of chunk (p). */
-#define  inuse_bit_at_offset(p, s)  ( ((mchunkptr) ((char*)(p) + s))->mchunk_size & PREV_INUSE)
+#define  inuse_bit_at_offset(p, s)          (( ((mchunkptr) ((char*)(p) + s))->mchunk_size) &    PREV_INUSE)
 
 /* [2] Mark (p) as an in-use chunk. */
-#define  set_inuse_bit_at_offset(p, s)  (((mchunkptr) (((char*)(p)) + s))->mchunk_size |= PREV_INUSE)
+#define  set_inuse_bit_at_offset(p, s)      (( ((mchunkptr) ((char*)(p) + s))->mchunk_size) |=   PREV_INUSE)
 
 /* [3] Mark (p) as a free chunk. */
-#define  clear_inuse_bit_at_offset(p, s)  (((mchunkptr) ((char*)(p) + s))->mchunk_size &= ~(PREV_INUSE))
+#define  clear_inuse_bit_at_offset(p, s)    (( ((mchunkptr) ((char*)(p) + s))->mchunk_size) &= ~(PREV_INUSE))
 
 
 /* Set the mchunk_size of chunk (p) without disturbing 
-   its metadata bits. The metadata bits are first 
-   extracted and then OR-ed with the new size.
+   its metadata bits.
+
+   The metadata bits are first extracted and then 
+   OR-ed with the new size.
 */
 #define  set_head_size(p, s)  ((p)->mchunk_size = (((p)->mchunk_size & SIZE_BITS) | (s)))
 
@@ -1353,49 +1289,11 @@ static __always_inline mchunkptr mmap_set_chunk(
 }
 
 
-/* --------------- Internal data structures ---------------
+/* --------------- Internal data structures --------------- */
 
-  All internal state is held in an instance of malloc_state 
-  defined below. */
+/* All internal state is held in an instance of malloc_state 
+   defined below. */
 
-/* Bins: An array of bin headers for free chunks.
-
-  [1] A bin is implemented as a doubly linked list.
-  [2] The bins are approximately proportionally (log) 
-      spaced.
-  [3] There are a lot of these bins (128). This may 
-      look excessive, but works very well in practice. 
-      Most bins hold sizes that are unusual as malloc 
-      request sizes, but are more usual for fragments 
-      and consolidated sets of chunks, which is what 
-      these bins hold, so they can be found quickly.
-  [4] All procedures maintain the invariant that a 
-      free chunk is always surrounded by in-use chunks, 
-      or the end of memory.
-
-  Chunks in bins are kept in size order, with ties going 
-  to the approximately least recently used chunk.
-
-  Ordering isn't needed in small bins, but facilitates 
-  best-fit allocation for larger chunks. Since these 
-  lists are sequential, keeping them in order almost 
-  never requires enough traversal to warrant using 
-  fancier ordered data structures.
-
-  [NEEDS VALIDATION]
-  Chunks of the same size are linked with the most recently 
-  freed at the front, and allocations are taken from the back.
-  This results in LRU (FIFO) allocation order, which tends to 
-  give each chunk an equal opportunity to be consolidated with 
-  adjacent freed chunks, resulting in larger free chunks and 
-  less fragmentation.
-
-  To simplify use in double-linked lists, each bin header acts
-  as a malloc_chunk. This avoids special-casing for headers.
-  But to conserve space and improve locality, we allocate
-  only the fd/bk pointers of bins, and then use repositioning
-  tricks to treat these as the fields of a malloc_chunk*.
-*/
 typedef struct malloc_chunk *mbinptr;
 
 /* bin_at(m, 0) does not exist */
@@ -1406,10 +1304,12 @@ typedef struct malloc_chunk *mbinptr;
 /* Analog of ++bin */
 #define next_bin(b)    (mbinptr) ((char*)(b) + (sizeof(mchunkptr) << 1))
 
-/* Reminder about list directionality within bins, 
-   where (b) is the bin_handler. */
+/* First chunk in the bin. */
 #define first(b)     ((b)->fd)
+
+/* Last chunk in the bin. */
 #define last(b)      ((b)->bk)
+
 
 #define NBINS         128
 #define NSMALLBINS    64
@@ -2628,8 +2528,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
         [CASE 3] ~~ (old_size == (MINSIZE + CHUNK_HDR_SZ))
         - After subtracting, old_size will be CHUNK_HDR_SZ.
-        - Top chunk is no longer a valid chunk, so there is 
-          nothing to regularize. The remaining bytes are 
+        - The top chunk is no longer a valid chunk, so there 
+          is nothing to regularize. The remaining bytes are 
           carried away by fencepost-1. Since they are 
           CHUNK_HDR_SZ, they don't disturb the alignment of 
           the fenceposts.
@@ -2696,7 +2596,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
   /* [PATH 3]: Main arena. */
   else{
-    /* [STEP 1]: Calculate the size to request from sbrk. */
+    /* Calculate the size to request from sbrk. */
 
     size = nb + mp_.top_pad + MINSIZE;
 
@@ -2713,9 +2613,9 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
     thp_init();
 
-    /* If huge pages are enabled, `size` is aligned up to 
-       the next multiple of the huge page size. Otherwise, 
-       use standard page size.
+    /* If huge pages are enabled, size is aligned up 
+       to the next multiple of huge page size. 
+       Otherwise, use standard page size.
     */
     if (__glibc_unlikely (mp_.thp_pagesize != 0)){
       /* The current program break. */
@@ -2731,17 +2631,13 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     else{
       size = ALIGN_UP(size, GLRO(dl_pagesize));
     }
-    /* [STEP 1] Completed. */
 
-
-    /* [STEP 2]: Get new memory. */
 
     /* [PATH 3A]: Call sbrk. */
 
-    /* `size` is an unsigned quantity, but sbrk takes a 
-       signed quantity. Therefore, we interpret size as 
-       a signed value to ensure it represents a positive 
-       value.
+    /* size is an unsigned quantity, but sbrk takes a 
+       signed quantity. So we interpret size in signed 
+       to ensure it is a positive growth. 
     */
     if ((ssize_t)(size) > 0){
       brk = (char*) MORECORE((long)(size));
@@ -3203,7 +3099,7 @@ static int systrim(size_t pad, mstate av)
     return 0;
 
   /* Align top_arena down to the previous huge page or 
-     standard page. */
+     standard page boundary. */
   if (__glibc_unlikely (mp_.thp_pagesize != 0))
     extra = ALIGN_DOWN (top_area - pad, mp_.thp_pagesize);
   else
