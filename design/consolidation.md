@@ -35,7 +35,7 @@ However, there are three edge cases.
   - In [EDGE CASE #1], the last chunk was specially identified by av->top. When there is no top chunk in a heap segment, how we are going to identify if a chunk is at the high end of the current heap segment?
 
 
-\[EDGE CASE #3\]: A positive foreign sbrk in the main arena. Explained below.
+\[EDGE CASE #3\]: A positive foreign sbrk has been detected in the main arena and the old top is regularized if the allocator succeeded in setting up the new top.
 
 ---
 
@@ -73,7 +73,7 @@ These extra chunks are called fenceposts. They are used at two places in malloc.
   1. In the non-main arena path, when a heap segment can not be used to service a request, a new heap segment is set up. The existing top chunk is regularized and a new top chunk is created. Earlier, the last chunk can be easily identified with av->top. Now it can't be.
   2. In the main arena path, a positive foreign sbrk corrupts the internal bookkeeping of the allocator. So, the allocator have to work extra and reestablish the top chunk after the foreign sbrk and the old top is regularized.
 
-In either case, the existing top chunk is regularized and a new top chunk is established. To create a boundary after the last usable chunk, we use the fencepost chunks.
+In either case, the existing top chunk is regularized and a new top chunk is established. Fencepost chunks are used to create a boundary after the last usable chunk.
 
 ---
 
@@ -83,20 +83,42 @@ We can notice that we need MINSIZE bytes for these fencepost chunks. But it is n
 
 \[CASE #1\]: (top_size == MINSIZE)
   - The top chunk has exactly as many bytes as it is required to setup the fencepost chunks.
-  - So, there will be no remainder to regularize.
+  - There is no remainder to regularize.
 
 \[CASE #2\]: (top_size >= (2 * MINSIZE))
   - The top chunk has twice as many bytes as it is required to setup the fencepost chunks.
-  - So, the remainder is a valid chunk and it can be regularized.
+  - The remainder is still a valid chunk. So it is regularized.
 
 \[CASE #3\]: (top_size == (MINSIZE + CHUNK_HDR_SZ))
-  - Here, the remainder will have CHUNK_HDR_SZ bytes. But the smallest possible chunk has MINSIZE bytes in it. Therefore, the remainder can not ve regularized.
-  - The extra bytes are carried away by fencepost-1.
+  - The remainder has CHUNK_HDR_SZ bytes. But the smallest possible chunk has MINSIZE bytes in it. That means, the remainder can not be regularized.
+  - The extra bytes are carried by fencepost-1.
 
 ---
 
-There is another aspect about the mchunk_size field of the fenceposts.
-  - In the non-main arena path, fencepost-2's mchunk_size is 0 bytes, i.e. `(0 | PREV_INUSE)`
-  - In the main arena path, fencepost-2's mchunk_size is CHUNK_HDR_SZ bytes, i.e. `(CHUNK_HDR_SZ | PREV_INUSE)`.
+However, there are some irregularities about fenceposts.
 
-I don't know why it is different.
+# Irregularities In Fencepost Setup
+
+Fenceposts are used both by the main arena and the non-main arenas. So it is expected that the setup is the same. However, it is not.
+
+## \#1 Condition Check.
+
+The non-main arena path checks (old_size >= MINSIZE), while the main_arena path checks (old_size != 0).
+
+The non-main arena path calls \_int\_free\_chunk only when (old_size >= MINSIZE). But the main arena calls it unconditionally. This works only when (old_size >= MINSIZE). Non-zero old_size means all the three cases discussed above are possible, while \_int\_free\_chunk is only applicable in the second case.
+
+## \#2 Fencepost-1 mchunk_size
+
+The size of fencepost-1 is either CHUNK_HDR_SZ bytes or 2*CHUNK_HDR_SZ bytes, if old_size had CHUNK_HDR_SZ bytes remaining after subtracting space for the fenceposts.
+
+The setup in non-main arena acknowledges this fact, but the main arena setup doesn't.
+
+## \#3 Fencepost-2 mchunk_size
+
+The size of fencepost-2 is CHUNK_HDR_SZ bytes. The main arena path goes this way, but the non-main arena path sets the mchunk_size as 0.
+
+## \#4 The prev_size Confusion
+
+Both the pathways have the PREV_INUSE bit set in both the fenceposts.
+
+We know that the mchunk_prev_size is valid only when the PREV_INUSE bit is clear. The main arena acknowledges this, while the non-main arena sets the prev_size of fencepost-2 with the size of fencepost-1.
