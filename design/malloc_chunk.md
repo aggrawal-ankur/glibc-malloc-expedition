@@ -207,8 +207,8 @@ Here is a description of these bits.
 | :---: | :------- | :---- | :---------- |
 | 0 | PREV_INUSE (P) | **0** (clear) | The (n-1)<sup>th</sup> chunk is free and the prev_size of the n<sup>th</sup> chunk stores the size of the (n-1)<sup>th</sup> chunk. |
 | | | **1** (set) | The (n-1)<sup>th</sup> chunk is in-use and the prev_size of the n<sup>th</sup> chunk doesn't store the size of the (n-1)<sup>th</sup> chunk. |
-| 1 | IS_MMAPPED (M) | **0** (clear) | 
-| | | **1** (set) | 
+| 1 | IS_MMAPPED (M) | **0** (clear) | It is a normal chunk belonging to an arena. |
+| | | **1** (set) | It is an mmapped chunk. |
 | 2 | NON_MAIN_ARENA (A) | **0** (clear) | The chunk belongs to the main arena. |
 | | | **1** (set) | The chunk belongs to a non-main arena. |
 

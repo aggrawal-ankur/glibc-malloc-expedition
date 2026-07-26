@@ -1219,7 +1219,7 @@ checked_request2size(size_t req) __nonnull (1)
   : chunksize(p) - CHUNK_HDR_SZ + SIZE_SZ
 )
 
-/* If memory tagging is enabled the layout changes to 
+/* If memory tagging is enabled, the layout changes to 
    accommodate the granule size, this is wasteful for
    small allocations so not done by default. Both the 
    chunk header and user data has to be granule aligned.
@@ -1239,6 +1239,8 @@ tag_new_usable(void *ptr)
   return ptr;
 }
 
+
+/* So far, I am not able to understand this section. */
 /* Huge page used for an mmap chunk. */
 #define  MMAP_HP  0x1
 
@@ -1246,7 +1248,7 @@ tag_new_usable(void *ptr)
 static __always_inline bool
 mmap_is_hp (mchunkptr p)
 {
-  return prev_size (p) & MMAP_HP;
+  return prev_size(p) & MMAP_HP;
 }
 
 /* Return the mmapped chunk's offset from mmap base. */
@@ -1272,7 +1274,8 @@ mmap_size (mchunkptr p)
   return mmap_base_offset(p) + chunksize(p) + CHUNK_HDR_SZ;
 }
 
-/* Places malloc_chunk on an mmapped segment's base. */
+/* Places malloc_chunk on an mmapped segment's base. The 
+   whole segment is being used as a chunk. */
 static __always_inline mchunkptr mmap_set_chunk(
   uintptr_t mmap_base, 
   size_t mmap_size, 
@@ -3110,11 +3113,13 @@ static int systrim(size_t pad, mstate av)
 
   /* Subtracting MINSIZE from the existing top size, 
      we get the actual amount of bytes that can be 
-     trimmed without eliminating the top chunk itself. */
+     trimmed without eliminating the top chunk itself.
+  */
   top_area = (top_size - MINSIZE - 1);
 
   /* If the bytes available to trim are less than 
-     the bytes to keep in the top chunk, return. */
+     the bytes to keep in the top chunk, return.
+  */
   if (top_area <= pad)
     return 0;
 
@@ -3131,7 +3136,11 @@ static int systrim(size_t pad, mstate av)
 
   /* Only proceed if the end of memory is where 
      we have set it last. This avoids problems 
-     if there were foreign sbrk calls. */
+     if there were foreign sbrk calls.
+
+    This also protects trimming mmap backed top 
+    chunk.
+  */
   current_brk = (char*) MORECORE(0);
   if (current_brk == (char*)(av->top) + top_size){
 

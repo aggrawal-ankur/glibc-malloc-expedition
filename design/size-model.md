@@ -86,7 +86,7 @@ It is the width of `size_t` on the target machine's architecture.
 
 ## Macro #2 -> CHUNK_HDR_SZ
 
-It stands for "chunk header size", which is the metadata bytes at the beginning of a chunk i.e. "mchunk_prev_size and mchunk_size".
+It is the minimum metadata required by every type of chunk, i.e. "mchunk_prev_size and mchunk_size".
 ```c
 #define CHUNK_HDR_SZ    (2 * SIZE_SZ)
 ```

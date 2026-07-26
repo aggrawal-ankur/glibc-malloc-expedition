@@ -3,8 +3,6 @@
   - [Note](#note)
   - [Single D.C linked list](#single-dc-linked-list)
   - [A collection of D.C linked lists](#a-collection-of-dc-linked-lists)
-    - [Method1: List\*](#method1-list)
-    - [Method2: Node\*](#method2-node)
   - [The Node\* array implementation](#the-node-array-implementation)
   - [How to make the push/delete logic branchless?](#how-to-make-the-pushdelete-logic-branchless)
   - [Finding the solution](#finding-the-solution)
@@ -12,28 +10,11 @@
   - [Some concerns](#some-concerns)
 - [The Bookkeeping System, Part 2: Complete Analysis of bins\[\]](#the-bookkeeping-system-part-2-complete-analysis-of-bins)
   - [Bin counts](#bin-counts)
-    - [Total number of bins](#total-number-of-bins)
-    - [Number of smallbins](#number-of-smallbins)
-    - [Number of largebins](#number-of-largebins)
-    - [The unsorted bin](#the-unsorted-bin)
-    - [The order of bins within bins\[\]](#the-order-of-bins-within-bins)
-    - [The Findings](#the-findings)
-    - [The Questions](#the-questions)
   - [The order of chunks within each bin type](#the-order-of-chunks-within-each-bin-type)
   - [Smallbin Size Classes](#smallbin-size-classes)
   - [Largebin Size Ranges, Part 1](#largebin-size-ranges-part-1)
-    - [Largebin Categories](#largebin-categories)
-    - [The Approximation](#the-approximation)
   - [Bin Indexing](#bin-indexing)
-    - [Macro #1: bin\_index(sz)](#macro-1-bin_indexsz)
-    - [Macro #2: in\_smallbin\_range(sz)](#macro-2-in_smallbin_rangesz)
-    - [Macro #3: smallbin\_index(sz)](#macro-3-smallbin_indexsz)
-    - [Macro #4: largebin\_index(sz)](#macro-4-largebin_indexsz)
-    - [The Naming Issue](#the-naming-issue)
-    - [Macro #5: bin\_at(m, i)](#macro-5-bin_atm-i)
   - [Largebin Size Ranges, Part 2](#largebin-size-ranges-part-2)
-  - [Dynamic Analysis (Incomplete)](#dynamic-analysis-incomplete)
-- [The Bookkeeping System, Part 3: The Evidence](#the-bookkeeping-system-part-3-the-evidence)
 
 
 # The Bookkeeping System, Part 0: The Problem
@@ -53,13 +34,10 @@ It's not "all bad", but a lot of it is.
 
 ---
 
-The situation is quite tiring and it is in the best of our interest to avoid carrying all the three configs together. We will stick to 64-bit and later apply our understanding to the other two configs.
-
 To reduce cognitive load as much as it is possible, I have divided the exploration into three headings that build on each other.
-  1. **The implementation of bins data structure**: Here we will explore something similar to `malloc_chunk`, which was not properly documented; "the repositioning trick".
+  1. **The implementation of bins data structure**: Here we will explore something similar to `malloc_chunk`, which was not properly documented; "***the repositioning trick***".
   2. **Static analysis of bins[]**: Here we will read the source (code and annotations) and find all the facts about bins.
   3. **Dynamic analysis of bins[]**: Here we will run some experiments to find the runtime all reality and build the final structure of bins.
-  4. Extending our understanding to build the model of the other two configs as well.
 
 ---
 
@@ -121,9 +99,9 @@ A double circular linked list has **head** and **tail** pointers to create circu
      };
      ```
 
-While method1 is obvious, method2 provides an intuitive abstraction.
+While method-1 is obvious, method-2 provides an intuitive abstraction.
 
-In the end, both the methods are identical and based on the tutor's choice, you might have seen both. I have seen both, especially the first one in the cpp space.The [double circular list implementation](./linked-list-code/1-simple-dll.c) is based on method2. Please read it.
+In the end, both the methods are identical and based on the tutor's choice, you might have seen both. I have seen both, especially the first one in the cpp space.The [double circular list implementation](./linked-list-code/1-simple-dll.c) is based on method-2. Please read it.
 
 ## A collection of D.C linked lists
 
@@ -288,7 +266,7 @@ The fake node for the 0th list is at a negative index. How is this legal?
 
 An access is illegal when it doesn't align with the memory protection rights (mprotect). Right now, we are doing this on stack. If we are familiar with how the kernel maps a binary and prepares it for execution, we know that a process's stack is initialized by the kernel with a lot of stuff that comes before the main function. Therefore, we are not accessing a memory we don't own, which is why, we don't get a segfault.
 
-*malloc_state*, which is where the bins[] is allocated, goes on the static storage, and it is not the only thing that goes there and it is not the first thing that goes there. Therefore, we are not touching an address we are not meant to.
+*malloc_state*, which is where the bins[] is allocated, either goes on the static storage or an mmapped region. Variables are zeroed and pointers point to NULL initially on static storage. The kernel releases zeroed memory for mmap.
 
 However, we have to be cautious about this kind of pointer arithmetic as it touches a piece of memory which might hold crucial information.
   - If the arithmetic failed and we overwrite that memory, we are officially in **the undefined behavior territory**.
@@ -309,13 +287,13 @@ This is what the author titled as "the repositioning trick". And I am sort of pe
   these as the fields of a malloc_chunk*.
 ```
 
-Anyways, if you have understood everything discussed so far but still feel "sort of incomplete", or sensing the absence of a conclusion, that goes like *"and this is how glibc-malloc does it with bins[]...."*, I want to say that "that conclusion is not possible here", for the time being. 
+Anyways, if you have understood everything discussed so far but still feel "sort of incomplete", or sensing the absence of a conclusion, that goes like *"and this is how glibc-malloc does it with bins[]...."*, I want to say that "that conclusion is not possible here", for the time being, at least.
 
-`bin_at` is the macro that operationalize this repositioning trick, which is the conclusion to this heading, but understanding it requires concepts that I have not introduced yet. Therefore, we will explore it later.
+`bin_at` is the macro that operationalizes this repositioning trick, which is the conclusion to this heading, but understanding it requires concepts that I have not introduced yet. Therefore, we will explore it later.
 
 ---
 
-So to answer how `bins` are implemented, ***they are implemented as an array of bin headers of type mchunkptr (malloc_chunk\*) and "repositioning tricks" are used to find the correct bin.***
+So to answer how `bins` are implemented, ***they are implemented as an array of bin headers of type mchunkptr (malloc_chunk\*) and a "repositioning trick" is used to find the correct bin.***
 
 Now you know why a `List*` array is not suitable. It creates hurdles in implementing that "repositioning trick". However, a `List` array might make sense because, internally, it is just `Node*` elements. But in this case, it would simply be an abstraction that is no longer required.
 
@@ -347,7 +325,7 @@ typedef struct malloc_chunk* mchunkptr
 mchunkptr bins[NBINS * 2 - 2];
 ```
 
-This is not a very acceptable way of writing code to me. I have to exercise my knowledge of operator precedence when it could have been avoided. I know the expression is not very complex, but that should not be used as a proxy. Anyways, this is how the expression would evaluate:
+This is not a very acceptable way of writing code to me. I have to exercise my knowledge of operator precedence when it could have been avoided. I know the expression is not very complex, but that should not be used as an excuse. Anyways, this is how the expression would evaluate:
 ```
 => (NBINS*2)-2
 => (128*2)-2
@@ -696,7 +674,7 @@ In this way, we would get a slightly degenerated order of widths for 64-bit: [2<
 
 ---
 
-The author acknowledged the tension, which is a great thing. But the author forgot to provide clarity on what decision they have eventually made.
+The author acknowledged the tension, which is a great thing. But the author forgot to provide clarity on the decision they have eventually made.
   - Obviously, we can figure that out by reading the code. But the question is, what does the author, the management team, the contributors think is valid to be acknowledged and what's not.
   - If the bin width scaled with the architecture, you could have mentioned it directly, without saying, "it remains to be seen".
   - If the bin width didn't scaled with architecture, you could simply say, "the bin widths remain the same on both the architectures, which makes the log-spacing argument slightly-off on 64-bit".
@@ -1068,33 +1046,3 @@ Just seeing largebin_index_64 would make me angry and no matter how persistent e
 Anyways, this summarizes the largebin ranges section. The script is the most reliable method to generate the largebins size ranges.
 
 Now it is time for dynamic analysis.
-
-## Dynamic Analysis (Incomplete)
-
-You might be aware of tooling like pwndbg (PWN Debug) and GEF (GDB Extended Features). These are tools built on top of gdb. They provide a nice abstraction over the actual functionality. Because we want to build a strong mental model of the underlying architecture, we will not use any kind of tooling, except the debugger itself.
-
-These are the experiments we will do.
-
-1. Bin #2, represented by the headers bin[2] and bin[3], is the first smallbin of size class 32 bytes (MINSIZE on 64-bit).
-2. Bin #63, represented by the headers bin[124] and bin[125] is the last smallbin of size class 1008 bytes (MIN_LARGE_SIZE-SMALLBIN_WIDTH on 64-bit).
-3. Bin #1, represented by the headers bin[0] and bin[1] is the unsorted bin.
-4. The smallbin size classes are in the range: `[MINSIZE, MIN_LARGE_SIZE-SMALLBIN_WIDTH]`, with a step of SMALLBIN_WIDTH.
-5. Small chunks use only fd/bk pointers.
-6. Bin #64, represented by the headers bin[126] and bin[127] is the first largebin in category #1.
-7. The order in which chunks enter a bin.
-8. A largebin is basically a collection of fixed size classes.
-9. An in-depth analysis of the pointer fields in large chunks.
-
-10. The total number of largebins.
-11. There is no bin for size 0.
-12. BIN_WIDTH on 64-bit scale by 3 bits only.
-13. Show coalescing (both forward and backward).
-14. Show fragmentation (internal, external, l1 and l2).
-15. The exact amount at which bins top out.
-16. Verify the distorted largebin boundaries.
-
----
-
-# The Bookkeeping System, Part 3: The Evidence
-
-Since I have made pretty big claims, it is important to prove them historically as well.
