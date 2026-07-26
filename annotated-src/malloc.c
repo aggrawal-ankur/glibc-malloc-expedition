@@ -2488,25 +2488,24 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       /* Setup two fencepost chunks at the end of the old 
          heap segment and regularize the top chunk in it.
 
-        MINSIZE bytes are required to setup two fenceposts. 
-        They are taken from the existing top chunk and the 
-        remaining top bytes are aligned to a 
-        MALLOC_ALIGNMENT boundary.
-
         The allocator maintains the invariant that the top 
         chunk always has at least MINSIZE bytes. Therefore, 
         we don't have to worry about the subtraction.
 
-        There are two unanswered questions here. See 
-        open-questions.md
+        However, there are two unanswered questions. 
         [1] Why the remaining top size is aligned down when 
             we maintain the invariant that the top chunk 
-            always ends at page-aligned boundaries?
+            always ends at page-aligned boundaries and all 
+            chunks are MALLOC_ALIGNMENT aligned? In which 
+            scenario the top size can get corrupted or 
+            mishandled remains unanswered.
         [2] In a rare situation, if the top was misaligned, 
-            aligning down would create some bytes that do 
-            not belong to the top chunk. What happens to 
+            aligning down would leave some bytes that no 
+            longer belong to the top chunk. What happens to 
             them? They can not be carried by the fenceposts 
             as it would disturb their alignment.
+
+        See open-questions.md
       */
 
       old_size = (old_size - MINSIZE) & ~MALLOC_ALIGN_MASK;
@@ -2543,38 +2542,51 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
          regularize it. */
       if (old_size >= MINSIZE){
         /* Setup fencepost-1. */
-        /* The top chunk is kept as an in-use chunk. Until it 
-           is regularized, it must be kept as an in-use chunk.
+        /* The top chunk is kept as an in-use chunk until 
+           it is regularized, hence the PREV_INUSE bit is 
+           set.
         */
         set_head(
           chunk_at_offset(old_top, old_size),
           CHUNK_HDR_SZ | PREV_INUSE
         );
 
-        /* Set the mchunk_prev_size of fencepost-2 to the size 
-           of fencepost-1. */
+        /* Set the mchunk_prev_size of fencepost-2 to the 
+           size of fencepost-1.
+
+          Fencepost-2 has the PREV_INUSE bit set, so how 
+          we can update its prev_size remains unanswered.
+          See open-questions.md.
+        */
         set_foot(
           chunk_at_offset(old_top, old_size), 
           CHUNK_HDR_SZ
         );
 
-        /* Update the size and the lower bits of the top chunk. */
+        /* Update the size and the lower bits of the old 
+           top chunk. */
         set_head(
           old_top, 
           old_size | PREV_INUSE | NON_MAIN_ARENA
         );
 
-        /* Regularize the top chunk of the old heap and bin it. */
+        /* Regularize the old top chunk. */
         _int_free_chunk(av, old_top, chunksize(old_top), 1);
       }
 
       /* If (old_size == CHUNK_HDR_SZ) */
       else{
         /* Fencepost-1 */
-        set_head (old_top, (old_size + CHUNK_HDR_SZ) | PREV_INUSE);
+        set_head(
+          old_top, 
+          (old_size + CHUNK_HDR_SZ) | PREV_INUSE
+        );
 
         /* Fencepost-2 updated with the size of fencepost-1. */
-        set_foot (old_top, (old_size + CHUNK_HDR_SZ));
+        set_foot(
+          old_top, 
+          (old_size + CHUNK_HDR_SZ)
+        );
       }
     }
 
@@ -2642,8 +2654,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
     /* [PATH 3A]: Call sbrk. */
 
-    /* size is an unsigned quantity, but sbrk takes a 
-       signed quantity. So we interpret size as a 
+    /* size is an unsigned quantity, but sbrk takes 
+       a signed quantity. So we interpret size as a 
        signed quantity to ensure the growth is positive.
     */
     if ((ssize_t)(size) > 0){
@@ -2721,20 +2733,18 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
         );
       }
 
-      /* [?] */
-      /* If mmap succeeded, we can not use sbrk to find 
-         the end. Therefore, we have to update brk and 
-         snd_brk appropriately.
+      /* If mmap succeeded, the top chunkk in main arena 
+         will be backed by mmap now. We have to update 
+         brk and snd_brk appropriately.
       */
       if (mbrk != MAP_FAILED){
         __set_vma_name(mbrk, fallback_size, " glibc: malloc");
 
-        /* [?] */
-        /* The allocator no longer assumes future sbrk 
-           growth will be contiguous. After the first 
-           time mmap is used as backup, we do not ever 
-           rely on contiguous space as this could 
-           incorrectly bridge the regions.
+        /* The allocator no longer assumes future morecore
+           growth will be contiguous. After the first time 
+           mmap is used as backup, we do not ever rely on 
+           contiguous space as this could incorrectly bridge 
+           the regions.
         */
 
         /* Set the NONCONTIGUOUS_BIT. */
@@ -2767,11 +2777,11 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
         (if any) and operate accordingly.
     */
 
-    /* If a path has succeeded, brk will contain a 
-       valid pointer. */
+    /* If a path has succeeded, brk is sure to 
+       contain a valid pointer. */
     if (brk != (char*)(MORECORE_FAILURE)){
-      /* If malloc is called for the first time, store 
-         the base program break. [WHY] */
+      /* If malloc is called for the first time, 
+         store the base program break. */
       if (mp_.sbrk_base == NULL)
         mp_.sbrk_base = brk;
 
@@ -2779,8 +2789,8 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
          managing. */
       av->system_mem += size;
 
-      /* [Path 3A] has succeeded and no foreign sbrk is 
-          detected if
+      /* [Path 3A] has succeeded and no foreign sbrk 
+          is detected if
           [1] old_end and brk have the same address, and 
           [2] snd_brk is still MORECORE_FAILURE.
 
@@ -2797,12 +2807,11 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
       /* [Path 3A] has succeeded but a negative foreign 
           sbrk is detected if 
-          [1] the program break extension was contiguous 
-              so far, and
+          [1] the top chunk is still backed by sbrk, and
           [2] the program break returned by sbrk is behind 
               the current top end.
 
-          Why we are checking old_size remains unanswered.
+          I don't know why we are checking old_size.
 
           In this situation, the allocator's state is 
           corrupted and the process is simply terminated.
@@ -2816,18 +2825,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
 
       /* If we are here, both foreign sbrk and a "hole" 
-         in the address space are possible.
-
-        To know what has happened, we can use snd_brk. 
-        Up until this point, snd_brk is only populated by 
-        the fallback path. If it has a valid pointer, we 
-        can be sure that the available contiguous unmapped 
-        region is not enough for this request.
-
-        The question is, do we have different strategies 
-        for both the cases?
-      */
-
+         in the address space are possible. */
       else{
         front_misalign = 0;
         end_misalign   = 0;
@@ -2835,17 +2833,18 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
 
         /* The address in brk depends on the two cases 
            we are discussing.
-           - In case of a foreign sbrk, it is the end of 
-             the foreign sbrk region and the start of the 
-             region the allocator has recently requested.
-           - In case of a "hole" in the address space, it 
-             represents the start of mmapped region.
+
+          In case of a foreign sbrk, it is the end of 
+          the foreign sbrk region and the start of the 
+          region the allocator has recently requested.
+
+          In case of a "hole" in the address space, it 
+          represents the start of mmapped region.
         */
         aligned_brk = brk;
 
-        /* If program break was contiguous so far, foreign 
-           sbrk is detected for the first time.
-        */
+        /* If program break is contiguous, mmap has not 
+           been used to back the top chunk. */
         if (contiguous(av)){
           /* The foreign sbrk is made by the process only, 
              so the allocator counts it in the arena memory. 
@@ -2873,7 +2872,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
             calculated and stored in `correction`.
           */
 
-          /* [CALCULATING CORRECTION BYTES] */
+          /* [CALCULATE CORRECTION BYTES] */
 
           /* [STEP 1]: Calculate the misalignment of brk.
 
@@ -2944,23 +2943,28 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
           correction += (ALIGN_UP(end_misalign, pagesize)) - end_misalign;
           assert(correction >= 0);
 
-          /* Therefore, correction = ? */
+          /* Therefore, 
+              correction = ALIGN_UP(
+                  ((MALLOC_ALIGNMENT - front_misalign) 
+                  + old_size 
+                  + first_sbrk_size),
+                  pagesize)
+          */
+
+          /* [CORRECTION BYTES CALCULATED] */
 
           /* Call sbrk. */
+          /* snd_brk will contain (brk + size). */
           snd_brk = (char*) MORECORE(correction);
 
-          /* If can't allocate correction, try to at least 
-             find out current brk. It might be enough to 
-             proceed without failing.
+          /* If second sbrk has succeeded, we have the 
+             memory to setup the new top chunk.
 
-             Note that if second sbrk did NOT fail, we assume 
-             that space is contiguous with first sbrk. This is 
-             a safe assumption unless program is multithreaded 
-             but doesn't use locks and a foreign sbrk occurred 
-             between our first and second calls.
+            If second sbrk has failed, reset correction 
+            and snd_brk.
           */
           if (snd_brk == (char*)(MORECORE_FAILURE)){
-            correction = 0;    // Reset correction
+            correction = 0;
             snd_brk = (char*) MORECORE(0);
           }
           else
@@ -2970,13 +2974,15 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
         /* The arena has already been marked as non-contiguous 
            by previous malloc calls. */
         else{
-          /* This is always true on 32-bit, 64-bit and 
-             INTERNAL_SIZE_T=4. So, the else block is 
-             effectively dead code. Then why it exists?
+          /* This is always true, at least on LP64 GNU/Linux, 
+             so the else block is effectively a dead code.
+
+            I am not sure why it exists.
           */
           if (MALLOC_ALIGNMENT == CHUNK_HDR_SZ){
-            /* MORECORE/mmap must correctly align */
-            assert (((unsigned long) chunk2mem(brk) & MALLOC_ALIGN_MASK) == 0);
+            assert(
+              ((unsigned long) chunk2mem(brk) & MALLOC_ALIGN_MASK) == 0
+            );
           }
           else{
             front_misalign = (INTERNAL_SIZE_T) chunk2mem(brk) & MALLOC_ALIGN_MASK;
@@ -2992,18 +2998,20 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
             }
           }
 
-          /* Find the current end of the memory. */
+          /* The current end of the memory. */
           if (snd_brk == (char*)(MORECORE_FAILURE)){
             snd_brk = (char*) MORECORE(0);
           }
         }
 
-        /* Adjust the top chunk based on the second sbrk. */
+        /* If snd_brk has a valid address, we proceed with 
+           the new top chunk setup. */
         if (snd_brk != (char*) (MORECORE_FAILURE)){
-          /* Setup the new top chunk starting from aligned_brk. 
-             The new top chunk starts from aligned_brk and 
-             contains both the `size` memory and `correction` 
-             memory.
+          /* The new top chunk starts from aligned_brk and 
+             contains both `size` and `correction` bytes.
+
+            (snd_brk - aligned_brk) is the size of the first 
+            sbrk (made in path-3a).
           */
           av->top = (mchunkptr)(aligned_brk);
           set_head(
@@ -3011,35 +3019,29 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
             (snd_brk - aligned_brk + correction) | PREV_INUSE
           );
 
-          /* Update the arena's total memory with correction bytes. */
+          /* Count correction bytes in arena memory. */
           av->system_mem += correction;
 
-          /* Insert double fencepost. 
-             A valid top chunk already has at least MINSIZE 
-             bytes, which is enough for two fenceposts.
-
-             [NOTE]: If top size was (MINSIZE + MALLOC_ALIGNMENT),
-              like, 48 bytes on 64-bit, the old_top is not really 
-              a valid chunk anymore.
-          */
+          /* Insert fencepost and regularize the old top chunk. */
           if (old_size != 0){
             old_size = (old_size - 2 * CHUNK_HDR_SZ) & ~MALLOC_ALIGN_MASK;
+
+            /* Update the old top chunk size. */
             set_head (old_top, old_size | PREV_INUSE);
 
-            /* Fencepost-1 */
+            /* Fencepost-1. */
             set_head(
               chunk_at_offset(old_top, old_size),
               CHUNK_HDR_SZ | PREV_INUSE
             );
 
-            /* Fencepost-2 */
+            /* Fencepost-2. */
             set_head(
               chunk_at_offset(old_top, old_size + CHUNK_HDR_SZ),
               CHUNK_HDR_SZ | PREV_INUSE
             );
 
-            /* Regularize the old top and bin it to be used as a 
-               normal chunk. */
+            /* Regularize the old top chunk. */
             if (old_size >= MINSIZE){
               _int_free_chunk(av, old_top, chunksize(old_top), 1);
             }
@@ -3049,7 +3051,7 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
     }
   }
 
-  /* Update max_system_mem if applicable. */
+  /* Update max_system_mem, if required. */
   if ((unsigned long)(av->system_mem) > (unsigned long)(av->max_system_mem))
     av->max_system_mem = av->system_mem;
 
