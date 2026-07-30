@@ -29,7 +29,7 @@ int main(void){
   free(c3);
 }
 
-/* [ANALYSIS]: 
+/* [ANALYSIS] 
 
   After alignment, 1010 becomes 1024 bytes, which belongs 
   to the first large bin in cateogry #1. So, the headers 
@@ -46,4 +46,8 @@ int main(void){
 
   Typecast the address to a (mchunkptr) and dereference 
   it. The mchunk_size whould be 1025 bytes.
+
+  This also proves that large chunks enter the unsorted 
+  bin before they are binned to the largebin of 
+  corresponding size.
 */
