@@ -4,98 +4,119 @@
 
   [1] The total number of smallbins are 62. 
       The bounds for bin number are [2, 63].
+
   [2] Bin #2 is the first smallbin of size 
       class MINSIZE bytes.
+
   [3] Bin #63 is the last smallbin of size 
       class (MIN_LARGE_SIZE-MINSIZE) bytes.
+
   [4] The bounds for small size are 
-        [MINSIZE, MIN_LARGE_SIZE-MINSIZE].
+        [MINSIZE, MIN_LARGE_SIZE-MINSIZE] 
+      with a step of SMALLBIN_WIDTH.
+
   [5] Small chunks are binned directly upon 
       freeing.
 */
 
-/* [SETUP] 
+/* [SETUP]: Allocate all chunk sizes in this range 
+            programatically.
 
-  [Step1]: Request two chunks of sizes 10 and 994 
-           bytes and two barrier chunks.
+  [NOTE]: This experiment assumes 64-bit architecture.
 
-  [Step2]: Free c1 and c2.
+  We have 62 smallbins.
+  - We need one chunk per bin. So, 62 chunks, meaning 
+    62 pointers.
+  - For each chunk, we need a barrier chunk to prevent 
+    coalescing. So, 62 more chunks.
+  - In total, we need 124 chunks.
 
-  [Step3]: Set a breakpoint on line #38.
+  We will use a for loop to allocate these chunks 
+  and store the returned pointers in an array. 
+  Normal chunk on even indices and barrier chunks 
+  on odd.
+
+  We can fix the size of the barrier chunk to 20 
+  bytes. Now we have to find the formula to obtain 
+  the next size which, upon alignment becomes the 
+  next size class.
+  - We know that a size of 20 bytes leads to a 32 
+    bytes chunk. Let's consider it our starting 
+    point.
+  - request2size(sz) basically adds 23 to sz, before 
+    taking bitwise AND with MALLOC_ALIGN_MASK. When 
+    we add 23 to 20, we get 43. And 43 & ~15 is 32.
+  - If we add 10 to the base size, we get 30 in the 
+    next iteration. 30 + 23 is 53. And 53 & ~15 is 
+    48. We got the next size class.
+  - If we add 10 again, we get 40. 40 + 23 is 63. And 
+    63 & ~15 is 48. But we need 64. That means, 10 is 
+    not the right base value.
+  - When we add 23 to the base size, the resultant 
+    value must be in this range: 
+      [target_size_class, next_size_class).
+
+    .... only then the bitwise AND can bring it down 
+    to the targeted size class. When we add 23 to 40, 
+    our target size class was 64, but the resulting 
+    value was 63. As a result, we go the wrong size 
+    class.
+  - 20 is 12 bytes less than its size class (32 bytes). 
+    30 (20+10) is 18 bytes less than its size class 
+    (48 bytes).
+    40 (30+10) is 24 bytes less than its size class 
+    (64 bytes).
+    50 (40+10) is 30 bytes less than its size class 
+    (80 bytes).
+  - The difference b/w the requried size and our size 
+    is increasing. That explains why 10 is not the 
+    right additive.
+  - We have to try different additives. There is a 
+    script named add_val_finder.py that automates 
+    this. It is in `/dynamic-analysis/scripts`. Read 
+    it to understand what it does and how it does it.
+  - We can notice that the only addend that works is 
+    16. The difference b/w the target and the input 
+    size is 12 bytes. Because it generates the right 
+    size classes, we can use 16 as the add value.
+
+
+  Set a breakpoint on line #106 and run.
 */
 
 #include <stdlib.h>
 
 int main(void){
-  char* c1 = malloc(10);
-  char* b1 = malloc(10);
+  char* arr[124];
+  size_t base = 20;
 
-  char* c2 = malloc(994);
-  char* b2 = malloc(10);
+  for (int i=0; i<62; i++){
+    char* c = malloc(base);
+    arr[i*2] = c;
 
-  free(c1);
-  free(c2);
+    char* b = malloc(20);
+    arr[(i*2)+1] = b;
+
+    base += 16;
+  }
+
+  for (int i=0; i<62; i++){
+    free(arr[i*2]);
+  }
   int breakp = 1;
 
-  free(b1);
-  free(b2);
+  for (int i=0; i<62; i++){
+    free(arr[(i*2)+1]);
+  }
 }
 
 /* [ANALYSIS] 
 
-  c1 and c2 are the main chunks, while b1 and b2 
-  are barrier chunks which prevent coalescing.
+  Print the main_arena. The headers for bin #2 to bin #63 
+  will be all real addresses, instead of <main_arena+X>. 
+  Also, both head and tail will be the same, which proves 
+  each bin has one chunk only.
 
-  After alignment, the size of c1 is MINSIZE and 
-  the size of c2 is (MIN_LARGE_SIZE-MINSIZE) bytes.
-
-  Run the program. Now inspect main_arena.
-
-  Bin #2 is represented by bins[2] and bins[3].
-  Bin #63 is represented by bins[124] and bins[125].
-
-  The <main_arena> offsets associated to them are 
-  <main_arena+24> and <main_arena+1000>. If these 
-  bins are non-empty, these two offsets must be 
-  invisible.
-
-  Print main_arena.bins[1] and main_arena.bins[124].
-  ```
-  (gdb) p main_arena.bins[2]
-  $1 = (mchunkptr) 0x55d26f758000
-
-  (gdb) p main_arena.bins[3]
-  $2 = (mchunkptr) 0x55d26f758000
-
-  (gdb) p main_arena.bins[124]
-  $3 = (mchunkptr) 0x55d26f758040
-
-  (gdb) p main_arena.bins[125]
-  $4 = (mchunkptr) 0x55d26f758040
-  ```
-
-  Print the chunks on these addresses.
-  ```
-  (gdb) p *(mchunkptr) (0x55d26f758000)
-  $5 = {
-    mchunk_prev_size = 0,
-    mchunk_size = 33,
-    fd = 0x7f011f257c98 <main_arena+24>,
-    bk = 0x7f011f257c98 <main_arena+24>,
-    fd_nextsize = 0x20,
-    bk_nextsize = 0x20
-  }
-
-  (gdb) p *(mchunkptr) (0x55d26f758040)
-  $6 = {
-    mchunk_prev_size = 0,
-    mchunk_size = 1009,
-    fd = 0x7f011f258068 <main_arena+1000>,
-    bk = 0x7f011f258068 <main_arena+1000>,
-    fd_nextsize = 0x0,
-    bk_nextsize = 0x0
-  }
-  ```
-
-  In the upcoming experiments, we will explore that bin #64 is the first largebin, which will further prove this point.
+  In the next experiment, we will explore that bin #64 is 
+  the first largebin, which will complete this experiment.
 */
