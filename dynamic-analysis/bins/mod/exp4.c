@@ -2,7 +2,7 @@
 
 /* [OBJECTIVE]: Bin #64 is the first largebin in 
                 category #1, represented by the 
-                headers bin[126] and bin[127].
+                headers bins[126] and bins[127].
 */
 
 /* [SETUP] 
