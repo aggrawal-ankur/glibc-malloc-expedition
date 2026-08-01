@@ -1,54 +1,107 @@
-/* EXPERIMENT 4 */
+/* [EXPERIMENT #4] */
 
-/* OBJECTIVE: Obtain and analyze a free chunk. */
+/* [OBJECTIVE]: Obtain and analyze a free chunk. */
 
-/* SETUP: 
+/* [SETUP] 
 
-  1. Start and attach the container to your terminal.
-  2. `cd` to /experiments/
-  3. Build the lab: `./build exp3.c`
-  4. Set breakpoints on line #48, and #51.
-  6. Run the program: `r`.
-
-*/
-
-/* ANALYSIS: We will allcoate a 20 bytes chunk, followed by a 100 bytes chunk as a barrier with the top chunk.
-
-Print the chunk.
-```
-(gdb) p *(struct malloc_chunk*)(c-16)
-$1 = {mchunk_prev_size = 0, mchunk_size = 33, fd = 0x0, bk = 0x0, fd_nextsize = 0x0, bk_nextsize = 0x20fe1}
-```
-
-Now let's allocate the barrier chunk and free the first chunk. Press `c` to continue until the next breakpoint.
-
-Now print the chunk again.
-```
-$2 = {mchunk_prev_size = 0, mchunk_size = 33, fd = 0x7f6919ca1c98 <main_arena+24>, bk = 0x7f6919ca1c98 <main_arena+24>, fd_nextsize = 0x20, 
-  bk_nextsize = 0x70}
-```
-
-That is our free chunk.
-
-*/
-
-/* OBSERVATIONS: 
-
-  1. Since the chunk is freed now, the fd/bk pointers contain bookkeping information.
-  2. The nextsize pointers continue to remain garbage as it is a small chunk.
-  3. Because it is the first chunk, mchunk_prev_size is still 0 and PREV_INUSE bit is 1.
-  4. A barrier chunk is necessary to obtain free a chunk if the chunk borders with the top chunk. Otherwise, there are already enough chunks that act as a barrier.
-
+  [1] Allocate two chunks of size MINSIZE bytes. The 
+      first one will be the main chunk and the second 
+      one will exist as a barrier between the first 
+      chunk and the top chunk. Set a breakpoint on 
+      line #23.
+  [2] Free the first chunk and set a breakpoint on 
+      line #26.
 */
 
 #include <stdlib.h>
+#include <string.h>
 
 int main(void){
   char *c = malloc(20);
-  char *b = malloc(100);
+  memcpy(c, "Low level systems.\n", 19);
+  char *b = malloc(20);
+  int breakpoint = 1;
 
   free(c);
-  int breakpoint = 1;
+  breakpoint = 2;
 
   free(b);
 }
+
+/* [ANALYSIS] 
+
+  Print the initial state of chunks at breakpoint-1.
+  ```
+  (gdb) p *(mchunkptr) (c-16)
+  $1 = {
+    mchunk_prev_size = 0,
+    mchunk_size = 33,
+    fd = 0x6576656c20776f4c,
+    bk = 0x6d6574737973206c,
+    fd_nextsize = 0xa2e73,
+    bk_nextsize = 0x21
+  }
+  (gdb) p *(mchunkptr) (b-16)
+  $2 = {
+    mchunk_prev_size = 667251,
+    mchunk_size = 33,
+    fd = 0x0,
+    bk = 0x0,
+    fd_nextsize = 0x0,
+    bk_nextsize = 0x20fc1
+  }
+  ```
+  - The pointer fields of `c` and the prev_size of 
+    `b` are interpreting the contents of the payload 
+    memory, so they are garbage.
+  - The nextsize pointers of the barrier chunk are 
+    overlapped with the size fields in the top chunk.
+
+
+  Continue and print the state of both chunks after 
+  freeing them at breakpoint-2.
+  ```
+  (gdb) p *(mchunkptr) (c-16)
+  $1 = {
+    mchunk_prev_size = 0,
+    mchunk_size = 33,
+    fd = 0x7fb390734c98 <main_arena+24>,
+    bk = 0x7fb390734c98 <main_arena+24>,
+    fd_nextsize = 0x20,
+    bk_nextsize = 0x20
+  }
+
+  (gdb) p *(mchunkptr) (b-16)
+  $2 = {
+    mchunk_prev_size = 32,
+    mchunk_size = 32,
+    fd = 0x0,
+    bk = 0x0,
+    fd_nextsize = 0x0,
+    bk_nextsize = 0x20fc1
+  }
+  ```
+
+  That's our free chunk.
+  [1] It has real addresses in the fd/bk fields, but we 
+      are not primed yet to understand these addresses. 
+      So they are explored in a future lab.
+  [2] The chunk is small, so the nextsize pointers are 
+      garbage.
+
+  The PERV_INUSE bit of the barrier chunk is cleared as 
+  the chunk previous to it is freed and mchunk_prev_size 
+  is no longer garbage.
+
+  ---
+
+  Based on the boundary tag implementation, prev_size of 
+  (n+1)th chunk is functionally a property of the nth 
+  chunk. So, 16 of the 20 bytes structurally belong to 
+  `c`, while the remaining 4 bytes belong to `b`. This 
+  is visible when the payload memory is populated with 
+  memset.
+
+  Once `c` is freed, the prev_inuse field is updated with 
+  the size of `c`, which was garbage earlier.
+*/
