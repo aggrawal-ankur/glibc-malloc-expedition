@@ -1,4 +1,4 @@
-/* [EXPERIMENT #] */
+/* [EXPERIMENT #5] */
 
 /* [OBJECTIVE]: A largebin is basically a collection 
                 of several size classes.

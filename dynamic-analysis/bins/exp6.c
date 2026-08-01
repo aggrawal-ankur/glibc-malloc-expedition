@@ -1,4 +1,4 @@
-/* [EXPERIMENT #] */
+/* [EXPERIMENT #6] */
 
 /* [OBJECTIVE]: Perform an in-depth analysis of the pointer 
                 fields in large chunks.

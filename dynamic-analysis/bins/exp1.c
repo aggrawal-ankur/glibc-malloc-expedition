@@ -1,4 +1,4 @@
-/* [EXPERIMENT 1] */
+/* [EXPERIMENT #1] */
 
 /* [OBJECTIVE]: Bin #1 is the unsorted bin, represented 
                 by the headers bins[0] and bins[1].

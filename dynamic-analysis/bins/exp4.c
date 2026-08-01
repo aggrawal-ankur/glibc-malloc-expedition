@@ -1,4 +1,4 @@
-/* [EXPERIMENT 5] */
+/* [EXPERIMENT #4] */
 
 /* [OBJECTIVE]: Small free chunks use only the fd/bk pointers. */
 

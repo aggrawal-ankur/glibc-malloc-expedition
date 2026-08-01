@@ -1,4 +1,4 @@
-/* [EXPERIMENT #] */
+/* [EXPERIMENT #7] */
 
 /* [OBJECTIVE]: Verify the number of largebins in category #1. */
 
@@ -34,7 +34,7 @@
   After request2size, they become:
     [3072, 3088, 3104, 3120, 3136]
 
-  Set a breakpoint on line #.
+  Set a breakpoint on line #68.
 */
 
 #include <stdlib.h>

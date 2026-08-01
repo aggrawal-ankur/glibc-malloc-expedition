@@ -1,6 +1,6 @@
-/* [EXPERIMENT 2] */
+/* [EXPERIMENT #2] */
 
-/* [OBJECTIVE]: Verify the state of smallbins.
+/* [OBJECTIVE]: Explore smallbins.
 
   [1] The total number of smallbins are 62. 
       The bounds for bin number are [2, 63].

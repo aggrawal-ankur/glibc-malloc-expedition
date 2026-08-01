@@ -1,4 +1,4 @@
-/* [EXPERIMENT 4] */
+/* [EXPERIMENT #3] */
 
 /* [OBJECTIVE]: Bin #64 is the first largebin in 
                 category #1, represented by the 
