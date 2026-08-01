@@ -1,80 +1,11 @@
-/* EXPERIMENT 2 */
+/* [EXPERIMENT #2] */
 
-/* OBJECTIVE: Perform structural analysis of a chunk. */
-
-/* GIVEN: 
-
-  1. Use the print command (short, `p`) to print the value at an address.
-  3. Use pointer type casting along with `p`.
-  4. size_t is 8 bytes on 64-bit.
-
-  Syntax: `p *(struct malloc_chunk*)__address__`
-
+/* [OBJECTIVE]: Perform structural analysis of an 
+                in-use chunk.
 */
 
-/* SETUP: We will allocate a chunk of size 20 bytes and analyze it.
-
-  1. Start and attach the container to your terminal, if not already (reading on the web or locally).
-  2. `cd` to /experiments/
-  3. Build the lab: `./build exp2.c`
-  4. To create a breakpoint on line #<n>, use the following syntax: `b exp2.c:<n>`
-  5. Create breakpoints on line #84.
-  6. Run the program: `r`. The execution must be halted and this should be visible:
-     ```
-     Breakpoint 1, main () at exp2.c:84
-     84          int break_point = 4;
-     ```
-*/
-
-/* ANALYSIS: 
-
-Let's print the chunk.
-```
-(gdb) print c
-$1 = 0x563dcd5e2010 ""
-```
-
-As with the previous experiment, we have to subtract 2*sizeof(size_t) bytes, or 16 bytes on 64-bit to get to the start of the malloc_chunk.
-```
-(gdb) print *(struct malloc_chunk*)(c - 16)
-$2 = {mchunk_prev_size = 0, mchunk_size = 33, fd = 0x0, bk = 0x0, fd_nextsize = 0x0, bk_nextsize = 0x20fe1}
-```
-
-**NOTE: We are not typecasting the pointer to a (char*) before casting it to a (malloc_chunk*) as it is already so. However, we have to do this when the pointer type is something else.
-
-request2size(20) is 32 bytes, which is the size of this chunk. The 1 is for the PREV_INUSE bit, which is always set for the first chunk.
-
-We can notice that the members fd/bk/fd_nextsize are zero. However, bk_nextsize is non-zero. Understanding these pointers is out of scope of this experiment, and it is dicussed in another experiment.
-
----
-
-Now press `n` to move to the next line in the source.
-```
-(gdb) n
-86        free(c);
-```
-This frees the chunk `c`, making it a "free chunk" now. Let's execute this line.
-```
-(gdb) n
-87        break_point = 2;
-```
-
-Let's print the chunk again.
-```
-(gdb) p *(struct malloc_chunk*)(c-16)
-$3 = {mchunk_prev_size = 0, mchunk_size = 135169, fd = 0x0, bk = 0x0, fd_nextsize = 0x0, bk_nextsize = 0x20fe1}
-```
-
-Magic! The size of the chunk has increased to 135169. That's 33 * pow(2, 12). How? That is discussed in the next experiment.
-
-*/
-
-/* OBSERVATIONS: 
-
-  1. The size of the chunk is request2size(20) bytes, not 20 bytes.
-  2. The PREV_INUSE bit is always set in the first chunk to prevent malformed access.
-  3. mchunk_prev_size is 0 as there is no chunk before the first chunk.
-
+/* [SETUP]: Allocate a chunk of 20 bytes and create 
+    a breakpoint on line #15.
 */
 
 #include <stdlib.h>
@@ -84,5 +15,49 @@ int main(void){
   int break_point = 1;
 
   free(c);
-  break_point = 2;
 }
+
+/* [ANALYSIS] 
+
+  On breakpoint-1, we will analyze the in-use state 
+  of the chunk.
+  ```
+  (gdb) print *(mchunkptr)(c - 16)
+  $1 = {
+    mchunk_prev_size = 0, 
+    mchunk_size = 33, 
+    fd = 0x0, 
+    bk = 0x0, 
+    fd_nextsize = 0x0, 
+    bk_nextsize = 0x20fe1
+  }
+  ```
+
+  [1] The size of this chunk is 32 bytes, not 20 bytes.
+      This is the result of request2size(20).
+
+  [2] The PREV_INUSE bit of every newly allocated chunk 
+      (not reused) is always set because they are carved 
+      from the top chunk and the top chunk is always 
+      preceded by in-use chunks. If the chunk before it 
+      is freed, it is coalesced. This is explored in a 
+      future experiment.
+
+  [3] mchunk_prev_size is not maintained as the PREV_INUSE 
+      bit is set. However, it often has garbage values 
+      when the memory in that region is used up.
+
+  [4] The fd/bk fields are 0x0 as the chunk is freshly 
+      carved and the memory returned by the kernel is 
+      zeroed. However, when the payload memory is used, 
+      or the chunk is reused, these fields may contain 
+      garbage values.
+
+  [5] The nextsize fields are functionally not available 
+      to this chunk, as the size is MINSIZE bytes only. 
+      When they are, they are 0x0, if freshly carved, or 
+      garbage, if reused. Meanwhile, here these fields 
+      are overlapped with the top chunk's prev_size and 
+      mchunk_size fields, which explains the values in 
+      them.
+*/
