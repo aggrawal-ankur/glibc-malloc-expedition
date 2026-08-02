@@ -11,7 +11,7 @@ fi
 sleep 1
 
 echo -e "[CLONING THE CODE DIRECTORY].....\n"
-git clone --no-checkout --depth 1 https://github.com/aggrawal-ankur/systems-dives/ experiments/
+git clone --no-checkout --depth 1 https://github.com/aggrawal-ankur/glibc-malloc-expedition experiments/
 sleep 1
 
 echo -e "\n[CHANGE DIRECTORY TO experiments/]....\n"
@@ -20,13 +20,13 @@ sleep 1
 
 echo -e "[SETTING UP THE EXPERIMENTS]....\n"
 git sparse-checkout init --no-cone
-git sparse-checkout set "glibc-malloc/dynamic-analysis/*"
+git sparse-checkout set "/dynamic-analysis/*"
 git checkout
 sleep 1
 
 echo -e "[CLEANUP]....\n"
-mv glibc-malloc/dynamic-analysis/* .
-rm -rf glibc-malloc/
+mv ./dynamic-analysis/* .
+rm -rf dynamic-analysis/
 echo -e "....[CLEANUP DONE; SETUP DONE]\n"
 sleep 1
 
@@ -34,6 +34,7 @@ echo -e "[EXPERIMENTS DIRECTORY PREPARED WITH THE CODE]....\n"
 
 chmod u+x chunk/build
 chmod u+x bins/build
+rm /experiments/setup
 
 echo -e "[CHANGE DIRECTORY TO experiments/]....\n"
 echo -e "[CHOOSE YOUR EXPERIMENTS DIRECTORY AND CD INTO IT]....\n"
