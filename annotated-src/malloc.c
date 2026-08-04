@@ -4974,17 +4974,19 @@ static void* _int_malloc(mstate av, size_t bytes)
 
 
           /* We traverse the large bin in forward direction.
-             - If a chunk of victim's size is not available 
-               already, we insert it at the position the loop 
-               is stopped.
-             - If a chunk of victim's size is already present, 
-               we are currently pointing to it after the loop 
-               is stopped. We insert the victim after this 
-               chunk. This is in accord with the allocator's 
-               policy of FIFO for duplicates. Basically, the 
-               first duplicate is the allocators choice to 
-               satisfy a request. If there are no duplicates, 
-               we use the unique chunk directly.
+
+            If a chunk of victim's size is not available 
+            already, we insert it at the position the loop 
+            is stopped.
+
+            If a chunk of victim's size is already present, 
+            we are currently pointing to it after the loop 
+            is stopped. We insert the victim after this 
+            chunk. This is in accord with the allocator's 
+            policy of FIFO for duplicates. Basically, the 
+            first duplicate is the allocators choice to 
+            satisfy a request. If there are no duplicates, 
+            we use the unique chunk directly.
           */
           else{
             assert(chunk_main_arena(fwd));
@@ -5044,7 +5046,8 @@ static void* _int_malloc(mstate av, size_t bytes)
 #if USE_TCACHE
       /* If we've processed as many chunks as we're 
          allowed while filling the cache, return one 
-         of the cached ones. */
+         of the cached ones.
+      */
       ++tcache_unsorted_count;
       if (
         return_cached && 
@@ -5080,15 +5083,15 @@ static void* _int_malloc(mstate av, size_t bytes)
       We use the skip list to traverse the bin quickly 
       and find the smallest fit. If there are multiple 
       chunks of that size class, we use a duplicate and 
-      keep the unique one to prevent rerouting the skip 
-      list.
+      keep the unique one intact to prevent rerouting 
+      the skip list.
 
       The annotations for "bins" under the "Internal data 
-      structures" section mentions that chunks of same size 
-      in a large bin follow FIFO ordering. So, new chunks 
-      are added in front and chunks are taken from back 
-      (the oldest chunk after the unique one) to satisfy 
-      the request. 
+      structures" section also mention that chunks of the 
+      same size in a large bin follow FIFO ordering. So, 
+      new chunks are added in front and chunks are taken 
+      from back (the oldest chunk after the unique one) to 
+      satisfy the request. 
       - Take this large bin as an example: 
           [1072, 1056_u, 1056_d2, 1056_d1, 1040, 1024_u, 1024_d1]
       - We have requested a 1056 bytes chunk. The chunk 
@@ -5110,7 +5113,6 @@ static void* _int_malloc(mstate av, size_t bytes)
         have to reroute the skip list in this case.
 
 
-      [VALIDATE THIS LRU CLAIM AND PUT THIS IN QUESTIONS.md]
       However, the current malloc doesn't do it. It takes 
       the duplicate just after the unique chunk. And I have 
       no answer to the "why". You can check out this lab to 
