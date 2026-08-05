@@ -6,7 +6,7 @@
 
   We have already proven that a largebin is 
   essentially a collection of size classes, 
-  with a differenceof SMALLBIN_WIDTH. We will 
+  with a difference of SMALLBIN_WIDTH. We will 
   use this fact to verify whether the 33rd 
   largebin belongs to category #2 or #1.
 

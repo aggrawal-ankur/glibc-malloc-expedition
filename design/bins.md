@@ -1,5 +1,5 @@
-- [The Bookkeeping System, Part 0: The Problem](#the-bookkeeping-system-part-0-the-problem)
-- [The Bookkeeping System, Part 1: The Implementation Of Bins](#the-bookkeeping-system-part-1-the-implementation-of-bins)
+- [The Problem](#the-problem)
+- [Part 1: The Implementation Of Bins](#part-1-the-implementation-of-bins)
   - [Note](#note)
   - [Single D.C linked list](#single-dc-linked-list)
   - [A collection of D.C linked lists](#a-collection-of-dc-linked-lists)
@@ -8,60 +8,57 @@
   - [Finding the solution](#finding-the-solution)
   - [Implementing the solution](#implementing-the-solution)
   - [Some concerns](#some-concerns)
-- [The Bookkeeping System, Part 2: Complete Analysis of bins\[\]](#the-bookkeeping-system-part-2-complete-analysis-of-bins)
+- [Part 2: Static Analysis of bins\[\]](#part-2-static-analysis-of-bins)
   - [Bin counts](#bin-counts)
   - [The order of chunks within each bin type](#the-order-of-chunks-within-each-bin-type)
   - [Smallbin Size Classes](#smallbin-size-classes)
   - [Largebin Size Ranges, Part 1](#largebin-size-ranges-part-1)
   - [Bin Indexing](#bin-indexing)
   - [Largebin Size Ranges, Part 2](#largebin-size-ranges-part-2)
+- [Part 3: Dynamic Analysis of bins\[\]](#part-3-dynamic-analysis-of-bins)
 
 
-# The Bookkeeping System, Part 0: The Problem
+# The Problem
 
-The bookkeeping system sits at the core of glibc-malloc. It is the framework based on which the whole malloc-free pathways are stacked. It is probably the most challenging piece to write.
+The bookkeeping system sits at the core of the allocator. It is the framework based on which the whole malloc-free pathways are stacked.
 
-In the chunk description section, what the author flagged as "misleading, but accurate and necessary" was simply a lack of proper documentation of the design decisions.
-
-The bookkeeping section comes with its own challenges, and those challenges can be easily summed up in one sentence. ***I perceive annotations as the theoretical model of glibc-malloc's functioning, and this model is not aligning with the runtime reality as expressed by the code.***
+In the chunk description section, what the author flagged as "misleading, but accurate and necessary" was simply a lack of proper documentation of the design decisions. However, the implementation of `bins[]` comes with a different kind of challenges, and they can be easily summed up in one sentence. ***I perceive annotations as the theoretical model of the allocator's functioning, and this model is not aligning with the runtime reality as expressed by the code.***
   1. There are annotations which reflect the 32-bit reality only. The reader is left thinking about the 64-bit reality.
   2. There are annotations which are quite confusing and don't make much sense.
   3. There are two annotations about the same topic which don't converge. *How can something exist in two different states at the same time?* It can only exist in one and we are left finding it out ourselves.
   4. There is an annotation accepting that as times passes, things change. But the problem is, when something is no longer fully correct, or is no longer applicable, it is still not updated.
-  5. Many of the annotations are never changed since the time they appeared.
-
-It's not "all bad", but a lot of it is.
+  5. Many of the annotations are never changed since the time they appeared for the first time.
 
 ---
 
 To reduce cognitive load as much as it is possible, I have divided the exploration into three headings that build on each other.
   1. **The implementation of bins data structure**: Here we will explore something similar to `malloc_chunk`, which was not properly documented; "***the repositioning trick***".
   2. **Static analysis of bins[]**: Here we will read the source (code and annotations) and find all the facts about bins.
-  3. **Dynamic analysis of bins[]**: Here we will run some experiments to find the runtime all reality and build the final structure of bins.
+  3. **Dynamic analysis of bins[]**: Here we will run some experiments to find the runtime reality and build the final structure of bins.
 
 ---
 
-That's a very big statement from a naive about a project this big. But I request you to continue reading as I will present all the facts I have gathered in this journey in the end and you can decide whether the writer is talking "out of thin air". 
+That's a very big statement from a naive about a project this big. But I request you to continue reading as I will present all the facts I have gathered in this journey so you can decide whether I am talking "out of thin air". 
 
 **--- IMPORTANT NOTE ---**
   - I have invested a lot of time, energy and attention on this section.
   - This section has been a great source of frustration and agitation for about 3 months. That's a lot of time, which includes medical issues, environmental issues and psychological issues. So, everything happened all at once.
   - When things calmed down after 3 months, the arrival of fresh insights started reducing my frustration. I am no longer as frustrated and agitated as I was before.
   - I have learned to update my views and beliefs when new information with proper evidence arrives. That's what happened this time as well. Versions before this have a sort of "angry voice" and versions starting from this will have a more "calm voice".
-  - If anyone reads the commit history, they are sure to find a lot of things. While I won't say they are "immature", they are just a reaction of my past self, that tried to make sense of this codebase and repeatedly found nothing except confusion.
+  - If you read the commit history, you are sure to find a lot of things. They might be considered "immature", and I will not deny. But for me, they are just a reaction of my past self that tried to make sense of this codebase and repeatedly found nothing except confusion.
   - This note is left to acknowledge that.
 
 ---
 
-# The Bookkeeping System, Part 1: The Implementation Of Bins
+# Part 1: The Implementation Of Bins
 
-***A bin is a data structure, based on "circular doubly linked list", which is used to manage free chunks. Another name for bins is "free list".***
+***A bin is a data structure, based on "circular doubly linked list", which is used to manage free chunks. A bin is also called a "free list".***
 
-Conceptually, we have three class of bins: **smallbins** (for small chunks), **largebins** (for large chunks) and a bin to hold chunks temporarily, called **the unsorted bin**. Because these are just different names given to the same data structure, we have two choices in implementing them.
+Conceptually, we have three class of bins: **smallbins** (for small chunks), **largebins** (for large chunks) and a bin to hold chunks temporarily, called **the unsorted bin**. Because these are just different names given to the same data structure, we have two choices.
   1. Implement three different variables for each bin type.
   2. Implement one variable that has pointers to all the bins.
 
-Therefore, at the implementation level, we have **only one** data structure, containing pointers to all the bins, i.e. ***an array***.
+At the implementation level, we have **only one** data structure, containing pointers to all the bins, i.e. ***an array***.
 
 There are multiple ways to implement this array. To understand which one is the best, we have to understand how a "doubly circular linked list" works.
 
@@ -73,7 +70,7 @@ Data structure courses are often structured around object oriented languages lik
 
 I have tried to find implementations on the internet, which I can link here to save myself some time and efforts, but I couldn't find a single of them that satisfies my requirements.
 
-For these reasons, I have implemented all the linked lists required to understand `bins[]` myself. They are in the [./linked-lists](./linked-lists/) directory. This is helpful in two ways.
+For these reasons, I have implemented all the linked lists required to understand `bins[]` myself. They are in the [./linked-lists](../linked-lists/) directory. This is helpful in two ways.
   - Those who feel rusty about their understanding can quickly visit the code to strengthen it. They don't have to waste their time searching one.
   - As a writer, I can be sure that my reader and I have the same base model of the problem. We can, and should, differ in the later ideas, but our foundation is the same.
 
@@ -81,27 +78,41 @@ For these reasons, I have implemented all the linked lists required to understan
 
 Let's start with a single doubly circular linked list.
 
+The is going to be the node:
+```c
+struct node {
+  int data;
+  struct node* next;
+  struct node* prev;
+};
+typedef struct node Node;
+```
 ## Single D.C linked list
 
 A double circular linked list has **head** and **tail** pointers to create circularity. We have two ways to implement it.
-  1. Managing the head and tail pointers individually, like this:
-     ```c
-     int main(void){
-       struct Node* head;
-       struct Node* tail;
-     }
-     ```
-  2. A distinct struct, like this:
-     ```c
-     struct List{
-       struct* Node head;
-       struct* Node tail;
-     };
-     ```
+
+1. Manage the head and tail pointers individually, like this:
+   ```c
+   int main(void){
+     struct Node* head;
+     struct Node* tail;
+   }
+   ```
+2. Create a list abstraction:
+   ```c
+   struct List{
+     struct Node* head;
+     struct Node* tail;
+   };
+
+   int main(void){
+     struct List l1;
+   }
+   ```
 
 While method-1 is obvious, method-2 provides an intuitive abstraction.
 
-In the end, both the methods are identical and based on the tutor's choice, you might have seen both. I have seen both, especially the first one in the cpp space.The [double circular list implementation](./linked-list-code/1-simple-dll.c) is based on method-2. Please read it.
+In the end, both the methods are identical and based on the tutor's choice, you might have seen both. I have seen both, especially the first one in the cpp space. The [double circular list implementation](../linked-lists/1-simple-dll.c) is based on method-2. Please read it.
 
 ## A collection of D.C linked lists
 
@@ -129,17 +140,18 @@ int main(void){
 ### Method2: Node*
 ---
 
-1. Manage the head/tail pointers individually for each list.
+Manage the head/tail pointers individually for each list.
 ```c
 int main(void){
   struct Node* l1_head;
   struct Node* l1_tail;
+
   struct Node* l2_head;
   struct Node* l2_tail;
 }
 ```
 
-2. Create an array of `Node*`.
+Create an array of `Node*`.
 ```c
 int main(void){
   unsigned int listCount = 10;
@@ -149,7 +161,7 @@ int main(void){
 
 ---
 
-Managing pointers individually is tiresome and error-prone, while managing an array of pointers is semantically clean and has indexing benefits. We have an array-based implementation for both the options. Please read the [list_ptr-array.c](./linked-list-code/2-list_ptr-array.c) and [node_ptr-array.c](./linked-list-code/3-node_ptr-array.c) implementations.
+Managing pointers individually is tiresome and error-prone, while managing an array of pointers is semantically clean and has indexing benefits. We have an array-based implementation for both the options. Please read [list_ptr-array.c](../linked-lists/2-list_ptr-array.c) and [node_ptr-array.c](../linked-lists/3-node_ptr-array.c).
 
 Now we have two worthy candidates for implementing `bins[]`. glibc-malloc uses the `Node*` implementation. To understand why the `List*` implementation is not used, we have to understand why `Node*` is used.
 
@@ -157,18 +169,18 @@ Now we have two worthy candidates for implementing `bins[]`. glibc-malloc uses t
 
 So far, we have an array of `Node*` elements, representing the head/tail pointers of lists.
   1. The head/tail pointers point to the first and the last nodes in a list.
-  2. The head/tail pointers act as artificial **ends** for a list while the next/prev pointers [per node] create circularity.
+  2. The head/tail pointers act as artificial **ends** for a list while the next/prev pointers (per node) create circularity.
   3. An empty list has the head/tail pointers NULL.
 
 The push/delete functions are probably the most important operations. They have to run multiple times. Right now, our push/delete logic is simple, but lacks efficiency.
   - The logic is divided into *single node list* and *multiple nodes list*, and the bottleneck is right at the start of the algorithm.
   - For every list, we have to check if it is a singular list, which is inefficient because, it creates a branch in the happy path. The CPU has no option but to evaluate the special case every single time, making the code inefficient.
 
-We need a solution that makes eliminates this "special casing" and make the the push/delete logic branchless. Let's start thinking.
+We need a solution that eliminates this "special casing" and make the the push/delete logic branchless. Let's start thinking.
 
 ## How to make the push/delete logic branchless?
 
-The listHeaders in `node_ptr-array.c` are fixed to the head/tail nodes in the list. If the list is empty, they are NULL.
+The listHeaders in [3-node_ptr-array.c](../linked-lists/3-node_ptr-array.c) are fixed to the head/tail nodes in the list. If the list is empty, they are NULL.
 
 That's how a single list look likes:
 ```c
@@ -199,15 +211,15 @@ struct Node{
 unsigned long listCount = 10;
 struct Node* listHeaders[listCount*2];
 ```
-**Reminder: The struct will have 4 padding bytes after the `data` field to keep alignment.**
+  - **[NOTE]: The struct will have 4 padding bytes after the `data` field to ensure alignment.**
 
 We have to find which headers correspond to which list and the calculation depends on how we count the lists.
   - In case of 0-based indexing, list0's headers will be listHeaders[0] and listHeaders[1]; list1's headers will be listHeaders[2] and listHeaders[3]. So, the headers for the nth list will be `listHeaders[i*2]` and `listHeaders[(i*2)+1]`.
   - In case of 1-based indexing, list1's headers will be listHeaders[0] and listHeaders[1]; list2's headers will be listHeaders[2] and listHeaders[3]; So, the headers for the nth list will be `listHeaders[(i-1)*2]` and `listHeaders[((i-1)*2)+1]`.
 
-Either way, the logic is remains the same.
+Either way, the logic remains the same.
 
-**Note: You don't have to keep the formulas active in your mind. Just be aware of the situation.**
+**Note: You don't have to keep the formulas active in your mind.**
 
 ---
 
@@ -215,10 +227,10 @@ If we ask "*what actually participates in the push/delete process*", the answer 
 
 ***Moments like these, where you have a rough idea of the outcome you need, and you need to find the process that can lead to it, but you have absolutely no substrate to think upon, one way to deal with this is to ask as many questions as you can, related or unrelated. Eventually, you will find the right one. This is also applicable when the answer to a question is a question itself. Keep asking questions and eventually, the recursion will end.*** So, let's ask some questions.
   - If headers need to be nodes themselves, what are headers right now? They are pointers to nodes, not nodes themselves.
-  - If the headers are nodes themselves, *are there distinct nodes for both the headers?*, or, *there is one node that contains both the headers?*
-  -  In either of the cases, what the fields of this/these fake nodes will contain? The `data` field will be garbage for obvious reasons. What about the next/prev fields?
+  - If the headers are nodes themselves, *are there separate nodes for both the headers?*, or, *there is one node that contains both the headers?*
+  - In either case, what will be the content of the fields of this/these nodes? The `data` field will be garbage for obvious reasons. What about the next/prev fields?
   - If we have two fake nodes, the head fake node's next would probably point to the real head node and the tail fake node's prev would point to the real tail node. What happens to the prev and next of the head and the tail fake nodes?
-  - Does the head fake node's prev point to the real tail node and the tail fake node's next points to the real head node in the list? If that is true, we will end up with two identical fake nodes. Correct?
+  - Does the head fake node's prev point to the real tail node and the tail fake node's next points to the real head node in the list? If that is true, we will end up with two identical fake nodes.
   - Does that mean, *we need only one fake node, whose next/prev will point to the real head/tail nodes in the list?* Something like:
     ```c
     ....fake_node<->new_node<->exist_node<->fake_node....
@@ -238,7 +250,7 @@ Let's take an example. The numbers represent 64-bit addresses.
 1008 :: &listHeaders[1]
 ```
 
-If we need a fake node, such that, it's next/prev align with the addresses that point to the head/tail nodes in a list represented by the above headers, where should the fake node start in the memory? *The answer is 992.*
+If we need a fake node, such that it's next/prev align with the addresses that point to the head/tail nodes in a list represented by the above headers, where should the fake node start in the memory? *The answer is 992.*
 
 That means, the fake node for the above list headers can be obtained this way:
 ```c
@@ -266,7 +278,7 @@ The fake node for the 0th list is at a negative index. How is this legal?
 
 An access is illegal when it doesn't align with the memory protection rights (mprotect). Right now, we are doing this on stack. If we are familiar with how the kernel maps a binary and prepares it for execution, we know that a process's stack is initialized by the kernel with a lot of stuff that comes before the main function. Therefore, we are not accessing a memory we don't own, which is why, we don't get a segfault.
 
-*malloc_state*, which is where the bins[] is allocated, either goes on the static storage or an mmapped region. Variables are zeroed and pointers point to NULL initially on static storage. The kernel releases zeroed memory for mmap.
+*malloc_state*, where `bins[]` is allocated, either goes on static storage or an mmapped region. Variables are zeroed and pointers point to NULL initially on static storage. The kernel releases zeroed memory for mmap.
 
 However, we have to be cautious about this kind of pointer arithmetic as it touches a piece of memory which might hold crucial information.
   - If the arithmetic failed and we overwrite that memory, we are officially in **the undefined behavior territory**.
@@ -274,11 +286,11 @@ However, we have to be cautious about this kind of pointer arithmetic as it touc
 
 ---
 
-To complete your understanding, open the [fake-node-impl.c](./linked-list-code/4-fake-node-impl.c). You might notice it still contains the single vs multiple distinction. It is left to make the leap smooth. Just comment that block and run again. You'll not be surprised that it works. [fake-node-impl(2).c](./linked-list-code/4-fake-node-impl(2).c) contains the final version of this implementation.
+To complete your understanding, open the [4-fake-node-impl.c](../linked-lists/4-fake-node-impl.c). You might notice it still contains the single vs multiple distinction. It is left to make the leap smooth. Just comment that block and run again. You'll not be surprised that it works. [4-fake-node-impl(2).c](../linked-lists/4-fake-node-impl(2).c) contains the final version of this implementation.
 
 ---
 
-This is what the author titled as "the repositioning trick". And I am sort of perplexed about the title.
+This is what the author probably meant with "repositioning tricks", and I am sort of perplexed about it.
 ```
   To simplify use in double-linked lists, each bin header acts as 
   a malloc_chunk. This avoids special-casing for headers. But to 
@@ -287,17 +299,17 @@ This is what the author titled as "the repositioning trick". And I am sort of pe
   these as the fields of a malloc_chunk*.
 ```
 
-Anyways, if you have understood everything discussed so far but still feel "sort of incomplete", or sensing the absence of a conclusion, that goes like *"and this is how glibc-malloc does it with bins[]...."*, I want to say that "that conclusion is not possible here", for the time being, at least.
+Anyways, if you have understood everything discussed so far but still feel "sort of incomplete", or sensing the absence of a conclusion that goes like *"and this is how glibc-malloc does it with bins[]...."*, I want to say that "that conclusion is not possible here", for the time being, at least.
 
-`bin_at` is the macro that operationalizes this repositioning trick, which is the conclusion to this heading, but understanding it requires concepts that I have not introduced yet. Therefore, we will explore it later.
+`bin_at` is the macro that operationalizes this repositioning trick, which is the conclusion to this heading, but understanding it requires concepts that are not introduced yet. Therefore, we will explore it later.
 
 ---
 
 So to answer how `bins` are implemented, ***they are implemented as an array of bin headers of type mchunkptr (malloc_chunk\*) and a "repositioning trick" is used to find the correct bin.***
 
-Now you know why a `List*` array is not suitable. It creates hurdles in implementing that "repositioning trick". However, a `List` array might make sense because, internally, it is just `Node*` elements. But in this case, it would simply be an abstraction that is no longer required.
+Now we know why a `List*` array is not suitable. It creates hurdles in implementing that "repositioning trick". However, a `List` array might make sense because, internally, it is just `Node*` elements. But in this case, it would simply be an abstraction that is no longer required.
 
-# The Bookkeeping System, Part 2: Complete Analysis of bins[]
+# Part 2: Static Analysis of bins[]
 
 The source is basically a collection of code and annotations.
   - **Annotations** are comments that never execute. Ideally, they should represent what happens at runtime in "pretty words", i.e. the theoretical model.
@@ -344,7 +356,7 @@ mchunkptr bins[(NBINS-1)*2];
 
 The NBINS definition says there are 128 bins. But the declaration of the bins[] reserve space for only 127 bins.
 
-NBINS is just a macro, which cease to exist after preprocessing. Therefore, 127 is the real number of bins. Then why the annotation said, "there are 128 bins"? *That's what I meant, when I said that, "the annotation and the implementation are not converging".*
+NBINS is just a macro which cease to exist after preprocessing. Therefore, 127 is the real number of bins. Then why the annotation said, "there are 128 bins"? *That's what I meant, when I said that, "the annotation and the implementation are not converging".*
 
 We will consider 127 as the total number of bins.
 
@@ -400,11 +412,10 @@ Have a look at this annotation.
 Bin 0 does not exist. Bin 1 is the unordered list; if that 
 would be a valid chunk size the small bins are bumped up one.
 ```
-  - "List" and "bin" are synonymous terms.
 
 The use of "Bin 0" and "Bin 1" terminology strongly indicates the use of 0-based indexing.
 
-"bin 0 doesn't exist" can have two interpretations.
+*"bin 0 doesn't exist"* can have two interpretations.
   - Bin 0 doesn't exist **literally**. Or,
   - Bin 0 exist, but is of no function.
 
@@ -430,7 +441,7 @@ This line in the annotation: *"if that would be a valid chunk size the small bin
 ### The Questions
 
 The analysis above raises some questions.
-  1. Why the count of bins is 128, when the implementation reserved space for 127 bins only?
+  1. Why the count of bins is 128 when the implementation reserved space for 127 bins only?
   2. Why bin 0 doesn't exist? If "bin 0" was never meant to exist, why the bin count is not 126, instead of 127?
   3. Why bin 1, which is supposed to be a smallbin is [repurposed as] an unsorted bin?
 
@@ -447,7 +458,6 @@ approximately least recently used chunk.
   never requires enough traversal to warrant using fancier 
   ordered data structures.
 ```
-  - What does "least recently used" mean?
 
 A smallbin manages free chunks of a specific size class. Therefore, it requires no ordering.
 
@@ -527,9 +537,9 @@ While a chunk of zero bytes represents nothing, a request of such size is not im
   - If the allocator doesn't want special-casing, the request must be converted to a form which is acceptable to the allocator. That's what request2size(sz) does. Therefore, a request of 0 bytes would be simply rounded up to MINSIZE.
   - Same thing happens with 16 bytes on 64-bit or 8 bytes on 32-bit.
 
-In either of the cases, the resulting chunk will no longer be a fit for "bin 0" or "bin 1". So, there is no utility of these bins.
+In either case, the resulting chunk will no longer be a fit for "bin 0" or "bin 1". So, there is no utility of these bins.
 
-An allocator is a kind of program which has to be mandatorily memory-efficient. By not having "bin 0", we save (SIZE_SZ\*2) bytes and by repurposing "bin 1" as the unsorted bin, we utilize the remaining (SIZE_SZ\*2) bytes.
+Allocator is a kind of program which has to be mandatorily memory-efficient. By not having "bin 0", we save (SIZE_SZ\*2) bytes and by repurposing "bin 1" as the unsorted bin, we utilize the remaining (SIZE_SZ\*2) bytes.
 
 ---
 
@@ -573,9 +583,9 @@ We have recently explored smallbin spacing. Keeping the 64/62 smallbins argument
 
 ---
 
-**Note1: This pyramid is applicable to 32-bit only as "the size of 64 bins" is 8 bytes, which is what SMALLBIN_WIDTH is on 32-bit. So, we have no choice but to think in terms of 32-bit. And I hope that it is not an issue as we have internalized the size model already.**
+**[NOTE-1]: This pyramid is applicable to 32-bit only as "the size of 64 bins" is 8 bytes, which is what SMALLBIN_WIDTH is on 32-bit. So, we have no choice but to think in terms of 32-bit. And I hope that it is not an issue as we have internalized the size model already.**
 
-**Note2: The largebins are expressed in 6 rows. While the source doesn't seem to be using the term "largebin category", we will use it. Otherwise, there is no easy to point to them.**
+**[NOTE-2]: The largebins are expressed in 6 rows. While the source doesn't seem to be using the term "largebin category", we will use it. Otherwise, there is no easy to point to them.**
 
 ---
 
@@ -583,7 +593,7 @@ If we combine our understanding of MALLOC_ALIGNMENT, request2size(sz) and smallb
 
 In case of smallbins, one bin maps to one size class.
 
-Largebins are said to operate on a range of size. What does that imply? What chunk size can enter that bin?
+Largebins are said to operate on a range of size. What does that imply?
 
 The last smallbin size class is for (MIN_LARGE_SIZE-SMALLBIN_WIDTH) bytes. On 32-bit, it is 504. The pyramid says that the largebins in category #1 have a width of 64 bytes. Again, that is kind of sloppy. What it really means is that, "a largebin in category #1 spans across 64 bytes starting from the base size."
   - For the first largebin in category #1, the base is immediately after (MIN_LARGE_SIZE-SMALLBIN_WIDTH) bytes, i.e. 505 bytes, as the last smallbin only manages chunks of size 504 bytes.
@@ -635,7 +645,7 @@ The annotation also mentions the word "approximately". The calculation itself lo
 ### The Approximation
 ---
 
-The bin width is scaling by 3 bits across each classification. It is not arbitrarily chosen. It is what SMALLBIN_WIDTH is on 32-bit.
+The bin width is scaling by 3 bits across each classification. It is not arbitrarily chosen. SMALLBIN_WIDTH on 32-bit is 2<sup>3</sup>.
 
 The pyramid is applicable to 32-bit only. So, bin width scaling by 3 bits is applicable to 32-bit only. What about 64-bit? If we apply the same to 64-bit, bin width should scale by 4 bits across each classification.
 
@@ -646,7 +656,7 @@ Now look at this annotation.
 The bins top out around 1MB because we expect to service
 large requests via mmap.
 ```
-  - First of all, it should be 1 MiB, not 1 MB. That's what the **IEC 80000-13 standard** says is an appropriate unit of measurement in context of memory, as computers work in binary number system.
+  - First of all, it should be 1 MiB, not 1 MB. That's what the **IEC 80000-13 standard** says is the appropriate unit of measurement in context of memory, as computers work in binary number system.
   - Second, there is no clarity about whether it is applicable to 32-bit only or 64-bit as well. And there is no "easy way" to find that.
 
 Anyways, it acknowledges a design decision that, ***we wish to service "large" requests via mmap.***
@@ -661,7 +671,7 @@ Now look at this annotation:
   - "Bucket" seems to be synonymous with bins.
 
 This annotation is questioning whether bin width should scale with the architecture. If bin width scaled with the architecture, the second largest bin would have a width of 16 MiB. In this case, our definition of "large" would change too.
-  - I am not a CS major, so I don't really understand how these systems are constructed. There is a lot to it.
+  - I am not a CS major, so I don't really understand how these systems are constructed. There is a lot that goes in.
   - But benchmarking is possibly one of the things where decisions are tested out. So, if bin width scaled with the architecture, is it proven helpful in benchmarking? There is no mention of that, and benchmarking is beyond the scope of this exploration, so I can't answer this question.
 
 ---
@@ -674,7 +684,7 @@ In this way, we would get a slightly degenerated order of widths for 64-bit: [2<
 
 ---
 
-The author acknowledged the tension, which is a great thing. But the author forgot to provide clarity on the decision they have eventually made.
+The author acknowledged the tension, which is a great thing. But the author forgot to mention the decision they have eventually made.
   - Obviously, we can figure that out by reading the code. But the question is, what does the author, the management team, the contributors think is valid to be acknowledged and what's not.
   - If the bin width scaled with the architecture, you could have mentioned it directly, without saying, "it remains to be seen".
   - If the bin width didn't scaled with architecture, you could simply say, "the bin widths remain the same on both the architectures, which makes the log-spacing argument slightly-off on 64-bit".
@@ -746,13 +756,13 @@ The formula to obtain a smallbin size class is: `(SMALLBIN_WIDTH\*i)`, where *i*
 ```c
 #define  smallbin_index(sz)  ((sz/SMALLBIN_WIDTH) + SMALLBIN_CORRECTION)
 ```
-.... and the compiler will generate identical assembly for both at -O1 or -O2 as they are fundamentally the same thing. The reason the former exist can be attributed to compiler limitations as discussed in the "preprocessing vs inlining" argument earlier.
+.... and the compiler may generate identical assembly for both at -O1 or -O2 as they are fundamentally the same thing.
 
 ---
 
-**Note1:** SMALLBIN_CORRECTION is the macro that adjusts the calculation for config #3, without an extra branching. We will explore it in the end. It has no effects on 32-bit and 64-bit calculation.
+**[NOTE-1]:** SMALLBIN_CORRECTION is the macro that adjusts the calculation for config #3, without an extra branching. It has no effects on 32-bit and 64-bit calculation.
 
-**Note2:** The simplification of smallbin_index(sz) is correct, but with a caveat. That caveat can't be understood yet, but keep that in mind.
+**[NOTE-2]:** The simplification of smallbin_index(sz) is correct, but with a caveat. That caveat can't be understood yet, but keep that in mind.
 
 ### Macro #4: largebin_index(sz)
 ---
@@ -773,9 +783,9 @@ SIZE_SZ=8 is for 64-bit, MALLOC_ALIGNMENT=16 catches the INTERNAL_SIZE_T=4 case 
 ### The Naming Issue
 ---
 
-***Note: This heading is chosen because, we already understand "the bin indexing process". It is purely about pointing an issue out.***
+***[NOTE]: This heading is chosen because, we already understand "the bin indexing process". It is purely about pointing an issue out.***
 
-***An index implies a value which can be subscripted (or indexed) in an array to find a specific element.*** Array subscripting itself is a syntactic sugar built over: `(base + i*scale)`, where `i*scale` is often called `offset`. In most simplest terms, we have a base address, and we add offset bytes to go at a different address.
+***An index implies a value which can be subscripted (or indexed) in an array to find a specific element.*** Array subscripting itself is a syntactic sugar built over: `(base + i*scale)`, where `i*scale` is often called `offset`. In most simplest terms, we have a base address, and we add offset bytes to go to a different address.
 
 Now take this example:
 ```c
@@ -795,7 +805,7 @@ We know this already. We exercise this knowledge all the time. The only reason I
 
 Look at what smallbin_index is generating for the 1008 bytes size class on 64-bit: `(1008 >> 4) -> 63`.
   - Since bins are implemented as headers, the output has to undergo a calculation to access the correct headers, and the output of smallbin_index participates in that calculation. How can we treat it as **the index**?
-  - It is perfectly comparable to example 2 above, where `i` participates in the index calculation process, it is not the index.
+  - It is perfectly comparable to example-2 above, where `i` participates in the index calculation process, it is not the index.
 
 ---
 
@@ -831,7 +841,7 @@ You might still be unconvinced about the issue, and it's not a problem. Let's id
 ---
 
 And that's the naming issue is about.
-  - The `bin_index` macros are implying to generate a value which is an index. But the macro which calculates the right address of the fake chunk is using the output of bin_index to compute the final index, which when subscripted gives the address which when typecast-ed to a (malloc_chunk*) has its fd/bk overlap with the correct bin headers.
+  - The `bin_index` macros are implying to generate a value which is an index. But the macro which calculates the right address of the fake chunk is using the output of `bin_index` to compute the final index, which when subscripted gives the address which when typecast-ed to a (malloc_chunk*) has its fd/bk overlap with the correct bin headers.
   - Therefore, "bin_number" is a more accurate representation of what these macros are generating.
 
 For some people, it might be a nudge, or nitpicking, and I will not argue with them. Everyone is allowed to think and perceive differently, if that helps.
@@ -878,7 +888,7 @@ To access the unsorted bin, what should be the address of the fake chunk?
   - We need the fd/bk of the fake chunk to overlap with unsb_head/unsb_tail. In malloc_chunk, 2 SIZE_SZ fields come before fd/bk.
   - That means, the address represented by `&(unsb_head) - 2*SIZE_SZ` is where the fake chunk should be. How we obtain that address entirely depends on the indexing paradigm in use.
 
-Before we do the step-by-step calculation for both the paradigms, here is a simple question. What's the way to do 1-based indexing in languages where the default is 0-based? Here is an example:
+Before we do the step-by-step calculation for both the paradigms, here is a simple question. What's the way to implement 1-based indexing in languages where the default is 0-based? Here is an example:
 ```c
 int arr[10];
 
@@ -1015,7 +1025,7 @@ For 32-bit, the first largebin in category #1 has a range of [505, 505+64), or [
   - Right shift by 6 bits, we get: [8, 8, 8, 8, 8, 8, 8, 8].
   - Divide by 2<sup>6</sup>, we get: [8.0, 8.125, 8.25, 8.375, 8.5, 8.625, 8.75, 8.875]
 
-It is both tedious and error prone to do this manually. So, there are two scripts, written to automate this process. They are in the `glibc-malloc/dynamic-analysis/scripts` directory, prefixed with `bin_info_*`. Both the scripts use elementary python constructs and generate one output file per config. Don't run them, just read.
+It is both tedious and error prone to do this manually. So, there are two scripts, written to automate this process. They are in the `dynamic-analysis/scripts` directory, prefixed with `bin_info_*`. Both the scripts use elementary python constructs and generate one output file per config. Don't run them, just read.
 
 One script is based on the pyramid, while the other is based on the macros. Why? Run both the scripts and read the 64-bit output files. The scripts are dense, as they are constructed with dynamic analysis in mind, so focus on the last 3 columns of the largebin tables.
 
@@ -1046,3 +1056,9 @@ Just seeing largebin_index_64 would make me angry and no matter how persistent e
 Anyways, this summarizes the largebin ranges section. The script is the most reliable method to generate the largebins size ranges.
 
 Now it is time for dynamic analysis.
+
+---
+
+# Part 3: Dynamic Analysis of bins[]
+
+Check out the experiments in `bins/`.
