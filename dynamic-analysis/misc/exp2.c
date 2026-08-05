@@ -1,4 +1,4 @@
-/* [EXPERIMENT #9] */
+/* [EXPERIMENT #2] */
 
 /* [OBJECTIVE]: The top chunk is always preceded by 
                 an in-use chunk. 

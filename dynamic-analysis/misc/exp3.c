@@ -1,4 +1,4 @@
-/* [EXPERIMENT #11] */
+/* [EXPERIMENT #3] */
 
 /* [OBJECTIVE]: Verify which chunk is taken out from a 
                 largebin when multiple chunks of that 
