@@ -5,6 +5,7 @@
   - [Coalescing](#coalescing)
 - [Dynamic Analysis](#dynamic-analysis)
 
+Status: Polish Pending.
 
 # Chunk Description
 

@@ -1,3 +1,5 @@
+Status: Done.
+
 # Overflow Mechanics
 
 C is statically typed, so every variable has a type.

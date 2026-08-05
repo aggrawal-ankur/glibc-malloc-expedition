@@ -1,3 +1,5 @@
+Status: Done.
+
 # The Size Model
 
 Everything in glibc-malloc is directly or indirectly in relation with size. Therefore, the allocator has a size model to work efficiently.

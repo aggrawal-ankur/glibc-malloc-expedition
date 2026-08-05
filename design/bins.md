@@ -17,6 +17,7 @@
   - [Largebin Size Ranges, Part 2](#largebin-size-ranges-part-2)
 - [Part 3: Dynamic Analysis of bins\[\]](#part-3-dynamic-analysis-of-bins)
 
+Status: Done
 
 # The Problem
 
