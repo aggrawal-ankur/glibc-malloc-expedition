@@ -824,9 +824,9 @@ libc_hidden_proto (__libc_mallopt)
 /* M_TOP_PAD is the amount of extra padding space to 
    allocate or retain whenever sbrk is called.
 
-  In both cases, the actual amount of padding is rounded 
-  to a page boundary, so that the arena always ends at a 
-  page boundary.
+  In either case, the actual amount of padding is 
+  rounded to a page boundary, so that the arena 
+  always ends at a page boundary.
 
   The main reason for using padding is to avoid calling 
   sbrk so often. Having even a small pad greatly reduces 
@@ -963,10 +963,11 @@ static size_t musable(void *mem);
 
 /* --------------- Chunk representations --------------- */
 
-/* This struct declaration is misleading (but accurate and 
-   necessary). It declares a "view" into memory allowing 
-   access to necessary fields at known offsets from a given 
-   base. */
+/* This struct declaration is misleading (but accurate 
+   and necessary). It declares a "view" into memory 
+   allowing access to necessary fields at known offsets 
+   from a given base.
+*/
 struct malloc_chunk {
 
   INTERNAL_SIZE_T      mchunk_prev_size;  /* Size of previous chunk (if free).  */
@@ -984,7 +985,7 @@ struct malloc_chunk {
 
 /* ---------- Size and alignment checks and conversions ---------- */
 
-/* Conversion from malloc headers to user pointers, and back.
+/* Conversion from malloc headers to user pointers, and back. 
 
   When using memory tagging the user data and the malloc data 
   structure headers have distinct tags. Converting fully from 
@@ -1005,7 +1006,7 @@ struct malloc_chunk {
 */
 
 /* It is the minimum overhead required in every chunk 
-   regardless of their type. */
+   regardless of type. */
 #define  CHUNK_HDR_SZ  (2 * SIZE_SZ)
 
 /* Return the pointer to the payload memory corresponding to 
@@ -1025,7 +1026,9 @@ struct malloc_chunk {
 
 /* The smallest possible chunk size after ensuring 
    alignment. This is the smallest chunk that malloc 
-   returns.
+   returns. Check chunk/exp1.c experiment for more 
+   information:
+    https://github.com/aggrawal-ankur/glibc-malloc-expedition/blob/main/dynamic-analysis/chunk/exp1.c
 */
 #define MINSIZE  (unsigned long) (((MIN_CHUNK_SIZE+MALLOC_ALIGN_MASK) & ~MALLOC_ALIGN_MASK))
 
@@ -1196,8 +1199,8 @@ checked_request2size(size_t req) __nonnull (1)
 /* Set the mchunk_size of chunk (p) without disturbing 
    its metadata bits.
 
-   The metadata bits are first extracted and then 
-   OR-ed with the new size.
+  The metadata bits are first extracted and then OR-ed 
+  with the new size.
 */
 #define  set_head_size(p, s)  ((p)->mchunk_size = (((p)->mchunk_size & SIZE_BITS) | (s)))
 
@@ -1606,7 +1609,8 @@ static void unlink_chunk (mstate av, mchunkptr p)
   - GitHub Link:
     https://github.com/bminor/glibc/commit/9bf248c6c6290a2a8a729f10f1d94258868a0650
 
-   dlmalloc@2.7.0 was released on March 11, 2001. */
+   dlmalloc@2.7.0 was released on March 11, 2001.
+*/
 #define set_contiguous(M)      ((M)->flags &= ~NONCONTIGUOUS_BIT)
 
 
@@ -2150,7 +2154,8 @@ static void* sysmalloc_mmap(
   /* Effectively 0, as both the macros have the same 
      values in all the three configurations.
 
-    [GDB EXPERIMENT]
+    Check out (misc/exp4.c) in GDB: 
+      https://github.com/aggrawal-ankur/glibc-malloc-expedition/blob/main/dynamic-analysis/misc/exp4.c
   */
 
   /* At least one page. */
@@ -2270,6 +2275,9 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
       avoid consuming arena space. It allows the kernel 
       to reclaim a large mapping when it is freed, 
       keeping the memory footprint stable.
+
+      Check out this in GDB: 
+        https://github.com/aggrawal-ankur/glibc-malloc-expedition/blob/main/dynamic-analysis/misc/exp4.c
   */
   if (
     av == NULL ||
@@ -2280,11 +2288,12 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
   ){
     char *mm;
 
-    /* [PATH 1A]: Use huge pages if the requested size is more 
-        than the huge page size and huge pages are enabled.
+    /* [PATH 1A]: Use huge pages if the requested size is 
+        more than the huge page size and huge pages are 
+        enabled.
 
-      We don't have to issue the THP madvise call because we 
-      are using huge pages directly.
+      We don't have to issue the THP madvise call because 
+      we are using huge pages directly.
     */
     if (mp_.hp_pagesize > 0 && nb >= mp_.hp_pagesize){
       mm = sysmalloc_mmap(nb, mp_.hp_pagesize, mp_.hp_flags);
@@ -4927,9 +4936,8 @@ static void* _int_malloc(mstate av, size_t bytes)
               It shows what fwd, bck and fwd->fd imply after the 
               above two assignments are done. To understand this 
               check, we must understand how skip list pointers are 
-              managed. This has already been discussed in this lab 
-              [INSERT LINK]. If you are feeling rusty, visit it 
-              again.
+              managed. This has already been discussed in bins/exp6.c 
+                https://github.com/aggrawal-ankur/glibc-malloc-expedition/blob/main/dynamic-analysis/bins/exp6.c
 
               To make it easier, we will restrict ourselves to the 
               category #1 largebin on 64-bit that manages 4 chunks 
@@ -5115,8 +5123,9 @@ static void* _int_malloc(mstate av, size_t bytes)
 
       However, the current malloc doesn't do it. It takes 
       the duplicate just after the unique chunk. And I have 
-      no answer to the "why". You can check out this lab to 
-      see it in action: [INSERT LINK].
+      no answer to the "why". Check out bins/exp3.c: 
+        https://github.com/aggrawal-ankur/glibc-malloc-expedition/blob/main/dynamic-analysis/misc/exp3.c
+
       - dlmalloc@2.7.0 uses a chunk-by-chunk traversal to 
         land on the oldest duplicate. Read the line #3412 
         here: 
