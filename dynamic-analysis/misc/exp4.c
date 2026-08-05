@@ -41,6 +41,14 @@
 
   Use (s) to step into _int_malloc and sysmalloc. Use (n) 
   to move to the next instruction.
+
+  [NOTE]: When the execution reaches path-1 in sysmalloc, 
+          step into sysmalloc_mmap and check the value of 
+          padding. It should be zero as the expression is 
+          a compile-time zero.
+          ```
+          size_t padding = MALLOC_ALIGNMENT - CHUNK_HDR_SZ;
+          ```
 */
 
 #include <stdlib.h>
@@ -52,9 +60,9 @@ int main(void){
 
 /* [ANALYSIS] 
 
-  Inspect the returned chunk just at the breakpoint. Since 
-  it is an mmapped chunk, the IS_MMAPPED bit (0x2) would 
-  be set. Print the chunk, and take bitwise AND of 0x2 with 
-  mchunk_size. The result would be 0x2.
+  Inspect the returned chunk just at the breakpoint. 
+  Since it is an mmapped chunk, the IS_MMAPPED bit (0x2) 
+  would be set. Print the chunk, and take bitwise AND of 
+  0x2 with mchunk_size. The result would be 0x2.
 
 */
