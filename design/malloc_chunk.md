@@ -1,4 +1,5 @@
 - [Chunk Description](#chunk-description)
+  - [Layout History](#layout-history)
   - [Layout Description](#layout-description)
   - [Usage Description](#usage-description)
   - [Fragmentation](#fragmentation)
@@ -9,16 +10,15 @@ Status: Polish Pending.
 
 # Chunk Description
 
-When malloc is called, the allocator carves a piece of dynamic memory, attaches some bookkeeping and returns it to the process. This bookkeeping is kept in a structure called `malloc_chunk`.
+When malloc is called, the allocator carves a piece of virtual memory, attach some bookkeeping and returns it to the process. This bookkeeping is kept in a structure called `malloc_chunk`.
 
-***A chunk is a piece of metadata associated with a portion of dynamic memory.*** But when we say "a chunk of memory", it refers to "the *chunk metadata* and the *dynamic memory*" **together**.
-
-This metadata sits right before the payload memory, like this:
+This metadata sits right before the usable memory, like this:
 ```
-metadata  payload
+metadata  usable-mem
           ^
           pointer returned to the process
 ```
+  - **[NOTE]: "usable-mem", "user-mem", "payload-mem", all refer to the same thing.**
 
 ---
 
@@ -45,17 +45,81 @@ The authors have acknowledged that this layout is "misleading".
   fields at known offsets from a given base. See explanation below.
 */
 ```
-But in my understanding, the layout is well-reasoned. It is the reasoning which is not documented properly, making it complicated to understand. The following is my attempt to make that reasoning visible.
 
-Let's start with understanding each field in malloc_chunk.
+But in my understanding, the layout is well-reasoned. But the reasoning is not documented properly, making it complicated to understand. The following is my attempt to make that reasoning visible.
+
+---
+
+Let's start with the history of this layout and annotation.
+
+## Layout History
+
+We will use this repository on GitHub: [denizThatMenace/dlmalloc](https://github.com/denizThatMenace/dlmalloc).
+
+We can notice that malloc_chunk has evolved a lot to take the final shape we are studying.
+
+Starting with malloc-2.6.3g.c, we had this layout:
+```c
+struct malloc_chunk
+{
+  size_t prev_size;
+  size_t size;
+  struct malloc_chunk* fd;
+  struct malloc_chunk* bk;
+};
+```
+
+malloc-2.6.3i.c introduced INTERNAL_SIZE_T.
+```c
+struct malloc_chunk
+{
+  INTERNAL_SIZE_T prev_size;
+  INTERNAL_SIZE_T size;
+  struct malloc_chunk* fd;
+  struct malloc_chunk* bk;
+};
+```
+
+malloc-2.7.0.c introduced the above annotation. I don't know why the author placed this annotation.
+
+A commit on May 1, 2007 by Ulrich Drepper introduced the remaining fields, i.e. fd_nextsize/bk_nextsize.
+```
+[BZ #4349]
+2007-04-30  Ulrich Drepper  <drepper@redhat.com>
+	          Jakub Jelinek  <jakub@redhat.com>
+
+      	[BZ #4349]
+      	* malloc/malloc.c: Keep separate list for first blocks on the bin
+      	lists with a given size.  This helps skipping over list elements
+      	we know won't fit in two places.
+      	Inspired by a patch by Tomash Brechko <tomash.brechko@gmail.com>.
+```
+
+---
+
+Let's understand each field in malloc_chunk.
 
 ## Layout Description
+
+Before we explore the layout, we have to understand one thing. This applies not only to malloc_chunk, but anything that feels complicated at first.
+
+malloc is a historical codebase. It has received improvements over many decades. What we are seeing now is not how it started. It started very simple and what we are reading is an evolved form.
+
+Often times, accommodating new features requires changing the existing structure. Sometimes these changes are huge, other times these changes are small. But small changes accumulated over decades change the shape of the data structures and the logic behind them.
+
+In my understanding, the thing that suffers the most is reasoning. The reasoning no longer belongs to one region. We have to understand multiple things in order to make sense of it.
+
+malloc_chunk is a great example of this. How hard it can be to understand a tiny structure with 6 fields? The use of those fields can be easily summed up in a paragraph. However, it is not what I was looking for. I wanted to understand the why behind the design.
+
+Let's start.
+
+---
 
 The **allocation size** is divided into **small** and **large** based on a threshold. Therefore, we have two types of chunks based on **size**: small chunks and large chunks.
 
 A chunk can exist in two states: **in-use** and **free**.
-  - **In-use chunks** (both small and large) are self-managed and require nothing other than the usual chunk metadata.
-  - **Free chunks** require extra bookkeeping as they can be reused in servicing future malloc requests. Small free chunks and large free chunks are managed differently.
+  - **In-use chunks** (both small and large) are self-managed and require only malloc_chunk for metadata.
+  - **Free chunks** require extra bookkeeping as they can be reused by future requests. Small and large chunks are managed differently.
 
 ---
 
@@ -66,37 +130,35 @@ Based on the information above, the allocator has 3 chunk states to manage.
 
 Here is a high level description of how malloc_chunk is used to represent these 3 states of chunks.
 
-`mchunk_prev_size` holds the size of the previous chunk and `mchunk_size` holds the size of the current chunk.
-  - **Note1: size means (chunk_metadata + dynamic_memory).**
-  - **Note2: INTERNAL_SIZE_T is discussed later. For the time being, treat it like `size_t`.**
-  - **Note3: mchunk_prev_size is discussed later.**
+`mchunk_prev_size` holds the size of the previous chunk in memory and `mchunk_size` holds the size of the current chunk. Size includes the metadata overhead as well.
+  - [QUES]: Why the size of the previous chunk is stored? Discussed later in the same file.
+  - [QUES]: Why the size of the next chunk is not stored? Discussed later in the same file.
+  - [QUES]: What is INTERNAL_SIZE_T? Discussed later in the same file. For the time being, treat it like `size_t`.
 
 ---
 
-Free chunks are managed via bins, which are "**circular doubly linked lists**". We have small bins for small chunks and large bins for large chunks.
+Free chunks are managed via bins, which are **circular doubly linked lists**. We have small bins for small chunks and large bins for large chunks.
 
-Small bins manage free chunks of exact (fixed) size classes, while large bins manage free chunks falling in specific size ranges. For example:
-  - a small bin of size class 80 bytes contains free chunks of size 80 bytes.
-  - a large bin of size range [1024, 1088) bytes contains free chunks of sizes falling in that range, like 1024, 1040 and so on.
+Small bins manage free chunks of only one size class, while large bins manage free chunks of multiple size classes falling in a specific range. For example:
+  - a small bin of size class 80 bytes contains free chunks of size 80 bytes only.
+  - a large bin of size range [1024, 1088) bytes contains free chunks of size classes falling in that range. **[NOTE] Yes, the range is not arbitrary. It is explored in bins.md later.**
 
-A small bin uses only the `fd/bk` fields of malloc_chunk to form a doubly circular linked list. A large bin uses both the `fd/bk` and the `fd_nextsize/bk_nextsize` pointers. This is a part of the bookkeeping section and it is discussed there in detail.
+Small chunks use only the `fd/bk` fields while large chunks use both the `fd/bk` and the `fd_nextsize/bk_nextsize` fields. This is a part of the bookkeeping section and it is discussed there in detail.
 
 ---
 
-In simple words, ***`malloc_chunk` is a generic implementation, designed to provide a single interface for all the three states in which a chunk can exist.*** This is both advantageous and cumbersome.
-
-This is the reasoning behind the layout. Let's discuss how this layout is used.
+In simple words, ***`malloc_chunk` is a generic implementation designed to provide a single interface for all the three states in which a chunk can exist.*** This is both advantageous and cumbersome.
 
 ## Usage Description
 
-**Note: For simplicity, all the calculations are for 64-bit Linux. But the rules are the same for 32-bit Linux. Just use 4 instead of 8.**
+**[NOTE]: For simplicity, all the calculations are for LP64 GNU/Linux (64-bit). But the rules are the same for 32-bit Linux. Just use 4 instead of 8.**
 
-On 64-bit Linux, both size_t and pointers are 8-bytes wide. That means, the size of malloc_chunk is (8*6) 48 bytes. We can verify this with sizeof as well. Create a .c file, copy the definition, and print `sizeof(struct malloc_chunk)`.
+On 64-bit Linux, both size_t and pointers are 8-bytes wide. That means, the size of malloc_chunk is (8*6) 48 bytes. We can verify this with `sizeof` as well. Create a .c file, copy the definition, replace INTERNAL_SIZE_T with size_t and print `sizeof(struct malloc_chunk)`.
 
-malloc_chunk being a generic implementation is advantageous as it allows all the three 3 states of a chunk to be represented by a single struct definition. But in reality, these 3 states require only a subset of the whole implementation.
+malloc_chunk being a generic implementation is advantageous as it allows all the three 3 states of a chunk to be represented by a single struct definition. But each state uses only a subset of the whole struct. This makes understanding the usage complex.
   1. mchunk_prev_size and mchunk_size are necessary in all the cases.
-  2. In an in-use chunk, the four pointers aren't useful.
-  3. In a small free chunk, fd/bk are required and fd_nextsize/bk_nextsize aren't useful.
+  2. The pointer fields aren't useful in **in-use** chunks.
+  3. In a small free chunk, only fd/bk fields are required.
   4. In a large free chunk, everything is required.
 
 Therefore, we need to use malloc_chunk such that,
@@ -104,43 +166,42 @@ Therefore, we need to use malloc_chunk such that,
   - fd_nextsize/bk_nextsize remain garbage in a small free chunk.
 
 We have two ways to use malloc_chunk.
-  - **Method1:** Set the required members appropriately and the not required ones NULL.
-  - **Method2:** Only set the required members and leave the rest.
+  - **Method-1:** Set the required members appropriately and the not required ones NULL.
+  - **Method-2:** Only set the required members and leave the rest.
 
 Let's calculate how these methods perform for an in-use chunk.
 
-In method1, we have to allocate full 48 bytes for the metadata, followed by the payload memory. This wastes 24 bytes per in-use chunk, regardless of small or large. Visually:
+In method-1, we have to allocate full 48 bytes for the metadata, followed by the payload memory. This wastes 32 bytes per in-use chunk, regardless of small or large. Visually:
 ```
 -----------------------------------------------------------------
-| prev_size | mchunk_size | fd | bk | fd_nextsize | bk_nextsize |
+| prev_size | mchunk_size | fd | bk | fd_nextsize | bk_nextsize | user-mem
 -----------------------------------------------------------------
-                                                                  ^
-                                                                  Dynamic memory starts here
 ```
 
-In method2, only the initial 16 bytes in the metadata struct are usable, followed by the payload memory. Visually:
+In method-2, only the initial 16 bytes in the metadata struct are usable, followed by the payload memory. Visually:
 ```
 -----------------------------------------------------------------
 | prev_size | mchunk_size | fd | bk | fd_nextsize | bk_nextsize |
 -----------------------------------------------------------------
                             ^
-                            Dynamic memory starts here
+                            user-mem starts here
 ```
-  - Method2 prevents the wastage of the trailing 24 bytes.
-  - Those fields still exist, but are garbage.
+  - Method-2 prevents the wastage of the trailing 24 bytes.
+  - Those fields still exist, but they are garbage.
+  - It doesn't violate struct integrity as it is just memory underneath. It doesn't matter what goes on those bytes. We never dereference them in "in-use" chunks.
 
-Method2 is how glibc does it.
+Method-2 is how glibc does it.
 
 ---
 
 **Important Note**
 
-As someone new to this, the design is not very beginner-friendly. If you can't understand it in your first attempt, remember this, I've invested weeks to understand every part of glibc-malloc, fighting this design. The document you are reading is a result of multiple rewrites.
+As someone new to this, the design is not very beginner-friendly. If you can't understand it in your first attempt, remember this, you are not alone. The document you are reading is a result of multiple rewrites. It took me several weeks to comprehend malloc_chunk, yet I have polished this document multiple times to reach here.
 
 A lot of times, we prevent ourselves from understanding the author's design because, we think that the problem should be solved in a certain different way. This is completely an unconscious act, which is why we are not aware of it.
 
-To improve yourself, you can try this.
-  - Acknowledge the author's design even if you have to do it against your will.
+I do this to deal with this issue.
+  - Acknowledge the author's design even if I have to do it against my will.
   - Write your design on a paper or in your IDE.
   - Contradict your design with the author's design and notice which performs better.
 
@@ -255,7 +316,7 @@ Functionally ->          [ Chunk1                                       ] [ Chun
 
 ---
 
-Now we largely understand the size fields. To complete our understanding, we have to explore one last piece.
+We have largely understood the size fields. To complete our understanding, we have to explore one last piece, **[the size model](./size-model.md)**. After this, we are ready for some dynamic analysis.
 
 # Dynamic Analysis
 
