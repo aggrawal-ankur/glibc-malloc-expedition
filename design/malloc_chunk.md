@@ -213,31 +213,47 @@ This is how a single malloc_chunk exists. But a standard Linux process calls mal
 
 ## Fragmentation
 
-***When memory is allocated-deallocated multiple times, it creates gaps of "unused memory" in the address space.***
+When memory is allocated-deallocated multiple times, it creates gaps of "unused memory" in the address space. This increases the pressure on physical memory as the freed chunks are still backed by physical memory but not utilized by the process.
 
-This increases pressure on physical memory because, the freed chunks are still backed by physical memory but not utilized by the process. The only way to reduce this pressure is to reuse (reallocate) the freed chunks, which entirely depends on the process asking for a size which is available as a free chunk.
+The immediate solution is to release the memory back into the system. We can do this in two ways.
+
+1. Release the physical backing but keep the virtual address range. When the address range is accessed again, the system backs the memory again.
+   - The `madvise` syscall with `MADV_DONTNEED` or `MADV_FREE` is used to tell the kernel that the application no longer needs the data in this range, allowing the kernel to immediately or lazily reclaim the physical pages while keeping the mmap virtual allocation fully intact. It can be used on both sbrk and mmapped regions.
+   - `mmap` with `MAP_FIXED` and `PROT_NONE` can achieve a similar effect.
+
+2. Release both the physical memory and the virtual address range. This entirely tears down the allocation. `munmap` and negative `sbrk` are used to do this.
+
+However, there are limitations to this.
+  - All the four syscalls above require page granularity. We can not release memory arbitrarily.
+  - While mmap/munmap strictly operate on page-basis, sbrk is arbitrary in nature. But negative arguments alone aren't enough, unless they cross a page boundary. If the decrement leaves the break inside the same page, the program break is virtually decreased, but that page remains mapped and its data is completely untouched and accessible.
+
+As we will read the trimming functions in malloc, we will find a few other complications involved here.
+
+A standard page is 4-KiB in size, but a size like 3000 bytes is not small either. But the above option doesn't apply here. We need a way to deal with small fragments of memory.
+
+---
 
 The fragmented memory can exist in two layouts, depending on the malloc-free sequence.
   1. In-use and free chunks in an alternating sequence, like this: {...., in-use, free, in-use, free, ....}
   2. Multiple free chunks adjacent to each other, like this: {...., in-use, free, free, in-use, ....}
 
-Suppose two chunks of 48 bytes were freed. Now we have 96 bytes of memory which can be reused. The next malloc request asked for 96 bytes. Can we reuse the 96 bytes? No. Because, those 96 bytes are not contiguous. That is fragmentation in layout1.
+Suppose two distant chunks, each of size 48 bytes, were freed. Now we have 96 bytes of memory which can be reused. The next malloc request asked for 80 bytes. Can we reuse those 96 bytes? No, because those 96 bytes are not contiguous. That is fragmentation in layout-1.
 
-Suppose two adjacent chunks, each of size 48 bytes, were freed and the next malloc request asked for 96 bytes. Can we reuse these 96 bytes? NO. Because, the memory is contiguous yet fragmented across two chunks. That is fragmentation in layout2.
+Suppose two adjacent chunks, each of size 48 bytes, were freed. The next malloc request asked 80 bytes. Can we reuse those 96 bytes? No. The memory is contiguous yet fragmented across two chunks. That is fragmentation in layout-2.
+
+Layout-1 fragmentation can be reduced if existing free chunks are reused. Suppose a request came for a 48 bytes chunk. The allocator will search if there is a 48 bytes free chunk available and reuse it.
+
+Layout-2 fragmentation can be reduced by merging all the adjacent free chunks into one single chunk. In the above example, the process must request (<= 48 bytes) in order to reuse that free chunk. But if they are merged, the possibility of it being utilized increases multiple times. In simple words, layout-2 fragmentation is converted into layout-1.
 
 ---
 
-The allocator can't do anything about the fragmentation in layout1. But the allocator can manage layout2 fragmentation to some extent. Take this:
-  - The probability of the process asking for another 48 bytes bytes chunk might be less, but the probability of asking a size which falls in the range of 48-96 bytes is definitely higher.
-  - But this is possible only when the two adjacent free chunks are coalesced, making one big block of free memory. Basically, converting layout2 memory to layout1 memory.
-
-To implement coalescing, we need two things.
+We need two things to implement coalescing.
   1. A way to identify if the next/prev chunk is free.
   2. If the next/prev chunk is free, we need a way to reach that chunk from the current chunk.
 
 A computer scientist and mathematician named **Donald Knuth** has discussed multiple strategies to manage dynamic memory. One of these strategies describe a way to embed coalescing support directly in the chunk metadata. It is discussed in his book *The Art Of Computer Programming, Volume 1: Fundamental Algorithms*, paragraph 4, page 440. It is called, **the boundary tag method**.
 
-The authors of this allocator have implemented the same strategy. Let's dive into coalescing.
+The same strategy is implemented here.
 
 ## Coalescing
 
@@ -245,34 +261,33 @@ Coalescing can happen in two ways.
   1. **Forward coalescing**, where we coalesce the n<sup>th</sup> chunk with the (n+1)<sup>th</sup> chunk.
   2. **Backward coalescing**, where we coalesce the n<sup>th</sup> chunk with the (n-1)<sup>th</sup> chunk.
 
-Forward coalescing is simple to implement. Just add the size of the current chunk into the pointer and we are on the next chunk. But backward coalescing is complicated as we don't know the size of the previous chunk.
+Forward coalescing is simple to implement. Just add the size of a chunk to its pointer and we are on the next chunk. But backward coalescing is complicated as we don't know the size of the previous chunk.
 
 For this reason, malloc_chunk comes with `mchunk_prev_size`. This field stores the size of the previous chunk and we can use it to offset back to the (n-1)<sup>th</sup> chunk.
 
-Now we need a way to find if the next/prev chunk is free. To do this, we use mchunk_size. Let's understand how.
-
----
+Now that we have reached the next/prev chunks, we have to find if they are free. To do this, we use `mchunk_size`. Let's understand how.
 
 ### The second use of 'mchunk_size'
+---
 
 We know that `malloc()` returns a memory which can store the largest fundamental type supported by the ISO C standard.
 
-The largest type in both 32-bit and 64-bit architectures is twice the maximum addressable width, i.e. `double` (8 bytes) on 32-bit and `long double` (16 bytes) on 64-bit.
+The largest type in both 32-bit and 64-bit architectures is twice the maximum addressable width, i.e. `double` (8 bytes) on 32-bit and `long double` (16 bytes) on 64-bit. This is true for LP64 GNU/Linux.
 
-That means, the size is always a multiple of 8, regardless of the architecture (32-bit or 64-bit). That means, the lower 3 bits in mchunk_size are always 0 (or better, **unused**).
+That means, the size is always a multiple of 8, regardless of the architecture (32-bit or 64-bit). That means, the lower 3 bits in mchunk_size are always **unused**.
 
-We can use these bits of mchunk_size to store state information. It does change the size value, but we can mask the lower 3 bits to get the actual size.
+We can use these bits in mchunk_size to store state information. It does change the size value, but we can mask the lower 3 bits to get the actual size.
 
 Here is a description of these bits.
 
-| Bit # | Bit Name | State | Description |
-| :---: | :------- | :---- | :---------- |
-| 0 | PREV_INUSE (P) | **0** (clear) | The (n-1)<sup>th</sup> chunk is free and the prev_size of the n<sup>th</sup> chunk stores the size of the (n-1)<sup>th</sup> chunk. |
-| | | **1** (set) | The (n-1)<sup>th</sup> chunk is in-use and the prev_size of the n<sup>th</sup> chunk doesn't store the size of the (n-1)<sup>th</sup> chunk. |
-| 1 | IS_MMAPPED (M) | **0** (clear) | It is a normal chunk belonging to an arena. |
-| | | **1** (set) | It is an mmapped chunk. |
-| 2 | NON_MAIN_ARENA (A) | **0** (clear) | The chunk belongs to the main arena. |
-| | | **1** (set) | The chunk belongs to a non-main arena. |
+| Bit # | Bit Name           | State     | Description |
+| :---: | :-------           | :----     | :---------- |
+|   0   | PREV_INUSE (P)     | 0 (clear) | The (n-1)<sup>th</sup> chunk is free and the prev_size of the n<sup>th</sup> chunk stores the size of the (n-1)<sup>th</sup> chunk. |
+|       |                    | 1 (set)   | The (n-1)<sup>th</sup> chunk is in-use and the prev_size of the n<sup>th</sup> chunk doesn't store the size of the (n-1)<sup>th</sup> chunk. |
+|   1   | IS_MMAPPED (M)     | 0 (clear) | It is a normal chunk belonging to an arena. |
+|       |                    | 1 (set)   | It is an mmapped chunk. |
+|   2   | NON_MAIN_ARENA (A) | 0 (clear) | The chunk belongs to the main arena. |
+|       |                    | 1 (set)   | The chunk belongs to a non-main arena. |
 
 ---
 
@@ -286,14 +301,14 @@ Now we can implement coalescing through the boundary tag method.
 
 ***Boundary tag method is a dynamic memory management technique, where the size is stored both in the head and the tail of the chunk.***
 
-It suggests to have metadata before and after the payload memory. `malloc_chunk` compensates for what comes before the payload memory, what compensates for the trailing size field?
+It suggests to have metadata before and after the payload memory. `malloc_chunk` compensates for what comes before the payload memory, where the trailing size field comes from?
 
-If we create a separate struct, like `malloc_chunk_trail` and put it after the payload memory, that creates bookkeeping havoc.
+If we create a separate struct, like `malloc_chunk_trail`, and put it after the payload memory, that creates bookkeeping havoc.
 
 How about putting another size field in the front of malloc_chunk and use it as a property of the previous chunk?
   - We don't have to create a new metadata struct.
   - The first chunk's prev_size would be a waste, as nothing exist before it. But we are ready for that tradeoff.
-  - There will be some sort of dummy chunk in the end to compensate for the last malloced chunk.
+  - There will be some sort of dummy chunk in the end to compensate for the last usable chunk.
 
 The layout would look something like this:
 ```
@@ -304,19 +319,21 @@ Structurally -> [ Chunk1                                     ] [ Chunk2         
 Functionally ->          [ Chunk1                                       ] [ Chunk2                                     ]
 ```
 
-***The mchunk_prev_size of the n<sup>th</sup> chunk is "by-use" a part of the (n-1)<sup>th</sup>chunk. Structurally, it is still a part of the n<sup>th</sup> chunk.*** This is boundary tag method in implementation.
+***Therefore, the mchunk_prev_size of the n<sup>th</sup> chunk is functionally a part of the (n-1)<sup>th</sup>chunk. Structurally, it is still a part of the n<sup>th</sup> chunk.*** This is boundary tag method.
 
 -- **Important Note** --
 
-***Again, as someone new to this, the design is not beginner-friendly at all. If you can't understand it in your first attempt, don't worry. What you are reading is months of work and a result of multiple rewrites.***
+***As someone new to this, the design is not beginner-friendly at all. If you can't understand it in your first attempt, don't worry. What you are reading is months of work and a result of multiple rewrites.***
 
-***I don't how long it will take you to understand it, but it took me more than a month worth of efforts just to have a fragile understanding of it, which was later corrected by another idea that came to me, that I tested and found correct.***
+***I don't know how long it will take you to understand it, but it took me more than a month worth of efforts just to have a fragile understanding of it, which was later corrected by another idea that came to me, that I tested and found correct.***
 
 ***Therefore, give yourself time.***
 
 ---
 
 We have largely understood the size fields. To complete our understanding, we have to explore one last piece, **[the size model](./size-model.md)**. After this, we are ready for some dynamic analysis.
+
+That is malloc_chunk.
 
 # Dynamic Analysis
 
