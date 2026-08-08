@@ -2377,21 +2377,15 @@ static void* sysmalloc(INTERNAL_SIZE_T nb, mstate av)
         at least MINSIZE bytes, 
     [2] the PREV_INUSE bit must be set (1), and 
     [3] the top chunk must end at a page aligned 
-        boundary. 
-
-    Why the top chunk must end at a page-aligned 
-    boundary remains unanswered. See open-questions.md
+        boundary as sbrk is called with a page-aligned 
+        address. 
 
     The preconditions are enforced with asserts(s) 
     which are compiled out in production builds. 
-    Their are no if-blocks asking this is true in 
-    production builds.
-
-    The most important condition here is the third one. 
-    Neither sysmalloc, nor _int_malloc checks this. It 
-    remains unanswered.
-    - Checkout this GDB experiment.
-    - See open-questions.md
+    There are no if-blocks asking this is true in 
+    production builds. Only the first condition is 
+    checked by _int_malloc. Why the remaining two 
+    aren't remains unanswered.
   */
 
   assert(
@@ -4806,11 +4800,12 @@ static void* _int_malloc(mstate av, size_t bytes)
          last_remainder, so classify it into its 
          appropriate bin.
 
-        It is reasonable to think that every chunk in the 
-        unsorted bin must be given a chance to satisfy the 
-        current request. But the implementation seems to 
-        have a different policy. Victims are binned and 
-        later rediscovered through regular bin search.
+        It is reasonable to think that every chunk in 
+        the unsorted bin must be given an equal chance 
+        to satisfy the current request. But the 
+        implementation seems to have a different policy. 
+        Victims are binned and later rediscovered 
+        through regular bin search.
 
         It remains unanswered. See oepn-questions.md.
       */
@@ -4819,25 +4814,25 @@ static void* _int_malloc(mstate av, size_t bytes)
          This is a relatively recent change. Here is the link: 
           https://sourceware.org/git/?p=glibc.git;a=commit;h=e2436d6f5aa47ce8da80c2ba0f59dfb9ffde08f3
 
-        Before this, both small and large chunks went to the 
-        unsorted bin. As per the commit message, "there is no 
-        added-advantage to putting small chunks int the 
-        unsorted bin".
+        Before this, both small and large chunks went to 
+        the unsorted bin. As per the commit message, 
+        "there is no added-advantage to putting small 
+        chunks in the unsorted bin".
 
-        Later on, when the fastbins infrastructure was removed, 
-        malloc_consolidate() was removed too. This is also done 
-        recently. Here is the link: 
+        Later on, when the fastbins infrastructure was 
+        removed, malloc_consolidate() was removed too. 
+        This is also done recently. Here is the link: 
           https://sourceware.org/git/?p=glibc.git;a=commit;h=e3062b06c5767f672baf9574c4d7cbebf7d0ee6e
 
         Looking purely on the code, we can notice that the 
-         - freeing mechanism is designed to put small chunks 
-           directly in the corresponding small bin, while 
-           large chunks are placed in the unsorted and given 
-           a second chance on the next malloc request before 
-           binning. But if they are unfit, they are binned 
-           anyways. I am tired!
-         - only way small chunks enter the unsorted bin is 
-           when a large chunk is split.
+        - freeing mechanism is designed to put small chunks 
+          directly in the corresponding small bin, while 
+          large chunks are placed in the unsorted and given 
+          a second chance on the next malloc request before 
+          binning. But if they are unfit, they are binned 
+          anyways. I am tired!
+        - only way small chunks enter the unsorted bin is 
+          when a large chunk is split.
 
         Therefore, the chances of the victim chunk being a 
         small chunk are relatively low, so the allocator 
@@ -4865,7 +4860,8 @@ static void* _int_malloc(mstate av, size_t bytes)
 
         /* A large bin contains chunks of multiple sizes, 
            ordered by size. Therefore, insertion must 
-           maintain that. */
+           maintain that.
+        */
 
         /* If the bin is empty, we only have to update the 
            skip list pointers as the generic pointers are 
@@ -5599,9 +5595,10 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
     if (!nextinuse){
     	unlink_chunk(av, nextchunk);
       size += nextsize;
-      /* Size either contains (p-1, p, p+1)->mchunk_sizes, or
-         (p, p+1)->mchunk_sizes; depending on whether backward
-         consolidation happened or not. */
+      /* Size either contains (p-1, p, p+1)->mchunk_sizes, 
+         or (p, p+1)->mchunk_sizes; depending on whether 
+         backward consolidation happened or not.
+      */
     }
 
     /* If nextchunk is an in-use chunk, we can not perform
@@ -5637,7 +5634,8 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
       p->bk_nextsize = NULL;
     }
 
-    /* [PATH 1B]: If small chunk, place it in the appropriate smallbin. */
+    /* [PATH 1B]: If small chunk, place it in the appropriate 
+        smallbin. */
     else{
       int chunk_index = smallbin_index(size);
       bck = bin_at(av, chunk_index);
@@ -5656,10 +5654,12 @@ static INTERNAL_SIZE_T _int_free_create_chunk(
     bck->fd = p;
     fwd->bk = p;
 
-    /* Update the size and PREV_INUSE bit of the resulting chunk. */
+    /* Update the size and PREV_INUSE bit of the resulting 
+       chunk. */
     set_head(p, size | PREV_INUSE);
 
-    /* Update the next chunk's mchunk_prev_size with this chunk's size. */
+    /* Update the next chunk's mchunk_prev_size with 
+       this chunk's size. */
     set_foot(p, size);
 
     check_free_chunk(av, p);
@@ -5689,7 +5689,8 @@ static void _int_free_maybe_trim(
 ){
   /* We don't want to trim on each free. As a compromise, 
      trimming is attempted if ATTEMPT_TRIMMING_THRESHOLD 
-     is reached. */
+     is reached.
+  */
   if (size >= ATTEMPT_TRIMMING_THRESHOLD){
     /* For the main_arena, we call systrim. */
     if (av == &main_arena){
@@ -5700,9 +5701,11 @@ static void _int_free_maybe_trim(
 #endif
     }
 
-    /* For non-main arenas, we call heap_trim. Always try 
-       heap_trim, even if the top chunk is not large, 
-       because the corresponding heap might go away. */
+    /* For non-main arenas, we call heap_trim. Always 
+       try heap_trim, even if the top chunk is not 
+       large, because the corresponding heap might go 
+       away.
+    */
     else{
       heap_info *heap = heap_for_ptr(top(av));
       assert(heap->ar_ptr == av);
